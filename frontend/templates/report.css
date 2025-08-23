@@ -1,0 +1,68 @@
+:root {
+  --bg: #fafaff;
+  --panel: #ffffff;
+  --border: #e5e7eb;
+  --text: #1f2937;
+  --brand: #7c3aed;      /* purple */
+  --brand-dark: #5b21b6;
+  --accent: #14b8a6;     /* aquamarine */
+  --blue: #0077ff;       /* report border */
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.container {
+  max-width: 900px;
+  margin: 20px auto;
+  padding: 24px;
+  background: #fff;
+  border: 2px solid var(--blue);  /* BLUE 2px BORDER */
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(124,58,237,.1);
+}
+
+header { margin-bottom: 18px; }
+header h1 { color: var(--brand); margin: 0; font-size: 2rem; }
+header .meta { font-size: 0.95rem; color: #6b7280; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 18px;
+}
+
+.card h2 { margin-top: 0; color: var(--brand-dark); }
+
+.list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.chip { background: var(--accent); color: white; padding: 6px 12px; border-radius: 999px; font-size: 0.9rem; }
+
+/* Dual transcript blocks */
+.block {
+  padding: 12px;
+  border-left: 4px solid var(--brand);
+  background: #f5f3ff;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+.block.alt {
+  border-left-color: var(--accent);
+  background: #ecfeff;
+}
+
+/* QR */
+.qr { text-align: center; }
+.qr img { border: 6px solid var(--accent); border-radius: 12px; }
+
+@media print {
+  body { background: #fff; }
+  .container { box-shadow: none; }
+  .card { box-shadow: none; border: 1px solid #ddd; }
+}

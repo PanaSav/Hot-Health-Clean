@@ -1,0 +1,14 @@
+﻿# Secrets
+.env
+*.env
+backend/.env
+
+# Data / uploads / DB
+/var/data/
+/backend/uploads/
+/backend/*.sqlite
+**/*.sqlite
+
+# OS/editor
+.DS_Store
+Thumbs.db

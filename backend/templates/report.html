@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Health Report</title>
+    <link rel="stylesheet" href="/templates/report.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Health Report</h1>
+        <div class="meta">
+          Created {{createdAt}} • Detected / Target: {{detected}}
+          <span style="float:right">
+            <a href="{{adminLink}}">All reports</a>
+          </span>
+        </div>
+      </header>
+
+      <div class="card">
+        <h2>Patient</h2>
+        <div>Blood Type: <strong>{{bloodType}}</strong></div>
+        <div>Share Link: <a href="{{shareLink}}">{{shareLink}}</a></div>
+      </div>
+
+      <div class="card">
+        <h2>Medications</h2>
+        <div class="list">{{origMeds}}</div>
+        {{#transMeds}}
+        <h3>Translated Medications{{viewLangLabel}}</h3>
+        <div class="list">{{transMeds}}</div>
+        {{/transMeds}}
+      </div>
+
+      <div class="card">
+        <h2>Allergies</h2>
+        <div class="list">{{origAllergies}}</div>
+        {{#transAllergies}}
+        <h3>Translated Allergies{{viewLangLabel}}</h3>
+        <div class="list">{{transAllergies}}</div>
+        {{/transAllergies}}
+      </div>
+
+      <div class="card">
+        <h2>Conditions</h2>
+        <div class="list">{{origConditions}}</div>
+        {{#transConditions}}
+        <h3>Translated Conditions{{viewLangLabel}}</h3>
+        <div class="list">{{transConditions}}</div>
+        {{/transConditions}}
+      </div>
+
+      <div class="card">
+        <h2>Transcript</h2>
+        <div class="block">{{origTranscript}}</div>
+        {{#transTranscript}}
+        <div class="block alt">{{transTranscript}}</div>
+        {{/transTranscript}}
+      </div>
+
+      <div class="card qr">
+        <h2>Share</h2>
+        <img src="{{qrDataUrl}}" alt="QR Code" width="180" height="180" />
+        <div><a href="{{shareLink}}">{{shareLink}}</a></div>
+      </div>
+    </div>
+    <script>
+      // remove mustache tags for empty translated blocks
+      document.body.innerHTML = document.body.innerHTML
+        .replace(/{{#\w+}}/g,'')
+        .replace(/{{\/\w+}}/g,'');
+    </script>
+  </body>
+</html>
