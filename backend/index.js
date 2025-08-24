@@ -5,7 +5,6 @@ import fs from "fs";
 import path from "path";
 import QRCode from "qrcode";
 import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import OpenAI from "openai";
