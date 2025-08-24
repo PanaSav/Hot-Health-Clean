@@ -12,7 +12,7 @@ import OpenAI from "openai";
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 10000; // Render uses 10000 by default for Node services
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
 const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o";
 const JSON_MODEL = process.env.OPENAI_JSON_MODEL || "gpt-4o-mini";
@@ -30,6 +30,15 @@ function resolvePublicDir() {
   return path.join(process.cwd(), "public");
 }
 const PUBLIC_DIR = resolvePublicDir();
+
+// ---- Ensure uploads dir exists (Render ephemeral fs ok)
+const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+try {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  console.log("📁 Upload dir ready:", UPLOAD_DIR);
+} catch (e) {
+  console.error("❌ Could not create uploads dir:", e);
+}
 
 // ---- Middleware / static
 app.use(bodyParser.json({ limit: "5mb" }));
@@ -96,22 +105,29 @@ async function ensureSchema() {
 }
 await ensureSchema();
 
-// ---- OpenAI
+// ---- OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// transcription helper with robust logging and fallback
 async function transcribeWithOpenAI(filePath, filename = "audio.webm") {
   try {
+    console.log("🗣️ Transcribing via gpt-4o-mini-transcribe …", filename);
     const r = await openai.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
       model: "gpt-4o-mini-transcribe"
     });
-    return (r.text || "").trim();
-  } catch {
+    const text = (r.text || "").trim();
+    console.log("✅ Transcribed (gpt-4o-mini-transcribe) chars:", text.length);
+    return text;
+  } catch (err1) {
+    console.warn("⚠️ gpt-4o-mini-transcribe failed; trying whisper-1. Details:", err1?.response?.data || err1?.message || err1);
     const r2 = await openai.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
       model: "whisper-1"
     });
-    return (r2.text || "").trim();
+    const text2 = (r2.text || "").trim();
+    console.log("✅ Transcribed (whisper-1) chars:", text2.length);
+    return text2;
   }
 }
 
@@ -153,9 +169,9 @@ function baseUrlFrom(req) {
   return process.env.PUBLIC_BASE_URL || inferBaseUrl(req);
 }
 
-// ---- Upload storage (preserve real extension) ✅ FIX
+// ---- Upload storage (preserve real extension)
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/"),
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname || "").toLowerCase() || ".webm";
     const name = Date.now() + "-" + Math.random().toString(36).slice(2, 8) + ext;
@@ -176,6 +192,14 @@ app.get("/", (req, res) => {
 app.post("/upload", upload.single("audio"), async (req, res) => {
   let tmpPathToDelete = null;
   try {
+    console.log("📥 Upload received:", {
+      hasFile: !!req.file,
+      filePath: req.file?.path,
+      originalName: req.file?.originalname,
+      mime: req.file?.mimetype,
+      size: req.file?.size
+    });
+
     const id = Math.random().toString(36).slice(2, 12);
     const {
       name, email, emer_name, emer_phone, emer_email,
@@ -184,17 +208,22 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       debug_transcript
     } = req.body;
 
+    // require either audio or transcript
+    if (!req.file && !postedTranscript && !debug_transcript) {
+      return res.status(400).json({
+        ok: false,
+        error: "No audio file or transcript provided. Field name must be 'audio'."
+      });
+    }
+
     // transcript
     let transcript = (postedTranscript || debug_transcript || "").trim();
     if (!transcript) {
-      if (!req.file || !req.file.path) {
-        return res.status(400).json({ ok: false, error: "No audio or transcript provided." });
-      }
-      tmpPathToDelete = req.file.path; // already includes a valid extension now
+      tmpPathToDelete = req.file.path; // includes proper ext now
       transcript = await transcribeWithOpenAI(req.file.path, req.file.originalname || "audio.webm");
     }
 
-    // target language (single declaration)
+    // single declaration of targetLang
     const targetLang = (langFromForm || req.body.targetLang || "").trim();
 
     // extract facts
@@ -202,7 +231,6 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       "Extract medical facts from the text. Output JSON with keys: detected_lang (ISO-639-1), meds (array of {name, dose?, unit?, freq?, notes?}), allergies (array of string), conditions (array of string), vitals { bp? {sys, dia}, weight? {value, unit} }, blood_type? (A+, A-, B+, B-, AB+, AB-, O+, O-). If uncertain, leave fields empty.";
     const user =
       `Text:\n${transcript}\n\nThe user may be Canadian English or French. Recognize expressions like "120 over 75" for blood pressure. Include generic/brand medication names; preserve unknown tokens as-is.`;
-
     let facts = await callJSON(JSON_MODEL, sys, user);
 
     // fallback regex if meds missing
@@ -321,8 +349,10 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     const qr = await QRCode.toDataURL(link);
     res.json({ ok: true, id, link, qr });
   } catch (e) {
-    console.error("❌ Upload error:", e);
-    res.status(500).json({ ok: false, error: e.message });
+    console.error("❌ Upload error:", e?.response?.data || e);
+    res
+      .status(500)
+      .json({ ok: false, error: String(e?.message || e || "Unknown server error") });
   } finally {
     try { if (tmpPathToDelete) fs.unlink(tmpPathToDelete, () => {}); } catch {}
   }
