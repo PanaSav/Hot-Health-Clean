@@ -25,9 +25,7 @@ function resolvePublicDir() {
     path.join(process.cwd(), "frontend", "public")
   ];
   for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) return p;
-    } catch {}
+    try { if (fs.existsSync(p)) return p; } catch {}
   }
   return path.join(process.cwd(), "public");
 }
@@ -86,13 +84,8 @@ async function ensureSchema() {
       translated TEXT
     );
   `);
-
   async function addCol(name, def) {
-    try {
-      await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`);
-    } catch (e) {
-      // ignore if exists
-    }
+    try { await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`); } catch {}
   }
   await addCol("detected_lang", "TEXT");
   await addCol("translated_summary", "TEXT");
@@ -160,8 +153,16 @@ function baseUrlFrom(req) {
   return process.env.PUBLIC_BASE_URL || inferBaseUrl(req);
 }
 
-// ---- Upload storage
-const upload = multer({ dest: "uploads/" });
+// ---- Upload storage (preserve real extension) ✅ FIX
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, "uploads/"),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase() || ".webm";
+    const name = Date.now() + "-" + Math.random().toString(36).slice(2, 8) + ext;
+    cb(null, name);
+  }
+});
+const upload = multer({ storage });
 
 // ---- Health
 app.get("/healthz", (req, res) => res.json({ ok: true }));
@@ -189,7 +190,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       if (!req.file || !req.file.path) {
         return res.status(400).json({ ok: false, error: "No audio or transcript provided." });
       }
-      tmpPathToDelete = req.file.path;
+      tmpPathToDelete = req.file.path; // already includes a valid extension now
       transcript = await transcribeWithOpenAI(req.file.path, req.file.originalname || "audio.webm");
     }
 
