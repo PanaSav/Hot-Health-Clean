@@ -4,7 +4,7 @@ import multer from "multer";
 import fs from "fs";
 import path from "path";
 import QRCode from "qrcode";
-import sqlite3 from 'sqlite3';
+import sqlite3 from "sqlite3";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import OpenAI from "openai";
@@ -22,7 +22,7 @@ app.use(bodyParser.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
-// ---------- DB (sqlite3 only, promise wrappers) ----------
+// ---------- DB (sqlite3 only, with small promise wrappers) ----------
 const dbFile = path.join(process.cwd(), "data.sqlite");
 sqlite3.verbose();
 const dbRaw = new sqlite3.Database(dbFile);
@@ -55,24 +55,23 @@ const db = {
 
 async function ensureSchema() {
   await db.exec(`
-  CREATE TABLE IF NOT EXISTS reports (
-    id TEXT PRIMARY KEY,
-    created DATETIME DEFAULT CURRENT_TIMESTAMP,
-    patient_name TEXT,
-    patient_email TEXT,
-    emer_name TEXT,
-    emer_phone TEXT,
-    emer_email TEXT,
-    blood_type TEXT,
-    transcript TEXT,
-    summary TEXT,
-    lang TEXT,
-    translated TEXT
-  );`);
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      created DATETIME DEFAULT CURRENT_TIMESTAMP,
+      patient_name TEXT,
+      patient_email TEXT,
+      emer_name TEXT,
+      emer_phone TEXT,
+      emer_email TEXT,
+      blood_type TEXT,
+      transcript TEXT,
+      summary TEXT,
+      lang TEXT,
+      translated TEXT
+    );
+  `);
 
-  async function addCol(name, def) {
-    try { await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`); } catch {}
-  }
+  async function addCol(name, def) { try { await db.exec(\`ALTER TABLE reports ADD COLUMN \${name} \${def}\`); } catch {} }
   await addCol("detected_lang", "TEXT");
   await addCol("translated_summary", "TEXT");
   await addCol("meds_json", "TEXT");
@@ -86,7 +85,7 @@ await ensureSchema();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function transcribeWithOpenAI(filePath, filename = "audio.webm") {
-  // Try gpt-4o-mini-transcribe, fallback to whisper-1
+  // Try gpt-4o-mini-transcribe first, fallback to whisper-1
   try {
     const r = await openai.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
@@ -157,7 +156,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     const id = Math.random().toString(36).slice(2, 12);
     const {
       name, email, emer_name, emer_phone, emer_email,
-      blood_type, lang: targetLangRaw,
+      blood_type, lang: langFromForm,
       transcript: postedTranscript,
       debug_transcript
     } = req.body;
@@ -172,9 +171,11 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       transcript = await transcribeWithOpenAI(req.file.path, req.file.originalname || "audio.webm");
     }
 
-    const targetLang = (targetLangRaw || "").trim();
+    // 2) target language (single declaration; no duplicates)
+    const targetLangRaw = langFromForm || req.body.targetLang || "";
+    const targetLang = targetLangRaw.trim();
 
-    // 2) extract facts
+    // 3) extract facts
     const sys =
       "Extract medical facts from the text. Output JSON with keys: detected_lang (ISO-639-1), meds (array of {name, dose?, unit?, freq?, notes?}), allergies (array of string), conditions (array of string), vitals { bp? {sys, dia}, weight? {value, unit} }, blood_type? (A+, A-, B+, B-, AB+, AB-, O+, O-). If uncertain, leave fields empty.";
     const user =
@@ -184,7 +185,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     try { facts = await callJSON(JSON_MODEL, sys, user); }
     catch { facts = {}; }
 
-    // 3) fallback regex if meds missing
+    // 4) fallback regex if meds missing
     function regexFallback() {
       const meds = [];
       const medRX = /\b([A-Za-z][A-Za-z0-9\-']{2,})\b(?:[^.\n]{0,40})?\b(\d+(?:\.\d+)?)\s?(iu|mcg|µg|mg|g|ml|mL|units?)\b/gi;
@@ -213,7 +214,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       facts.vitals = f.vitals;
     }
 
-    // 4) normalize
+    // 5) normalize
     const meds = (facts.meds || facts.medications || []).map(x => ({
       name: x.name || x.drug || "",
       dose: x.dose || x.dosage || "",
@@ -231,7 +232,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       ? facts.blood_type.toUpperCase()
       : (blood_type || "");
 
-    // 5) original summary
+    // 6) original summary
     const lines = [];
     if (meds.length) {
       lines.push("Medications:");
@@ -272,8 +273,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
 
     const originalSummary = lines.join("\n");
 
-    // 6) translate if requested
-    const targetLang = (targetLangRaw || "").trim();
+    // 7) translate if requested
     let translatedTranscript = "";
     let translatedSummary = "";
     if (targetLang) {
@@ -281,7 +281,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       translatedSummary   = await translateText(originalSummary, targetLang);
     }
 
-    // 7) save
+    // 8) save
     await db.run(
       `INSERT INTO reports
         (id, patient_name, patient_email, emer_name, emer_phone, emer_email, blood_type,
@@ -296,7 +296,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       ]
     );
 
-    // 8) link + QR
+    // 9) link + QR
     const link = `${baseUrlFrom(req)}/reports/${id}`;
     const qr = await QRCode.toDataURL(link);
     res.json({ ok: true, id, link, qr });
@@ -312,7 +312,8 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
 app.post("/reports/:id/translate", async (req, res) => {
   try {
     const id = req.params.id;
-    const to = (req.body.to || req.query.to || "").trim();
+    const toRaw = (req.body.to || req.query.to || "");
+    const to = toRaw.trim(); // single declaration
     const pw = (req.body.password || req.query.password || "").trim();
 
     const r = await db.get("SELECT * FROM reports WHERE id = ?", [id]);
