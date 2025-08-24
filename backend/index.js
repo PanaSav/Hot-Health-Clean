@@ -15,12 +15,15 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 4000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
+const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o"; // for summaries/translations
+const JSON_MODEL = process.env.OPENAI_JSON_MODEL || "gpt-4o-mini"; // for JSON extraction
 
-app.use(bodyParser.json());
+// ---------- Middleware / static ----------
+app.use(bodyParser.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(process.cwd(), "public")));
 
-// ------------ DB ------------
+// ---------- DB ----------
 const db = await open({
   filename: path.join(process.cwd(), "data.sqlite"),
   driver: sqlite3.Database
@@ -42,7 +45,6 @@ CREATE TABLE IF NOT EXISTS reports (
   translated TEXT
 )`);
 
-// idempotent column adds
 async function addCol(name, def) {
   try { await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`); } catch {}
 }
@@ -53,16 +55,28 @@ await addCol("allergies_json", "TEXT");
 await addCol("conditions_json", "TEXT");
 await addCol("vitals_json", "TEXT");
 
-// ------------ Helpers ------------
+// ---------- OpenAI ----------
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-function inferBaseUrl(req) {
-  const proto = (req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
-  const host  = (req.headers["x-forwarded-host"]  || req.headers.host || "").split(",")[0].trim();
-  return `${proto}://${host}`;
-}
-function baseUrlFrom(req) {
-  return process.env.PUBLIC_BASE_URL || inferBaseUrl(req);
+async function transcribeWithOpenAI(filePath, filename = "audio.webm") {
+  // Feed the raw file stream to OpenAI; webm/mp3/wav are fine.
+  const file = fs.createReadStream(filePath);
+  // Try gpt-4o-mini-transcribe, then whisper-1
+  try {
+    const r = await openai.audio.transcriptions.create({
+      file,
+      model: "gpt-4o-mini-transcribe"
+    });
+    return (r.text || "").trim();
+  } catch {
+    // reopen stream because previous read consumed it
+    const file2 = fs.createReadStream(filePath);
+    const r2 = await openai.audio.transcriptions.create({
+      file: file2,
+      model: "whisper-1"
+    });
+    return (r2.text || "").trim();
+  }
 }
 
 async function callJSON(model, sys, user) {
@@ -78,12 +92,12 @@ async function callJSON(model, sys, user) {
   return JSON.parse(resp.choices[0].message.content || "{}");
 }
 
-async function translateText(model, text, targetLang) {
+async function translateText(text, targetLang) {
   if (!text || !targetLang) return "";
   const sys = "You are a careful medical translator. Translate faithfully without adding or removing facts.";
   const user = `Target language: ${targetLang}\n\nText:\n${text}`;
   const resp = await openai.chat.completions.create({
-    model,
+    model: TEXT_MODEL,
     temperature: 0.2,
     messages: [{ role: "system", content: sys }, { role: "user", content: user }]
   });
@@ -93,69 +107,67 @@ async function translateText(model, text, targetLang) {
 function safeParseJSON(s, d) { try { return JSON.parse(s || ""); } catch { return d; } }
 function esc(s = "") { return String(s).replace(/</g, "&lt;"); }
 
-// (Optional) stub transcriber: for Render you already had it wired; keep your own if you wish.
-// This function lets you test by POSTing a `debug_transcript` field.
-async function transcribePlaceholder(filePath, providedFallback = "") {
-  // If you already have a working transcriber, replace this with your call.
-  // This placeholder lets you test end-to-end without audio by sending debug_transcript.
-  return providedFallback || "";
+function inferBaseUrl(req) {
+  const proto = (req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
+  const host  = (req.headers["x-forwarded-host"]  || req.headers.host || "").split(",")[0].trim();
+  return `${proto}://${host}`;
+}
+function baseUrlFrom(req) {
+  return process.env.PUBLIC_BASE_URL || inferBaseUrl(req);
 }
 
-// ------------ Storage ------------
+// ---------- Upload storage ----------
 const upload = multer({ dest: "uploads/" });
 
-// ------------ Routes ------------
-
-// health
+// ---------- Health ----------
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
-// home
+// ---------- Home ----------
 app.get("/", (req, res) => {
   res.sendFile(path.join(process.cwd(), "public/index.html"));
 });
 
-// upload (record -> facts -> save -> link + QR)
+// ---------- Upload (record -> transcribe -> extract -> save -> link/QR) ----------
 app.post("/upload", upload.single("audio"), async (req, res) => {
+  let tmpPathToDelete = null;
   try {
     const id = Math.random().toString(36).slice(2, 12);
     const {
-      name,
-      email,
-      emer_name,
-      emer_phone,
-      emer_email,
-      blood_type,
-      lang: targetLang,
-      debug_transcript // optional manual text for testing
+      name, email, emer_name, emer_phone, emer_email,
+      blood_type, lang: targetLangRaw,
+      transcript: postedTranscript, // if frontend already posts text
+      debug_transcript
     } = req.body;
 
-    // 1) Transcript (plug in your real transcriber here if desired)
-    let transcript = (debug_transcript || "").trim();
+    // 1) Get transcript (prefer posted; else transcribe uploaded file)
+    let transcript = (postedTranscript || debug_transcript || "").trim();
+
     if (!transcript) {
-      // fallback to placeholder if no debug provided
-      transcript = await transcribePlaceholder(req?.file?.path || "", "");
-    }
-    if (!transcript) {
-      // If you must have real audio transcription here, you can return a clear error:
-      return res.status(400).json({ ok: false, error: "No transcript available. (Provide audio or debug_transcript)" });
+      if (!req.file || !req.file.path) {
+        return res.status(400).json({ ok: false, error: "No audio or transcript provided." });
+      }
+      tmpPathToDelete = req.file.path;
+      transcript = await transcribeWithOpenAI(req.file.path, req.file.originalname || "audio.webm");
     }
 
-    // 2) Extract facts via JSON LLM
-    const modelJSON = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
+    // normalize target lang
+    const targetLang = (targetLangRaw || "").trim();
+
+    // 2) Extract facts (JSON model)
     const sys =
       "Extract medical facts from the text. Output JSON with keys: detected_lang (ISO-639-1), meds (array of {name, dose?, unit?, freq?, notes?}), allergies (array of string), conditions (array of string), vitals { bp? {sys, dia}, weight? {value, unit} }, blood_type? (A+, A-, B+, B-, AB+, AB-, O+, O-). If uncertain, leave fields empty.";
     const user =
-      `Text:\n${transcript}\n\n` +
-      `The user may be Canadian English or French. Recognize expressions like "120 over 75" for blood pressure. Include generic/brand medication names; preserve unknown tokens as-is.`;
+      `Text:\n${transcript}\n\nThe user may be Canadian English or French. Recognize expressions like "120 over 75" for blood pressure. Include generic/brand medication names; preserve unknown tokens as-is.`;
 
     let facts = {};
-    try { facts = await callJSON(modelJSON, sys, user); }
+    try { facts = await callJSON(JSON_MODEL, sys, user); }
     catch { facts = {}; }
 
-    // 3) Fallback regex if needed
+    // 3) Strong regex fallback (if meds missing)
     function regexFallback() {
       const meds = [];
-      const medRX = /\b([A-Za-z][A-Za-z\-']{2,})\b(?:[^.\n]{0,30})?\b(\d+(?:\.\d+)?)\s?(mg|mcg|g|ml|units?)\b/gi;
+      // brand-like tokens + dosage within ~40 chars. Units cover IU/mcg/mg/g/ml/mL/units.
+      const medRX = /\b([A-Za-z][A-Za-z0-9\-']{2,})\b(?:[^.\n]{0,40})?\b(\d+(?:\.\d+)?)\s?(iu|mcg|µg|mg|g|ml|mL|units?)\b/gi;
       let m;
       while ((m = medRX.exec(transcript))) {
         meds.push({ name: m[1], dose: m[2], unit: m[3] });
@@ -181,11 +193,11 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       facts.vitals = f.vitals;
     }
 
-    // 4) Normalize + assemble
+    // 4) Normalize fields
     const meds = (facts.meds || facts.medications || []).map(x => ({
       name: x.name || x.drug || "",
       dose: x.dose || x.dosage || "",
-      unit: x.unit || x.units || "",
+      unit: (x.unit || x.units || "").replace(/^µg$/i, "mcg"),
       freq: x.freq || x.frequency || "",
       notes: x.notes || ""
     })).filter(x => x.name);
@@ -193,13 +205,13 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     const allergies = Array.isArray(facts.allergies) ? facts.allergies : [];
     const conditions = Array.isArray(facts.conditions) ? facts.conditions : [];
     const vitals = facts.vitals && typeof facts.vitals === "object" ? facts.vitals : {};
-    const detected_lang = facts.detected_lang || "auto";
+    const detected_lang = (facts.detected_lang || "").trim() || "und";
 
     const bloodTypeFinal = (facts.blood_type && typeof facts.blood_type === "string")
       ? facts.blood_type.toUpperCase()
       : (blood_type || "");
 
-    // Build readable summary (original language)
+    // 5) Human summary (original)
     const lines = [];
     if (meds.length) {
       lines.push("Medications:");
@@ -240,17 +252,15 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
 
     const originalSummary = lines.join("\n");
 
-    // 5) Translate blocks if target language requested
-    const modelText = process.env.OPENAI_TEXT_MODEL || "gpt-4o";
-    const targetLang = (req.body.lang || "").trim();
+    // 6) Translate if target provided
     let translatedTranscript = "";
     let translatedSummary = "";
     if (targetLang) {
-      translatedTranscript = await translateText(modelText, transcript, targetLang);
-      translatedSummary   = await translateText(modelText, originalSummary, targetLang);
+      translatedTranscript = await translateText(transcript, targetLang);
+      translatedSummary   = await translateText(originalSummary, targetLang);
     }
 
-    // 6) Persist
+    // 7) Save
     await db.run(
       `INSERT INTO reports
         (id, patient_name, patient_email, emer_name, emer_phone, emer_email, blood_type,
@@ -265,7 +275,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       ]
     );
 
-    // 7) Respond with link + QR
+    // 8) Link + QR (uses PUBLIC_BASE_URL if set)
     const link = `${baseUrlFrom(req)}/reports/${id}`;
     const qr = await QRCode.toDataURL(link);
     res.json({ ok: true, id, link, qr });
@@ -273,12 +283,38 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     console.error("❌ Upload error:", e);
     res.status(500).json({ ok: false, error: e.message });
   } finally {
-    // clean temp
-    try { if (req?.file?.path) fs.unlink(req.file.path, () => {}); } catch {}
+    try { if (tmpPathToDelete) fs.unlink(tmpPathToDelete, () => {}); } catch {}
   }
 });
 
-// list reports (admin)
+// ---------- Translate existing report (add dual block after the fact) ----------
+app.post("/reports/:id/translate", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const to = (req.body.to || req.query.to || "").trim();
+    const pw = (req.body.password || req.query.password || "").trim();
+
+    const r = await db.get("SELECT * FROM reports WHERE id = ?", [id]);
+    if (!r) return res.status(404).send("Report not found");
+    if (!to) return res.status(400).send("Missing target language 'to'");
+
+    const translatedSummary = await translateText(r.summary || "", to);
+    const translatedTranscript = await translateText(r.transcript || "", to);
+
+    await db.run(
+      "UPDATE reports SET lang = ?, translated = ?, translated_summary = ? WHERE id = ?",
+      [to, translatedTranscript, translatedSummary, id]
+    );
+
+    const suffix = pw ? `?password=${encodeURIComponent(pw)}` : "";
+    res.redirect(`/reports/${id}${suffix}`);
+  } catch (e) {
+    console.error("❌ Translate error:", e);
+    res.status(500).send("Translation failed");
+  }
+});
+
+// ---------- List reports (admin) ----------
 app.get("/reports", async (req, res) => {
   if ((req.query.password || "") !== ADMIN_PASSWORD) {
     return res.status(401).send("Unauthorized — add ?password=...");
@@ -300,7 +336,7 @@ app.get("/reports", async (req, res) => {
   `);
 });
 
-// view single report with dual blocks + print/copy/back
+// ---------- View single report (dual blocks + translate UI) ----------
 app.get("/reports/:id", async (req, res) => {
   const r = await db.get("SELECT * FROM reports WHERE id = ?", [req.params.id]);
   if (!r) return res.status(404).send("Report not found");
@@ -335,6 +371,25 @@ app.get("/reports/:id", async (req, res) => {
     ${vitals?.bp?.sys && vitals?.bp?.dia ? `<div><b>Blood Pressure:</b> ${vitals.bp.sys}/${vitals.bp.dia}</div>` : ""}
     ${vitals?.weight?.value ? `<div><b>Weight:</b> ${vitals.weight.value} ${vitals.weight.unit || ""}</div>` : ""}
   `;
+
+  const translatePicker = `
+    <form method="post" action="/reports/${r.id}/translate" style="display:flex;gap:8px;align-items:center;margin:8px 0;">
+      <input type="hidden" name="password" value="${esc(pw)}"/>
+      <label for="to" class="muted">Translate to:</label>
+      <select id="to" name="to">
+        <option value="fr">Français</option>
+        <option value="es">Español</option>
+        <option value="pt">Português</option>
+        <option value="de">Deutsch</option>
+        <option value="it">Italiano</option>
+        <option value="ar">العربية</option>
+        <option value="hi">हिन्दी</option>
+        <option value="zh">中文</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+      </select>
+      <button class="btn btn-copy" type="submit">🌍 Translate this report</button>
+    </form>`;
 
   res.send(`
   <!doctype html>
@@ -372,6 +427,8 @@ app.get("/reports/:id", async (req, res) => {
           <div class="linkbox" id="linkBox">${selfUrl}</div>
         </div>
 
+        ${ (r.translated || r.translated_summary) ? "" : `<div class="row">${translatePicker}</div>` }
+
         <div class="row">
           <div class="report-card" style="width:100%">
             <div class="kvs">
@@ -385,10 +442,10 @@ app.get("/reports/:id", async (req, res) => {
             <div class="grid">
               <div class="block">
                 <h3>Summary (Original${r.detected_lang?`: ${esc(r.detected_lang)}`:""})</h3>
-                <pre>${esc(r.summary)}</pre>
+                <pre>${esc(r.summary || "")}</pre>
 
                 <h3>Transcript (Original)</h3>
-                <pre>${esc(r.transcript)}</pre>
+                <pre>${esc(r.transcript || "")}</pre>
 
                 <h3>Medications</h3>
                 ${medsList}
@@ -411,7 +468,7 @@ app.get("/reports/:id", async (req, res) => {
                 <pre>${esc(r.translated || "")}</pre>
 
                 <h3>Medications (Translated)</h3>
-                ${meds.length ? `<ul>${meds.map(m => `<li>${esc(m.name)}${m.dose?` — ${esc(m.dose)} ${esc(m.unit||"")}`:""}${m.freq?` (${esc(m.freq)})`:""}${m.notes?` — ${esc(m.notes)}`:""}</li>`).join("")}</ul>` : `<div class="muted">None mentioned</div>`}
+                ${medsList}
 
                 <h3>Allergies (Translated)</h3>
                 ${allergiesList}
@@ -446,7 +503,7 @@ app.get("/reports/:id", async (req, res) => {
   `);
 });
 
-// ------------ Start ------------
+// ---------- Start ----------
 app.listen(PORT, () => {
   console.log(`✅ Backend listening on ${PORT}`);
 });
