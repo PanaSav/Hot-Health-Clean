@@ -12,17 +12,17 @@ import OpenAI from "openai";
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 10000; // Render uses 10000 by default for Node services
+const PORT = process.env.PORT || 10000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
 const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o";
 const JSON_MODEL = process.env.OPENAI_JSON_MODEL || "gpt-4o-mini";
 
-// ---- Resolve public dir (supports backend/public or frontend/public)
+// ----- Resolve public dir (backend/public -> public -> frontend/public)
 function resolvePublicDir() {
   const candidates = [
     path.join(process.cwd(), "backend", "public"),
     path.join(process.cwd(), "public"),
-    path.join(process.cwd(), "frontend", "public")
+    path.join(process.cwd(), "frontend", "public"),
   ];
   for (const p of candidates) {
     try { if (fs.existsSync(p)) return p; } catch {}
@@ -31,7 +31,7 @@ function resolvePublicDir() {
 }
 const PUBLIC_DIR = resolvePublicDir();
 
-// ---- Ensure uploads dir exists (Render ephemeral fs ok)
+// ----- Ensure uploads dir exists (Render-friendly)
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 try {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -40,16 +40,14 @@ try {
   console.error("❌ Could not create uploads dir:", e);
 }
 
-// ---- Middleware / static
 app.use(bodyParser.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(PUBLIC_DIR));
 
-// ---- DB (sqlite3 only + tiny promise wrappers)
+// ----- DB (sqlite3 with tiny promise wrappers)
 const dbFile = path.join(process.cwd(), "data.sqlite");
 sqlite3.verbose();
 const dbRaw = new sqlite3.Database(dbFile);
-
 const db = {
   run(sql, params = []) {
     return new Promise((resolve, reject) => {
@@ -73,7 +71,7 @@ const db = {
     return new Promise((resolve, reject) => {
       dbRaw.exec(sql, (err) => (err ? reject(err) : resolve()));
     });
-  }
+  },
 };
 
 async function ensureSchema() {
@@ -94,7 +92,7 @@ async function ensureSchema() {
     );
   `);
   async function addCol(name, def) {
-    try { await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`); } catch {}
+    try { await db.exec(\`ALTER TABLE reports ADD COLUMN \${name} \${def}\`); } catch {}
   }
   await addCol("detected_lang", "TEXT");
   await addCol("translated_summary", "TEXT");
@@ -105,16 +103,15 @@ async function ensureSchema() {
 }
 await ensureSchema();
 
-// ---- OpenAI client
+// ----- OpenAI
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// transcription helper with robust logging and fallback
 async function transcribeWithOpenAI(filePath, filename = "audio.webm") {
   try {
     console.log("🗣️ Transcribing via gpt-4o-mini-transcribe …", filename);
     const r = await openai.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
-      model: "gpt-4o-mini-transcribe"
+      model: "gpt-4o-mini-transcribe",
     });
     const text = (r.text || "").trim();
     console.log("✅ Transcribed (gpt-4o-mini-transcribe) chars:", text.length);
@@ -123,7 +120,7 @@ async function transcribeWithOpenAI(filePath, filename = "audio.webm") {
     console.warn("⚠️ gpt-4o-mini-transcribe failed; trying whisper-1. Details:", err1?.response?.data || err1?.message || err1);
     const r2 = await openai.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
-      model: "whisper-1"
+      model: "whisper-1",
     });
     const text2 = (r2.text || "").trim();
     console.log("✅ Transcribed (whisper-1) chars:", text2.length);
@@ -138,8 +135,8 @@ async function callJSON(model, sys, user) {
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: sys },
-      { role: "user", content: user }
-    ]
+      { role: "user", content: user },
+    ],
   });
   const content = resp.choices?.[0]?.message?.content || "{}";
   try { return JSON.parse(content); } catch { return {}; }
@@ -152,7 +149,7 @@ async function translateText(text, targetLang) {
   const resp = await openai.chat.completions.create({
     model: TEXT_MODEL,
     temperature: 0.2,
-    messages: [{ role: "system", content: sys }, { role: "user", content: user }]
+    messages: [{ role: "system", content: sys }, { role: "user", content: user }],
   });
   return resp.choices?.[0]?.message?.content?.trim() || "";
 }
@@ -169,26 +166,22 @@ function baseUrlFrom(req) {
   return process.env.PUBLIC_BASE_URL || inferBaseUrl(req);
 }
 
-// ---- Upload storage (preserve real extension)
+// ----- multer (preserve extension)
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname || "").toLowerCase() || ".webm";
     const name = Date.now() + "-" + Math.random().toString(36).slice(2, 8) + ext;
     cb(null, name);
-  }
+  },
 });
 const upload = multer({ storage });
 
-// ---- Health
+// ----- health + home
 app.get("/healthz", (req, res) => res.json({ ok: true }));
+app.get("/", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
 
-// ---- Home
-app.get("/", (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
-});
-
-// ---- Upload: record -> transcribe -> extract -> save -> link/QR
+// ----- upload -> save -> link + QR
 app.post("/upload", upload.single("audio"), async (req, res) => {
   let tmpPathToDelete = null;
   try {
@@ -197,50 +190,43 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       filePath: req.file?.path,
       originalName: req.file?.originalname,
       mime: req.file?.mimetype,
-      size: req.file?.size
+      size: req.file?.size,
     });
 
     const id = Math.random().toString(36).slice(2, 12);
     const {
       name, email, emer_name, emer_phone, emer_email,
       blood_type, lang: langFromForm,
-      transcript: postedTranscript,
-      debug_transcript
+      transcript: postedTranscript, debug_transcript,
     } = req.body;
 
-    // require either audio or transcript
     if (!req.file && !postedTranscript && !debug_transcript) {
       return res.status(400).json({
         ok: false,
-        error: "No audio file or transcript provided. Field name must be 'audio'."
+        error: "No audio file or transcript provided. Field name must be 'audio'.",
       });
     }
 
-    // transcript
     let transcript = (postedTranscript || debug_transcript || "").trim();
     if (!transcript) {
-      tmpPathToDelete = req.file.path; // includes proper ext now
+      tmpPathToDelete = req.file.path;
       transcript = await transcribeWithOpenAI(req.file.path, req.file.originalname || "audio.webm");
     }
-
-    // single declaration of targetLang
     const targetLang = (langFromForm || req.body.targetLang || "").trim();
 
-    // extract facts
+    // extract
     const sys =
       "Extract medical facts from the text. Output JSON with keys: detected_lang (ISO-639-1), meds (array of {name, dose?, unit?, freq?, notes?}), allergies (array of string), conditions (array of string), vitals { bp? {sys, dia}, weight? {value, unit} }, blood_type? (A+, A-, B+, B-, AB+, AB-, O+, O-). If uncertain, leave fields empty.";
-    const user =
-      `Text:\n${transcript}\n\nThe user may be Canadian English or French. Recognize expressions like "120 over 75" for blood pressure. Include generic/brand medication names; preserve unknown tokens as-is.`;
+    const user = `Text:\n${transcript}\n\nCanadian English or French is possible. Interpret “120 over 75” as blood pressure. Preserve unknown drug tokens.`;
     let facts = await callJSON(JSON_MODEL, sys, user);
+    if (!facts || typeof facts !== "object") facts = {};
 
-    // fallback regex if meds missing
+    // regex fallback
     function regexFallback() {
       const meds = [];
       const medRX = /\b([A-Za-z][A-Za-z0-9\-']{2,})\b(?:[^.\n]{0,40})?\b(\d+(?:\.\d+)?)\s?(iu|mcg|µg|mg|g|ml|mL|units?)\b/gi;
       let m;
-      while ((m = medRX.exec(transcript))) {
-        meds.push({ name: m[1], dose: m[2], unit: m[3] });
-      }
+      while ((m = medRX.exec(transcript))) meds.push({ name: m[1], dose: m[2], unit: m[3] });
       const allergyRX = /\ballergic to ([^.\n]+)/i;
       const a = allergyRX.exec(transcript);
       const allergies = a ? a[1].split(/,|\band\b/).map(s => s.trim()).filter(Boolean) : [];
@@ -253,7 +239,6 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       return { meds, allergies, conditions: [], vitals: { bp, weight } };
     }
 
-    if (!facts || typeof facts !== "object") facts = {};
     if (!Array.isArray(facts.meds) && !Array.isArray(facts.medications)) {
       const f = regexFallback();
       facts.meds = f.meds;
@@ -262,64 +247,54 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       facts.vitals = f.vitals;
     }
 
-    // normalize
+    // normalize facts
     const meds = (facts.meds || facts.medications || []).map(x => ({
       name: x.name || x.drug || "",
       dose: x.dose || x.dosage || "",
       unit: (x.unit || x.units || "").replace(/^µg$/i, "mcg"),
       freq: x.freq || x.frequency || "",
-      notes: x.notes || ""
+      notes: x.notes || "",
     })).filter(x => x.name);
 
     const allergies = Array.isArray(facts.allergies) ? facts.allergies : [];
     const conditions = Array.isArray(facts.conditions) ? facts.conditions : [];
     const vitals = facts.vitals && typeof facts.vitals === "object" ? facts.vitals : {};
     const detected_lang = (facts.detected_lang || "").trim() || "und";
-
     const bloodTypeFinal = (facts.blood_type && typeof facts.blood_type === "string")
       ? facts.blood_type.toUpperCase()
       : (blood_type || "");
 
     // original summary
-    const lines = [];
+    const parts = [];
     if (meds.length) {
-      lines.push("Medications:");
+      parts.push("Medications:");
       meds.forEach(m => {
-        const parts = [m.name];
-        if (m.dose) parts.push(m.dose + (m.unit ? ` ${m.unit}` : ""));
-        if (m.freq) parts.push(`(${m.freq})`);
-        if (m.notes) parts.push(`— ${m.notes}`);
-        lines.push("• " + parts.join(" "));
+        const p = [m.name];
+        if (m.dose) p.push(m.dose + (m.unit ? ` ${m.unit}` : ""));
+        if (m.freq) p.push(`(${m.freq})`);
+        if (m.notes) p.push(`— ${m.notes}`);
+        parts.push("• " + p.join(" "));
       });
     } else {
-      lines.push("Medications: none mentioned");
+      parts.push("Medications: none mentioned");
     }
-
-    lines.push("");
+    parts.push("");
     if (allergies.length) {
-      lines.push("Allergies:");
-      allergies.forEach(a => lines.push("• " + a));
+      parts.push("Allergies:");
+      allergies.forEach(a => parts.push("• " + a));
     } else {
-      lines.push("Allergies: none mentioned");
+      parts.push("Allergies: none mentioned");
     }
-
-    lines.push("");
+    parts.push("");
     if (conditions.length) {
-      lines.push("Conditions:");
-      conditions.forEach(c => lines.push("• " + c));
+      parts.push("Conditions:");
+      conditions.forEach(c => parts.push("• " + c));
     } else {
-      lines.push("Conditions: none mentioned");
+      parts.push("Conditions: none mentioned");
     }
-
-    if (vitals?.bp?.sys && vitals?.bp?.dia) {
-      lines.push("");
-      lines.push(`Blood pressure: ${vitals.bp.sys}/${vitals.bp.dia}`);
-    }
-    if (vitals?.weight?.value) {
-      lines.push(`Weight: ${vitals.weight.value} ${vitals.weight.unit || ""}`.trim());
-    }
-
-    const originalSummary = lines.join("\n");
+    if (vitals?.bp?.sys && vitals?.bp?.dia) parts.push("", `Blood pressure: ${vitals.bp.sys}/${vitals.bp.dia}`);
+    if (vitals?.weight?.value) parts.push(`Weight: ${vitals.weight.value} ${vitals.weight.unit || ""}`.trim());
+    const originalSummary = parts.join("\n");
 
     // translate if requested
     let translatedTranscript = "";
@@ -329,7 +304,8 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       translatedSummary   = await translateText(originalSummary, targetLang);
     }
 
-    // save
+    // persist
+    const idVal = Math.random().toString(36).slice(2, 12);
     await db.run(
       `INSERT INTO reports
         (id, patient_name, patient_email, emer_name, emer_phone, emer_email, blood_type,
@@ -337,28 +313,51 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
          meds_json, allergies_json, conditions_json, vitals_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        id, name || "", email || "", emer_name || "", emer_phone || "", emer_email || "", bloodTypeFinal,
+        idVal, name || "", email || "", emer_name || "", emer_phone || "", emer_email || "", bloodTypeFinal,
         transcript, originalSummary, targetLang || "", translatedTranscript,
         detected_lang, translatedSummary,
-        JSON.stringify(meds), JSON.stringify(allergies), JSON.stringify(conditions), JSON.stringify(vitals)
+        JSON.stringify(meds), JSON.stringify(allergies), JSON.stringify(conditions), JSON.stringify(vitals),
       ]
     );
 
-    // link + QR
-    const link = `${baseUrlFrom(req)}/reports/${id}`;
-    const qr = await QRCode.toDataURL(link);
-    res.json({ ok: true, id, link, qr });
+    // respond with link + (optional) dataURL QR for legacy UI
+    const link = `${baseUrlFrom(req)}/reports/${idVal}`;
+    let qr = "";
+    try {
+      qr = await QRCode.toDataURL(link);
+      console.log("🧾 QR generated (data URL length):", qr.length);
+    } catch (e) {
+      console.warn("⚠️ QR data URL generation failed, image will still render via /qrcode.png", e.message);
+    }
+
+    res.json({ ok: true, id: idVal, link, qr });
   } catch (e) {
     console.error("❌ Upload error:", e?.response?.data || e);
-    res
-      .status(500)
-      .json({ ok: false, error: String(e?.message || e || "Unknown server error") });
+    res.status(500).json({ ok: false, error: String(e?.message || e || "Unknown server error") });
   } finally {
-    try { if (tmpPathToDelete) fs.unlink(tmpPathToDelete, () => {}); } catch {}
+    // we purposely keep uploaded audio around during the request;
+    // delete here if you truly want no-at-rest storage:
+    // try { if (tmpPathToDelete) fs.unlink(tmpPathToDelete, () => {}); } catch {}
   }
 });
 
-// ---- Translate existing report
+// ----- NEW: QR image endpoint so the page can always render a real PNG
+app.get("/reports/:id/qrcode.png", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.get("SELECT id FROM reports WHERE id = ?", [id]);
+    if (!row) return res.status(404).send("Not found");
+    const link = `${baseUrlFrom(req)}/reports/${id}`;
+    const buf = await QRCode.toBuffer(link, { type: "png", margin: 1, width: 512 });
+    res.setHeader("Content-Type", "image/png");
+    res.send(buf);
+  } catch (e) {
+    console.error("❌ QR endpoint error:", e);
+    res.status(500).send("QR generation failed");
+  }
+});
+
+// ----- Translate existing report
 app.post("/reports/:id/translate", async (req, res) => {
   try {
     const id = req.params.id;
@@ -385,7 +384,7 @@ app.post("/reports/:id/translate", async (req, res) => {
   }
 });
 
-// ---- List reports (admin)
+// ----- List reports (admin)
 app.get("/reports", async (req, res) => {
   if ((req.query.password || "") !== ADMIN_PASSWORD) {
     return res.status(401).send("Unauthorized — add ?password=...");
@@ -407,7 +406,7 @@ app.get("/reports", async (req, res) => {
   `);
 });
 
-// ---- View single report (dual blocks + translate UI)
+// ----- View single report (shows QR)
 app.get("/reports/:id", async (req, res) => {
   const r = await db.get("SELECT * FROM reports WHERE id = ?", [req.params.id]);
   if (!r) return res.status(404).send("Report not found");
@@ -478,10 +477,12 @@ app.get("/reports/:id", async (req, res) => {
       .btn-back{background:#6b46c1;color:#fff}
       .linkbox{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid rgba(0,0,0,.1);background:#f7fafc;word-break:break-all}
       @media print {.toolbar{display:none}}
-      .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-      @media (max-width:860px){ .grid{grid-template-columns:1fr} }
+      .grid{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+      @media (max-width:980px){ .grid{grid-template-columns:1fr} }
       .block h3{margin:10px 0 8px}
       .kvs p{margin:4px 0}
+      .qrbox{display:flex;justify-content:center;align-items:center;border:1px dashed #a0aec0;border-radius:12px;padding:12px;background:#f7fafc}
+      .qrbox img{max-width:100%;height:auto}
     </style>
   </head>
   <body>
@@ -501,52 +502,49 @@ app.get("/reports/:id", async (req, res) => {
         ${ (r.translated || r.translated_summary) ? "" : `<div class="row">${translatePicker}</div>` }
 
         <div class="row">
-          <div class="report-card" style="width:100%">
-            <div class="kvs">
-              <p><b>Created:</b> ${esc(r.created)}</p>
-              <p><b>Patient:</b> ${esc(r.patient_name)} ${r.blood_type ? `(${esc(r.blood_type)})` : ""}</p>
-              <p><b>Email:</b> ${r.patient_email ? `<a href="mailto:${esc(r.patient_email)}">${esc(r.patient_email)}</a>` : ""}</p>
-              <p><b>Emergency:</b> ${esc(r.emer_name || "")}${r.emer_phone ? " · "+esc(r.emer_phone) : ""}${r.emer_email ? ` · <a href="mailto:${esc(r.emer_email)}">${esc(r.emer_email)}</a>` : ""}</p>
-            </div>
-            <hr/>
-
-            <div class="grid">
-              <div class="block">
-                <h3>Summary (Original${r.detected_lang?`: ${esc(r.detected_lang)}`:""})</h3>
-                <pre>${esc(r.summary || "")}</pre>
-
-                <h3>Transcript (Original)</h3>
-                <pre>${esc(r.transcript || "")}</pre>
-
-                <h3>Medications</h3>
-                ${medsList}
-
-                <h3>Allergies</h3>
-                ${allergiesList}
-
-                <h3>Conditions</h3>
-                ${conditionsList}
-
-                ${vitalsBlock}
+          <div class="grid" style="width:100%">
+            <div class="block">
+              <div class="kvs">
+                <p><b>Created:</b> ${esc(r.created)}</p>
+                <p><b>Patient:</b> ${esc(r.patient_name)} ${r.blood_type ? \`(\${esc(r.blood_type)})\` : ""}</p>
+                <p><b>Email:</b> ${r.patient_email ? \`<a href="mailto:\${esc(r.patient_email)}">\${esc(r.patient_email)}</a>\` : ""}</p>
+                <p><b>Emergency:</b> ${esc(r.emer_name || "")}${r.emer_phone ? " · "+esc(r.emer_phone) : ""}${r.emer_email ? \` · <a href="mailto:\${esc(r.emer_email)}">\${esc(r.emer_email)}</a>\` : ""}</p>
               </div>
+              <hr/>
 
-              ${ (r.translated || r.translated_summary) ? `
-              <div class="block">
+              <h3>Summary (Original${r.detected_lang?`: ${esc(r.detected_lang)}`:""})</h3>
+              <pre>${esc(r.summary || "")}</pre>
+
+              <h3>Transcript (Original)</h3>
+              <pre>${esc(r.transcript || "")}</pre>
+
+              <h3>Medications</h3>
+              ${medsList}
+
+              <h3>Allergies</h3>
+              ${allergiesList}
+
+              <h3>Conditions</h3>
+              ${conditionsList}
+
+              ${vitalsBlock}
+
+              ${(r.translated || r.translated_summary) ? `
+                <hr/>
                 <h3>Summary (Translated${r.lang?`: ${esc(r.lang)}`:""})</h3>
                 <pre>${esc(r.translated_summary || "")}</pre>
 
                 <h3>Transcript (Translated)</h3>
                 <pre>${esc(r.translated || "")}</pre>
+              ` : ""}
+            </div>
 
-                <h3>Medications (Translated)</h3>
-                ${medsList}
-
-                <h3>Allergies (Translated)</h3>
-                ${allergiesList}
-
-                <h3>Conditions (Translated)</h3>
-                ${conditionsList}
-              </div>` : "" }
+            <div class="block">
+              <h3>QR Code</h3>
+              <div class="qrbox">
+                <img alt="QR to this report" src="/reports/${r.id}/qrcode.png"/>
+              </div>
+              <p class="muted" style="margin-top:8px">Scan with a phone to open this exact report.</p>
             </div>
           </div>
         </div>
@@ -574,7 +572,7 @@ app.get("/reports/:id", async (req, res) => {
   `);
 });
 
-// ---- Start
+// ----- Start
 app.listen(PORT, () => {
   console.log(`✅ Backend listening on ${PORT}`);
 });
