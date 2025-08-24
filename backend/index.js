@@ -14,15 +14,31 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 4000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
-const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o";       // summaries/translations
-const JSON_MODEL = process.env.OPENAI_JSON_MODEL || "gpt-4o-mini";  // JSON extraction
+const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o";
+const JSON_MODEL = process.env.OPENAI_JSON_MODEL || "gpt-4o-mini";
 
-// ---------- Middleware / static ----------
+// ---- Resolve public dir (supports backend/public or frontend/public)
+function resolvePublicDir() {
+  const candidates = [
+    path.join(process.cwd(), "backend", "public"),
+    path.join(process.cwd(), "public"),
+    path.join(process.cwd(), "frontend", "public")
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {}
+  }
+  return path.join(process.cwd(), "public");
+}
+const PUBLIC_DIR = resolvePublicDir();
+
+// ---- Middleware / static
 app.use(bodyParser.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(process.cwd(), "public")));
+app.use(express.static(PUBLIC_DIR));
 
-// ---------- DB (sqlite3 only, with small promise wrappers) ----------
+// ---- DB (sqlite3 only + tiny promise wrappers)
 const dbFile = path.join(process.cwd(), "data.sqlite");
 sqlite3.verbose();
 const dbRaw = new sqlite3.Database(dbFile);
@@ -32,7 +48,7 @@ const db = {
     return new Promise((resolve, reject) => {
       dbRaw.run(sql, params, function (err) {
         if (err) return reject(err);
-        resolve(this); // has .lastID, .changes
+        resolve(this);
       });
     });
   },
@@ -71,7 +87,13 @@ async function ensureSchema() {
     );
   `);
 
-  async function addCol(name, def) { try { await db.exec(\`ALTER TABLE reports ADD COLUMN \${name} \${def}\`); } catch {} }
+  async function addCol(name, def) {
+    try {
+      await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`);
+    } catch (e) {
+      // ignore if exists
+    }
+  }
   await addCol("detected_lang", "TEXT");
   await addCol("translated_summary", "TEXT");
   await addCol("meds_json", "TEXT");
@@ -81,11 +103,10 @@ async function ensureSchema() {
 }
 await ensureSchema();
 
-// ---------- OpenAI ----------
+// ---- OpenAI
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function transcribeWithOpenAI(filePath, filename = "audio.webm") {
-  // Try gpt-4o-mini-transcribe first, fallback to whisper-1
   try {
     const r = await openai.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
@@ -111,7 +132,8 @@ async function callJSON(model, sys, user) {
       { role: "user", content: user }
     ]
   });
-  return JSON.parse(resp.choices[0].message.content || "{}");
+  const content = resp.choices?.[0]?.message?.content || "{}";
+  try { return JSON.parse(content); } catch { return {}; }
 }
 
 async function translateText(text, targetLang) {
@@ -123,7 +145,7 @@ async function translateText(text, targetLang) {
     temperature: 0.2,
     messages: [{ role: "system", content: sys }, { role: "user", content: user }]
   });
-  return resp.choices[0].message.content?.trim() || "";
+  return resp.choices?.[0]?.message?.content?.trim() || "";
 }
 
 function safeParseJSON(s, d) { try { return JSON.parse(s || ""); } catch { return d; } }
@@ -138,18 +160,18 @@ function baseUrlFrom(req) {
   return process.env.PUBLIC_BASE_URL || inferBaseUrl(req);
 }
 
-// ---------- Upload storage ----------
+// ---- Upload storage
 const upload = multer({ dest: "uploads/" });
 
-// ---------- Health ----------
+// ---- Health
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
-// ---------- Home ----------
+// ---- Home
 app.get("/", (req, res) => {
-  res.sendFile(path.join(process.cwd(), "public/index.html"));
+  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
-// ---------- Upload: record -> transcribe -> extract -> save -> link/QR ----------
+// ---- Upload: record -> transcribe -> extract -> save -> link/QR
 app.post("/upload", upload.single("audio"), async (req, res) => {
   let tmpPathToDelete = null;
   try {
@@ -161,7 +183,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       debug_transcript
     } = req.body;
 
-    // 1) transcript
+    // transcript
     let transcript = (postedTranscript || debug_transcript || "").trim();
     if (!transcript) {
       if (!req.file || !req.file.path) {
@@ -171,21 +193,18 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       transcript = await transcribeWithOpenAI(req.file.path, req.file.originalname || "audio.webm");
     }
 
-    // 2) target language (single declaration; no duplicates)
-    const targetLangRaw = langFromForm || req.body.targetLang || "";
-    const targetLang = targetLangRaw.trim();
+    // target language (single declaration)
+    const targetLang = (langFromForm || req.body.targetLang || "").trim();
 
-    // 3) extract facts
+    // extract facts
     const sys =
       "Extract medical facts from the text. Output JSON with keys: detected_lang (ISO-639-1), meds (array of {name, dose?, unit?, freq?, notes?}), allergies (array of string), conditions (array of string), vitals { bp? {sys, dia}, weight? {value, unit} }, blood_type? (A+, A-, B+, B-, AB+, AB-, O+, O-). If uncertain, leave fields empty.";
     const user =
       `Text:\n${transcript}\n\nThe user may be Canadian English or French. Recognize expressions like "120 over 75" for blood pressure. Include generic/brand medication names; preserve unknown tokens as-is.`;
 
-    let facts = {};
-    try { facts = await callJSON(JSON_MODEL, sys, user); }
-    catch { facts = {}; }
+    let facts = await callJSON(JSON_MODEL, sys, user);
 
-    // 4) fallback regex if meds missing
+    // fallback regex if meds missing
     function regexFallback() {
       const meds = [];
       const medRX = /\b([A-Za-z][A-Za-z0-9\-']{2,})\b(?:[^.\n]{0,40})?\b(\d+(?:\.\d+)?)\s?(iu|mcg|µg|mg|g|ml|mL|units?)\b/gi;
@@ -214,7 +233,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       facts.vitals = f.vitals;
     }
 
-    // 5) normalize
+    // normalize
     const meds = (facts.meds || facts.medications || []).map(x => ({
       name: x.name || x.drug || "",
       dose: x.dose || x.dosage || "",
@@ -232,7 +251,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       ? facts.blood_type.toUpperCase()
       : (blood_type || "");
 
-    // 6) original summary
+    // original summary
     const lines = [];
     if (meds.length) {
       lines.push("Medications:");
@@ -273,7 +292,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
 
     const originalSummary = lines.join("\n");
 
-    // 7) translate if requested
+    // translate if requested
     let translatedTranscript = "";
     let translatedSummary = "";
     if (targetLang) {
@@ -281,7 +300,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       translatedSummary   = await translateText(originalSummary, targetLang);
     }
 
-    // 8) save
+    // save
     await db.run(
       `INSERT INTO reports
         (id, patient_name, patient_email, emer_name, emer_phone, emer_email, blood_type,
@@ -296,7 +315,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       ]
     );
 
-    // 9) link + QR
+    // link + QR
     const link = `${baseUrlFrom(req)}/reports/${id}`;
     const qr = await QRCode.toDataURL(link);
     res.json({ ok: true, id, link, qr });
@@ -308,12 +327,11 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
   }
 });
 
-// ---------- Translate existing report ----------
+// ---- Translate existing report
 app.post("/reports/:id/translate", async (req, res) => {
   try {
     const id = req.params.id;
-    const toRaw = (req.body.to || req.query.to || "");
-    const to = toRaw.trim(); // single declaration
+    const to = (req.body.to || req.query.to || "").trim();
     const pw = (req.body.password || req.query.password || "").trim();
 
     const r = await db.get("SELECT * FROM reports WHERE id = ?", [id]);
@@ -336,7 +354,7 @@ app.post("/reports/:id/translate", async (req, res) => {
   }
 });
 
-// ---------- List reports (admin) ----------
+// ---- List reports (admin)
 app.get("/reports", async (req, res) => {
   if ((req.query.password || "") !== ADMIN_PASSWORD) {
     return res.status(401).send("Unauthorized — add ?password=...");
@@ -358,7 +376,7 @@ app.get("/reports", async (req, res) => {
   `);
 });
 
-// ---------- View single report (dual blocks + translate UI) ----------
+// ---- View single report (dual blocks + translate UI)
 app.get("/reports/:id", async (req, res) => {
   const r = await db.get("SELECT * FROM reports WHERE id = ?", [req.params.id]);
   if (!r) return res.status(404).send("Report not found");
@@ -525,7 +543,7 @@ app.get("/reports/:id", async (req, res) => {
   `);
 });
 
-// ---------- Start ----------
+// ---- Start
 app.listen(PORT, () => {
   console.log(`✅ Backend listening on ${PORT}`);
 });
