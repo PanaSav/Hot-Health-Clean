@@ -1,4 +1,4 @@
-// backend/index.js — fixes: robust parsing, /reports list, ?lang translate, QR + links solid
+// backend/index.js
 import express from "express";
 import multer from "multer";
 import bodyParser from "body-parser";
@@ -95,12 +95,10 @@ function renderTemplate(tpl, data) {
 }
 
 // —— Parsing helpers ————————————————————————————————————————————
-// Token stop words that shouldn’t become “conditions”
 const NOT_CONDITION = new Set([
   "three medications","medications","medication","medicine","meds",
   "allergies","allergy","allergic","mold","dust"
 ]);
-// Normalize commas/and splitting
 function splitList(s) {
   return s.split(/,| and |\band\b/gi).map(x => x.trim()).filter(Boolean);
 }
@@ -125,29 +123,26 @@ function parseHealthInfo(textRaw = "") {
   if (mSlash) bp = `${mSlash[1]}/${mSlash[2]}`;
   else if (mOver) bp = `${mOver[1]}/${mOver[2]}`;
 
-  // Weight: "215 pounds|lbs|kg"
+  // Weight
   let weight = null;
   const mW = lower.match(/\b(\d{2,3})\s*(pounds|lbs|kg)\b/);
   if (mW) weight = `${mW[1]} ${mW[2]}`;
 
-  // Allergies: look for "allergic to|allergy to"
+  // Allergies
   let allergies = [];
   const mAll = lower.match(/\ballerg(?:ic|y)\s+to\s+([^.\n]+)/);
   if (mAll) {
-    const raw = mAll[1].replace(/\bi have\b.+/i,""); // stop “i have …”
+    const raw = mAll[1].replace(/\bi have\b.+/i,"");
     allergies = splitList(raw).filter(w => w && !/^(i|have|a|an)$/.test(w));
   }
 
-  // Conditions: phrases
+  // Conditions
   let conditions = [];
   const candidates = [];
-  // diagnosed with X
   const r1 = text.match(/\bdiagnosed with ([a-z0-9 \-]+?)([.,;]|$)/i);
   if (r1) candidates.push(r1[1].trim());
-  // I have a/an X (disease|condition|…)
   const r2 = text.match(/\bi have (?:a |an )?([a-z0-9 \-]+?)(?: disease| condition| issue| problem|$|[.,;])/i);
   if (r2) candidates.push(r2[1].trim());
-  // standalone “… condition”
   const r3 = text.match(/\b([a-z0-9 \-]+) condition\b/i);
   if (r3) candidates.push(r3[1].trim());
 
@@ -155,27 +150,37 @@ function parseHealthInfo(textRaw = "") {
     c = c.replace(/\b(my|the|a|an)\b/gi,"").trim();
     if (!c || c.length < 3) continue;
     if (NOT_CONDITION.has(c.toLowerCase())) continue;
-    // don’t add if looks like “three medications”
     if (/\bmedications?\b/i.test(c)) continue;
     conditions.push(c);
   }
   conditions = Array.from(new Set(conditions));
 
-  // Medications: ProperName + dose
+  // Medications
   const meds = [];
-  // Capture words starting with capital letter (brand/generic) plus dose
   const medRegex = /\b([A-Z][A-Za-z0-9-]{2,})\b[^.\n,;]*?\b(\d{1,4})\s*(mg|mcg|g|ml|milligrams|micrograms|grams|milliliters)?\b/g;
   let m;
   while ((m = medRegex.exec(text))) {
     const name = m[1];
     const dose = m[2];
     const unit = normalizeUnit(m[3]);
-    // filter obvious non-drug tokens like "L-[bloodtype]P-..."
     if (/^\w-\[bloodtype\]/i.test(name)) continue;
     meds.push(`${name} — ${dose} ${unit}`);
   }
 
   return { meds, allergies, conditions, bp, weight };
+}
+
+async function translateText(target, text) {
+  if (!target || target === "en" || !text) return text;
+  const comp = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0.2,
+    messages: [
+      { role: "system", content: `Translate to ${target}. Respond with only the translated text.` },
+      { role: "user", content: text }
+    ]
+  });
+  return comp?.choices?.[0]?.message?.content?.trim() || text;
 }
 // ———————————————————————————————————————————————————————————————
 
@@ -216,15 +221,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     const target = meta.lang_target;
     if (target && target !== "en") {
       try {
-        const comp = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          temperature: 0.2,
-          messages: [
-            { role: "system", content: `Translate to ${target}. Respond with only the translated text.` },
-            { role: "user", content: transcript }
-          ]
-        });
-        translation = comp?.choices?.[0]?.message?.content?.trim() || "";
+        translation = await translateText(target, transcript);
       } catch (e) {
         console.warn("Translation failed:", e?.message || e);
       }
@@ -255,24 +252,26 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
   }
 });
 
-// Minimal /reports list with translate links
+// Minimal /reports list
 app.get("/reports", async (req, res) => {
   try {
     const rows = await dbAll(
-      "SELECT id, created, patient_name, lang_target FROM reports ORDER BY created DESC LIMIT 100"
+      "SELECT id, created, patient_name FROM reports ORDER BY created DESC LIMIT 100"
     );
     const items = rows.map(r => {
       const base = `${PUBLIC_BASE_URL}/reports/${r.id}`;
-      const t = encodeURIComponent("fr");
       return `<li>
         <a href="${esc(base)}" target="_blank">${esc(r.id)}</a>
         — <small>${esc(r.created)}${r.patient_name ? " • " + esc(r.patient_name) : ""}</small>
         <div class="small">
-          Translate: 
+          Translate:
           <a href="${esc(base)}?lang=fr" target="_blank">FR</a> ·
           <a href="${esc(base)}?lang=es" target="_blank">ES</a> ·
           <a href="${esc(base)}?lang=pt" target="_blank">PT</a> ·
-          <a href="${esc(base)}?lang=de" target="_blank">DE</a>
+          <a href="${esc(base)}?lang=de" target="_blank">DE</a> ·
+          <a href="${esc(base)}?lang=sr" target="_blank">SR</a> ·
+          <a href="${esc(base)}?lang=pa" target="_blank">PA</a> ·
+          <a href="${esc(base)}?lang=he" target="_blank">HE</a>
         </div>
       </li>`;
     }).join("");
@@ -290,7 +289,7 @@ app.get("/reports", async (req, res) => {
   }
 });
 
-// Single report; ?lang=xx will render translated block on the fly
+// Single report; ?lang=xx renders translated blocks (transcript + summary)
 app.get("/reports/:id", async (req, res) => {
   try {
     const id = req.params.id;
@@ -304,25 +303,46 @@ app.get("/reports/:id", async (req, res) => {
     const detectedLang = row.lang_detected || "en";
     let targetLang = (req.query.lang || row.lang_target || "").trim();
 
+    // Build original summary strings
+    const medsText = meds.length ? meds.join(", ") : "None mentioned";
+    const allergiesText = allergies.length ? allergies.join(", ") : "None mentioned";
+    const conditionsText = conditions.length ? conditions.join(", ") : "None mentioned";
+    const bpText = row.bp || "Not provided";
+    const weightText = row.weight || "Not provided";
+
+    // Transcript
     let translatedTranscript =
       row.translation && row.translation.trim() ? row.translation : row.transcript;
 
-    // On-the-fly translation if requested
-    if (req.query.lang && req.query.lang !== detectedLang) {
+    // Translated summary (on the fly if target differs)
+    let medsTextTr = medsText, allergiesTextTr = allergiesText, conditionsTextTr = conditionsText;
+    let bpTextTr = bpText, weightTextTr = weightText;
+
+    if (targetLang && targetLang !== detectedLang) {
       try {
-        const comp = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          temperature: 0.2,
-          messages: [
-            { role: "system", content: `Translate to ${req.query.lang}. Respond with only the translated text.` },
-            { role: "user", content: row.transcript || "" }
-          ]
-        });
-        translatedTranscript = comp?.choices?.[0]?.message?.content?.trim() || row.transcript || "";
-        targetLang = req.query.lang;
+        const [a,b,c,d,e] = await Promise.all([
+          translateText(targetLang, medsText),
+          translateText(targetLang, allergiesText),
+          translateText(targetLang, conditionsText),
+          translateText(targetLang, bpText),
+          translateText(targetLang, weightText),
+        ]);
+        medsTextTr = a; allergiesTextTr = b; conditionsTextTr = c;
+        bpTextTr = d; weightTextTr = e;
+
+        // Also translate transcript if not already
+        if (!row.translation || detectedLang === targetLang) {
+          translatedTranscript = await translateText(targetLang, row.transcript || "");
+        }
       } catch (e) {
-        console.warn("Translate (view) failed:", e?.message || e);
+        console.warn("Translate (summary/view) failed:", e?.message || e);
+        targetLang = detectedLang; // fall back
+        medsTextTr = medsText; allergiesTextTr = allergiesText; conditionsTextTr = conditionsText;
+        bpTextTr = bpText; weightTextTr = weightText;
+        translatedTranscript = row.transcript || "";
       }
+    } else {
+      targetLang = detectedLang;
     }
 
     const shareUrl = `${PUBLIC_BASE_URL}/reports/${id}`;
@@ -330,10 +350,6 @@ app.get("/reports/:id", async (req, res) => {
 
     const tplPath = path.join(__dirname, "templates", "report.html");
     const tpl = fs.existsSync(tplPath) ? fs.readFileSync(tplPath, "utf8") : null;
-
-    const medsText = meds.length ? meds.join(", ") : "None mentioned";
-    const allergiesText = allergies.length ? allergies.join(", ") : "None mentioned";
-    const conditionsText = conditions.length ? conditions.join(", ") : "None mentioned";
 
     const html = tpl
       ? renderTemplate(tpl, {
@@ -351,8 +367,14 @@ app.get("/reports/:id", async (req, res) => {
           medications: esc(medsText),
           allergies: esc(allergiesText),
           conditions: esc(conditionsText),
-          bp: esc(row.bp || "Not provided"),
-          weight: esc(row.weight || "Not provided"),
+          bp: esc(bpText),
+          weight: esc(weightText),
+
+          medicationsT: esc(medsTextTr),
+          allergiesT: esc(allergiesTextTr),
+          conditionsT: esc(conditionsTextTr),
+          bpT: esc(bpTextTr),
+          weightT: esc(weightTextTr),
 
           detectedLang: esc(detectedLang),
           targetLang: esc(targetLang || detectedLang),
@@ -362,27 +384,51 @@ app.get("/reports/:id", async (req, res) => {
       : `<!doctype html><html><head><meta charset="utf-8"/>
          <title>Report ${esc(id)}</title>
          <link rel="stylesheet" href="/styles.css"/>
-         <style>@media print{.print-hide{display:none}}</style>
+         <style>
+           .toolbar{display:flex;gap:10px;align-items:center}
+           @media print{.print-hide{display:none}}
+         </style>
         </head><body>
          <div class="header-shell"><header><h1>Hot Health — Report</h1></header></div>
          <div class="shell"><main class="wrap">
-           <div class="card print-hide">
-             <button onclick="window.print()">🖨️ Print</button>
-             <p><b>Share:</b> <a href="${esc(shareUrl)}">${esc(shareUrl)}</a></p>
-             <img src="${esc(qrDataUrl)}" width="160" alt="QR"/>
+           <div class="section print-hide">
+             <div class="toolbar">
+               <button onclick="window.print()">🖨️ Print</button>
+               <a href="${esc(shareUrl)}" target="_blank">Open share link</a>
+               <a href="/reports" target="_blank">Open All Reports</a>
+             </div>
+             <div><b>Created:</b> ${esc(row.created || "")}</div>
            </div>
-           <div class="card"><h2>Patient</h2>
+
+           <div class="section"><h2>Patient</h2>
              <p>${esc(row.patient_name || "")} — <a href="mailto:${esc(row.patient_email || "")}">${esc(row.patient_email || "")}</a></p>
              <p>EC: ${esc(row.emer_name || "")} ${esc(row.emer_phone || "")} — <a href="mailto:${esc(row.emer_email || "")}">${esc(row.emer_email || "")}</a></p>
              <p>Blood: ${esc(row.blood_type || "")}</p>
            </div>
-           <div class="card"><h2>Summary</h2>
-             <p><b>Medications:</b> ${meds.map(esc).join(", ") || "None mentioned"}</p>
-             <p><b>Allergies:</b> ${allergies.map(esc).join(", ") || "None mentioned"}</p>
-             <p><b>Conditions:</b> ${conditions.map(esc).join(", ") || "None mentioned"}</p>
-             <p><b>BP:</b> ${esc(row.bp || "Not provided")} — <b>Weight:</b> ${esc(row.weight || "Not provided")}</p>
+
+           <div class="section">
+             <h2>Summary</h2>
+             <div style="display:flex;gap:12px;flex-wrap:wrap">
+               <div style="flex:1;min-width:280px">
+                 <h3>Original (${esc(detectedLang)})</h3>
+                 <p><b>Medications:</b> ${esc(medsText)}</p>
+                 <p><b>Allergies:</b> ${esc(allergiesText)}</p>
+                 <p><b>Conditions:</b> ${esc(conditionsText)}</p>
+                 <p><b>Blood Pressure:</b> ${esc(bpText)}</p>
+                 <p><b>Weight:</b> ${esc(weightText)}</p>
+               </div>
+               <div style="flex:1;min-width:280px">
+                 <h3>Translated (${esc(targetLang)})</h3>
+                 <p><b>Medications:</b> ${esc(medsTextTr)}</p>
+                 <p><b>Allergies:</b> ${esc(allergiesTextTr)}</p>
+                 <p><b>Conditions:</b> ${esc(conditionsTextTr)}</p>
+                 <p><b>Blood Pressure:</b> ${esc(bpTextTr)}</p>
+                 <p><b>Weight:</b> ${esc(weightTextTr)}</p>
+               </div>
+             </div>
            </div>
-           <div class="card">
+
+           <div class="section">
              <h2>Transcript</h2>
              <div style="display:flex; gap:12px; flex-wrap:wrap">
                <div style="flex:1; min-width:280px">
@@ -394,6 +440,12 @@ app.get("/reports/:id", async (req, res) => {
                  <pre>${esc(translatedTranscript || "")}</pre>
                </div>
              </div>
+           </div>
+
+           <div class="section">
+             <h2>QR</h2>
+             <img src="${esc(qrDataUrl)}" width="180" alt="QR for this report"/>
+             <p><a href="${esc(shareUrl)}">${esc(shareUrl)}</a></p>
            </div>
          </main></div>
         </body></html>`;
