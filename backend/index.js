@@ -1,79 +1,71 @@
-// backend/index.js
+// backend/index.js — sqlite3-only edition
 import express from "express";
 import multer from "multer";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import sqlite3 from "sqlite3";
-import { open as openSqlite } from "sqlite";
 import QRCode from "qrcode";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { promisify } from "util";
 
 dotenv.config();
 
-// --- Paths / constants ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// --- Config ---
 const PORT = Number(process.env.PORT || 4000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
-
-// Prefer Render's public URL if present, else env, else localhost
 const PUBLIC_BASE_URL =
-  process.env.RENDER_EXTERNAL_URL?.trim() ||
-  process.env.PUBLIC_BASE_URL?.trim() ||
+  (process.env.RENDER_EXTERNAL_URL?.trim()) ||
+  (process.env.PUBLIC_BASE_URL?.trim()) ||
   `http://localhost:${PORT}`;
 
+// --- Express ---
 const app = express();
+app.use(bodyParser.json({ limit: "2mb" }));
+app.use(bodyParser.urlencoded({ extended: true, limit: "2mb" }));
 
-// --- Ensure folders exist ---
-const uploadsDir = path.join(__dirname, "uploads");
-try {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-  console.log(`📁 Upload dir ready: ${uploadsDir}`);
-} catch (e) {
-  console.warn("⚠️ Could not ensure uploads dir:", e.message);
-}
-
-// --- Static frontend from backend/public ---
+// Serve static assets from backend/public (Render-safe)
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// --- Parsing middleware ---
-app.use(bodyParser.json({ limit: "2mb" }));
-app.use(bodyParser.urlencoded({ extended: true, limit: "2mb" }));
+// Ensure uploads dir
+const uploadsDir = path.join(__dirname, "uploads");
+fs.mkdirSync(uploadsDir, { recursive: true });
 
-// --- Multer for uploads (to /backend/uploads) ---
+// Multer storage
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadsDir),
-    filename: (req, file, cb) => {
-      // unique-ish file name (epoch + 6 random)
-      const base = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webm`;
-      cb(null, base);
-    }
+    filename: (req, file, cb) =>
+      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webm`)
   }),
-  limits: { fileSize: 25 * 1024 * 1024 } // 25MB
+  limits: { fileSize: 25 * 1024 * 1024 }
 });
 
-// --- OpenAI client ---
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// --- OpenAI ---
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// --- SQLite setup ---
-let db;
+// --- SQLite3 (promisified) ---
+sqlite3.verbose();
+const dbPath = path.join(__dirname, "data.db");
+const db = new sqlite3.Database(dbPath);
+
+// Promisify ops we use
+const dbRun = promisify(db.run.bind(db));
+const dbGet = promisify(db.get.bind(db));
+const dbAll = promisify(db.all.bind(db));
+const dbExec = promisify(db.exec.bind(db));
+
+// Init DB
 async function initDB() {
-  db = await openSqlite({
-    filename: path.join(__dirname, "data.db"),
-    driver: sqlite3.Database
-  });
-
-  await db.exec(`
+  await dbExec(`
     CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY,
       created TEXT,
@@ -95,26 +87,22 @@ async function initDB() {
     );
   `);
 
-  // Idempotent add-column helper (avoids errors if already present)
+  // add-col helper (ignore if exists)
   async function addCol(name, def) {
     try {
-      await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`);
-    } catch {
-      // ignore if exists
-    }
+      await dbExec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`);
+    } catch {}
   }
-
-  // If you add new columns later, add them here with addCol(...)
   await addCol("lang_detected", "TEXT");
   await addCol("lang_target", "TEXT");
   await addCol("translation", "TEXT");
   await addCol("bp", "TEXT");
   await addCol("weight", "TEXT");
 
-  console.log("✅ DB ready");
+  console.log("✅ DB ready:", dbPath);
 }
 
-// --- Helpers ---
+// Helpers
 function esc(s = "") {
   return String(s)
     .replaceAll("&", "&amp;")
@@ -123,19 +111,18 @@ function esc(s = "") {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 }
-
 function renderTemplate(tpl, data) {
-  return tpl.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, key) => {
-    return key in data ? data[key] : "";
-  });
+  return tpl.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, key) =>
+    key in data ? data[key] : ""
+  );
 }
 
-// Simple heuristic parser
+// Heuristic parsing
 function parseHealthInfo(textRaw = "") {
   const text = textRaw.trim();
   const lower = text.toLowerCase();
 
-  // Blood pressure: "120/75" or "120 over 75"
+  // BP
   let bp = null;
   const bpSlash = lower.match(/\b(\d{2,3})\s*\/\s*(\d{2,3})\b/);
   if (bpSlash) bp = `${bpSlash[1]}/${bpSlash[2]}`;
@@ -144,25 +131,21 @@ function parseHealthInfo(textRaw = "") {
     if (bpOver) bp = `${bpOver[1]}/${bpOver[2]}`;
   }
 
-  // Weight: e.g. "215 pounds", "80 kg", "180 lbs"
+  // Weight
   let weight = null;
   const w = lower.match(/\b(\d{2,3})\s*(pounds|lbs|kg)\b/);
   if (w) weight = `${w[1]} ${w[2]}`;
 
-  // Allergies: "allergic to mold and dust"
+  // Allergies
   let allergies = [];
   const idx = lower.indexOf("allergic to");
   if (idx >= 0) {
     const after = lower.slice(idx + "allergic to".length);
-    // take until period or line end
     const end = after.split(/[.\n]/)[0];
-    allergies = end
-      .split(/,|and/)
-      .map(s => s.trim())
-      .filter(Boolean);
+    allergies = end.split(/,|and/).map(s => s.trim()).filter(Boolean);
   }
 
-  // Conditions: find phrases like "I have X", "diagnosed with X", "kidney condition"
+  // Conditions
   let conditions = [];
   const condRegexes = [
     /\bdiagnosed with ([a-z0-9 -]+)/i,
@@ -178,8 +161,7 @@ function parseHealthInfo(textRaw = "") {
   }
   conditions = Array.from(new Set(conditions));
 
-  // Medications: word-like drug then a dose
-  // capture units mg|mcg|g|ml (optional)
+  // Meds (simple)
   const meds = [];
   const medRegex = /\b([A-Z][A-Za-z0-9-]{1,})\b[^.\n,;]*\b(\d{1,4})\s*(mg|mcg|g|ml|milligrams|micrograms|grams|milliliters)?\b/gi;
   let m;
@@ -187,7 +169,6 @@ function parseHealthInfo(textRaw = "") {
     const name = m[1];
     const dose = m[2];
     const unit = (m[3] || "mg").toLowerCase();
-    // filter out things that look like placeholders e.g. L-[bloodtype]...
     if (!/^\w-\[bloodtype\]/i.test(name)) {
       meds.push(`${name} — ${dose} ${unit}`);
     }
@@ -196,17 +177,14 @@ function parseHealthInfo(textRaw = "") {
   return { meds, allergies, conditions, bp, weight };
 }
 
-// --- Upload route ---
+// Upload
 app.post("/upload", upload.single("audio"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ ok: false, error: "No file" });
-    }
+    if (!req.file) return res.status(400).json({ ok: false, error: "No file" });
 
     const filePath = req.file.path;
-    const hasFile = fs.existsSync(filePath);
-    if (!hasFile) {
-      return res.status(400).json({ ok: false, error: "Upload failed (missing file on disk)" });
+    if (!fs.existsSync(filePath)) {
+      return res.status(400).json({ ok: false, error: "Upload missing on disk" });
     }
 
     const meta = {
@@ -219,15 +197,14 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       lang_target: (req.body.lang || "").trim()
     };
 
-    // Transcribe
-    console.log("📥 Upload received:", {
-      hasFile: true,
-      filePath,
-      originalName: req.file.originalname,
+    console.log("📥 Upload:", {
+      path: filePath,
+      original: req.file.originalname,
       mime: req.file.mimetype,
       size: req.file.size
     });
 
+    // Transcribe
     let transcript = "";
     try {
       const stream = fs.createReadStream(filePath);
@@ -237,14 +214,14 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       });
       transcript = (tr?.text || "").trim();
       console.log("🗣️ Transcribed chars:", transcript.length);
-    } catch (err) {
-      console.error("❌ Transcription error:", err?.message || err);
+    } catch (e) {
+      console.error("❌ Transcription error:", e?.message || e);
       return res.status(500).json({ ok: false, error: "Transcription failed" });
     }
 
     const { meds, allergies, conditions, bp, weight } = parseHealthInfo(transcript);
 
-    // Optional translation (dual-block will still show if empty)
+    // Optional translation
     let translation = "";
     const target = meta.lang_target;
     if (target && target !== "en") {
@@ -259,13 +236,13 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
         });
         translation = comp?.choices?.[0]?.message?.content?.trim() || "";
       } catch (e) {
-        console.warn("⚠️ Translation failed; continuing with original:", e?.message || e);
+        console.warn("⚠️ Translation failed:", e?.message || e);
       }
     }
 
-    // Insert into DB
+    // Insert
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-    await db.run(
+    await dbRun(
       `INSERT INTO reports
        (id, created, patient_name, patient_email, emer_name, emer_phone, emer_email, blood_type,
         transcript, translation, lang_detected, lang_target, medications, allergies, conditions, bp, weight)
@@ -280,8 +257,8 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
         meta.blood_type,
         transcript,
         translation,
-        "auto",              // detected (not running a detect call; use "auto")
-        target || "",        // target lang
+        "auto",
+        target || "",
         JSON.stringify(meds),
         JSON.stringify(allergies),
         JSON.stringify(conditions),
@@ -300,33 +277,31 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
   }
 });
 
-// --- Report route (uses template if present, else fallback HTML) ---
+// Report render (template or fallback)
 app.get("/reports/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    const row = await db.get("SELECT * FROM reports WHERE id = ?", id);
+    const row = await dbGet("SELECT * FROM reports WHERE id = ?", id);
     if (!row) return res.status(404).send("Not found");
 
-    // Parse lists from JSON
     const meds = JSON.parse(row.medications || "[]");
     const allergies = JSON.parse(row.allergies || "[]");
     const conditions = JSON.parse(row.conditions || "[]");
 
     const detectedLang = row.lang_detected || "en";
-    const targetLang = row.lang_target || ""; // may be empty
-    const hasTranslation = Boolean(row.translation && row.translation.trim());
-    const translatedTranscript = hasTranslation ? row.translation : row.transcript;
+    const targetLang = row.lang_target || "";
+    const translatedTranscript =
+      row.translation && row.translation.trim() ? row.translation : row.transcript;
     const targetLangLabel = targetLang || detectedLang;
 
     const shareUrl = `${PUBLIC_BASE_URL}/reports/${id}`;
     const qrDataUrl = await QRCode.toDataURL(shareUrl);
 
-    const templatePath = path.join(__dirname, "templates", "report.html");
+    const tplPath = path.join(__dirname, "templates", "report.html");
     let html;
 
-    if (fs.existsSync(templatePath)) {
-      // Styled template rendering
-      const tpl = fs.readFileSync(templatePath, "utf8");
+    if (fs.existsSync(tplPath)) {
+      const tpl = fs.readFileSync(tplPath, "utf8");
 
       const medsText = meds.length ? meds.join(", ") : "None mentioned";
       const allergiesText = allergies.length ? allergies.join(", ") : "None mentioned";
@@ -356,7 +331,7 @@ app.get("/reports/:id", async (req, res) => {
         translatedTranscript: esc(translatedTranscript || "")
       });
     } else {
-      // Minimal fallback if template missing
+      // fallback
       html = `
       <!doctype html><html><head>
         <meta charset="utf-8"/>
@@ -400,10 +375,10 @@ app.get("/reports/:id", async (req, res) => {
   }
 });
 
-// --- Health probe (Render uses this sometimes) ---
+// Health
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
-// --- Start ---
+// Start
 await initDB();
 app.listen(PORT, () => {
   console.log(`✅ Backend listening on ${PORT}`);
