@@ -2,56 +2,62 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Hot Health — One Port</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
-  <header><h1>Hot Health — One Port</h1></header>
+  <div class="header-shell">
+    <header><h1>Hot Health — One Port</h1></header>
+  </div>
 
-  <main class="wrap">
-    <section class="card">
-      <h2>Patient & Options</h2>
-      <div class="row">
-        <input id="pName" placeholder="Patient Name"/>
-        <input id="pEmail" placeholder="Patient Email"/>
-      </div>
-      <div class="row">
-        <input id="eName" placeholder="Emergency Contact Name"/>
-        <input id="ePhone" placeholder="Emergency Contact Phone"/>
-        <input id="eEmail" placeholder="Emergency Contact Email"/>
-      </div>
-      <div class="row">
-        <select id="blood">
-          <option value="">Blood Type (optional)</option>
-          <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
-          <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
-        </select>
-        <select id="lang">
-          <option value="">— No translation at upload —</option>
-          <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
-          <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
-          <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
-          <option value="ja">日本語</option><option value="ko">한국어</option>
-        </select>
-      </div>
-    </section>
+  <div class="shell">
+    <main class="wrap">
+      <section class="card">
+        <h2>Patient & Options</h2>
+        <div class="row">
+          <input id="pName" placeholder="Patient Name"/>
+          <input id="pEmail" placeholder="Patient Email"/>
+        </div>
+        <div class="row">
+          <input id="eName" placeholder="Emergency Contact Name"/>
+          <input id="ePhone" placeholder="Emergency Contact Phone"/>
+          <input id="eEmail" placeholder="Emergency Contact Email"/>
+        </div>
+        <div class="row">
+          <select id="blood">
+            <option value="">Blood Type (optional)</option>
+            <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
+            <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
+          </select>
+          <select id="lang">
+            <option value="">— No translation at upload —</option>
+            <option value="en">English</option><option value="fr">Français</option>
+            <option value="es">Español</option><option value="pt">Português</option>
+            <option value="de">Deutsch</option><option value="it">Italiano</option>
+            <option value="ar">العربية</option><option value="hi">हिन्दी</option>
+            <option value="zh">中文</option><option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+          </select>
+        </div>
+      </section>
 
-    <section class="card">
-      <h2>Record</h2>
-      <div class="row">
-        <button id="btnRec" class="btn-primary">Record</button>
-        <div id="recHint" class="muted">Click to record a short health note (3–10s).</div>
-      </div>
-      <div id="recMeta" class="muted"></div>
-      <div id="error" class="error"></div>
-    </section>
+      <section class="card">
+        <h2>Record</h2>
+        <div class="row">
+          <button id="btnRec">Record</button>
+          <div id="recHint" class="muted">Click to record a short health note (3–10s).</div>
+        </div>
+        <div id="recMeta" class="muted"></div>
+        <div id="error" class="error"></div>
+      </section>
 
-    <section class="card">
-      <h2>Shareable Report</h2>
-      <div id="result">Record and stop to generate a report + QR.</div>
-    </section>
-  </main>
+      <section class="card">
+        <h2>Shareable Report</h2>
+        <div id="result">Record and stop to generate a report + QR.</div>
+      </section>
+    </main>
+  </div>
 
   <script src="/app.js"></script>
 </body>

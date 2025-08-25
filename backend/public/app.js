@@ -1,100 +1,115 @@
-(async function(){
-  const btn = document.getElementById("btnRec");
-  const meta = document.getElementById("recMeta");
-  const resBox = document.getElementById("result");
-  const errBox = document.getElementById("error");
+// backend/public/app.js
+(() => {
+  const $ = s => document.querySelector(s);
 
-  const pName = document.getElementById("pName");
-  const pEmail = document.getElementById("pEmail");
-  const eName = document.getElementById("eName");
-  const ePhone = document.getElementById("ePhone");
-  const eEmail = document.getElementById("eEmail");
-  const blood = document.getElementById("blood");
-  const lang  = document.getElementById("lang");
+  const btn = $("#btnRec");
+  const result = $("#result");
+  const recMeta = $("#recMeta");
+  const errBox = $("#error");
 
-  let media, recorder, chunks = [], recording = false, startedAt = 0;
+  const pName = $("#pName");
+  const pEmail = $("#pEmail");
+  const eName = $("#eName");
+  const ePhone = $("#ePhone");
+  const eEmail = $("#eEmail");
+  const blood = $("#blood");
+  const lang  = $("#lang");
 
-  function uiError(msg){ errBox.textContent = msg || ""; }
-  function uiMeta(msg){ meta.textContent = msg || ""; }
-  function uiResult(html){ resBox.innerHTML = html; }
+  let mediaRecorder;
+  let chunks = [];
+  let recording = false;
 
-  function supports() {
-    if (!navigator.mediaDevices?.getUserMedia) return "This browser does not support audio recording.";
-    if (location.protocol !== "https:" && location.hostname !== "localhost") {
-      return "Microphone requires HTTPS or localhost. Open via your Render HTTPS URL.";
-    }
-    return null;
+  function setError(msg) {
+    errBox.textContent = msg || "";
+    errBox.style.display = msg ? "block" : "none";
   }
-  const check = supports();
-  if (check) { uiError(check); btn.disabled = true; return; }
+  function setResult(html) {
+    result.innerHTML = html;
+  }
+  function setMeta(msg) {
+    recMeta.textContent = msg || "";
+  }
 
-  btn.addEventListener("click", async () => {
-    uiError("");
-    if (!recording) {
-      try {
-        media = await navigator.mediaDevices.getUserMedia({ audio: true });
-        recorder = new MediaRecorder(media, { mimeType: "audio/webm" });
-        chunks = [];
-        recorder.ondataavailable = e => e.data && chunks.push(e.data);
-        recorder.onstop = onStop;
-        recorder.start();
-        recording = true;
-        startedAt = Date.now();
-        btn.textContent = "Stop";
-        uiMeta("Recording… click Stop when done.");
-      } catch (e) {
-        uiError("Mic permission denied or unsupported browser.");
-      }
-    } else {
-      recording = false;
-      recorder.stop();
-      btn.textContent = "Record";
-      uiMeta("");
-      media.getTracks().forEach(t => t.stop());
+  async function start() {
+    setError("");
+    if (!(location.protocol === "https:" || location.hostname === "localhost")) {
+      setError("Microphone requires HTTPS or localhost. Open this site with https:// or use http://localhost.");
+      return;
     }
-  });
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      chunks = [];
+      mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      mediaRecorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+      mediaRecorder.onstop = onStop;
+      mediaRecorder.start();
+      recording = true;
+      btn.textContent = "Stop";
+      setMeta("Recording… click Stop when done.");
+      setResult("Recording…");
+    } catch (e) {
+      setError("This browser does not support audio recording, or mic permission was denied.");
+      console.error(e);
+    }
+  }
 
   async function onStop() {
-    const blob = new Blob(chunks, { type: "audio/webm" });
-    uiMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB`);
-    const fd = new FormData();
-    fd.append("audio", blob, "recording.webm");
-    fd.append("name", pName.value.trim());
-    fd.append("email", pEmail.value.trim());
-    fd.append("emer_name", eName.value.trim());
-    fd.append("emer_phone", ePhone.value.trim());
-    fd.append("emer_email", eEmail.value.trim());
-    fd.append("blood_type", blood.value.trim());
-    fd.append("lang", lang.value.trim()); // optional initial translate
-
     try {
-      const resp = await fetch("/upload", { method: "POST", body: fd });
-      const data = await resp.json().catch(()=>({}));
-      if (!resp.ok || !data.ok) {
-        throw new Error(`${resp.status} ${data?.error || "Server error"}`);
+      const blob = new Blob(chunks, { type: "audio/webm" });
+      const kb = (blob.size/1024).toFixed(1);
+      setMeta(`Recorded ${kb} KB`);
+
+      const fd = new FormData();
+      fd.append("audio", blob, "recording.webm");
+      fd.append("name", pName.value || "");
+      fd.append("email", pEmail.value || "");
+      fd.append("emer_name", eName.value || "");
+      fd.append("emer_phone", ePhone.value || "");
+      fd.append("emer_email", eEmail.value || "");
+      fd.append("blood_type", blood.value || "");
+      fd.append("lang", lang.value || "");   // optional target language
+
+      const r = await fetch("/upload", { method: "POST", body: fd });
+      if (!r.ok) {
+        const t = await r.text().catch(()=>"");
+        throw new Error(`Upload failed (${r.status}): ${t || r.statusText}`);
       }
-      // Show link + QR nicely
-      uiResult(`
-        <div class="result-panel">
-          <div>
-            <div class="linkbox">${data.link}</div>
-            <div class="actions">
-              <a class="btn-outline" href="${data.link}" target="_blank">Open Report</a>
-              <button class="btn-primary" id="copyBtn">Copy Link</button>
-            </div>
-          </div>
-          <div class="qrbox">
-            <img alt="QR" src="${data.qr}"/>
-          </div>
+      const data = await r.json();
+      if (!data.ok) throw new Error(data.error || "Upload failed");
+
+      // Expect: { ok, id, reportUrl, qrData }
+      const { id, reportUrl, qrData } = data;
+      if (!id || !reportUrl) throw new Error("Server returned no report id/url.");
+
+      const qrImg = qrData ? `<img src="${qrData}" alt="QR" class="qr-img">` : "";
+      setResult(`
+        <div class="report-summary">
+          <div><b>Shareable Link:</b> <a href="${reportUrl}" target="_blank">${reportUrl}</a></div>
+          <div class="qr">${qrImg}</div>
+          <div class="hint">Scan the QR on a phone or click the link to open the report.</div>
         </div>
       `);
-      const copyBtn = document.getElementById("copyBtn");
-      copyBtn?.addEventListener("click", async () => {
-        try { await navigator.clipboard.writeText(data.link); copyBtn.textContent="✅ Copied!"; setTimeout(()=>copyBtn.textContent="Copy Link", 1000); }
-        catch { copyBtn.textContent="❌"; setTimeout(()=>copyBtn.textContent="Copy Link", 1000); }
-      });
     } catch (e) {
-      uiError(`Upload failed: ${e.message}`);
+      console.error(e);
+      setError(e.message || "Upload error");
+      setResult("");
+    } finally {
+      chunks = [];
     }
   }
+
+  async function stop() {
+    try {
+      recording = false;
+      btn.textContent = "Record";
+      mediaRecorder?.stop();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  btn?.addEventListener("click", () => {
+    if (!recording) start();
+    else stop();
+  });
 })();
