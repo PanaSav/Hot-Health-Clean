@@ -1,99 +1,112 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Hot Health — Report {{ID}}</title>
-  <link rel="stylesheet" href="/styles.css"/>
+  <meta charset="UTF-8">
+  <title>Hot Health Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    .report-card{border:2px solid var(--aqua)}
-    .kv p{margin:.25rem 0}
-    .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
-    .pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#e6fffb;border:1px solid var(--aqua);font-size:12px;margin-left:.4rem}
-    .note{color:var(--muted);font-size:.9rem}
-    .qrwrap{display:flex;justify-content:center;align-items:center;padding:12px;border-radius:12px;border:2px dashed var(--aqua);background:#fbfdff}
-    .qrwrap img{max-width:100%;height:auto}
-    .dual h4{margin:.25rem 0 .5rem;color:#6b46c1}
-    .dual pre{min-height:120px}
-    .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:.5rem}
+    body {
+      font-family: Arial, sans-serif;
+      background: #fdfdfd;
+      margin: 0;
+      padding: 2em;
+      color: #222;
+    }
+    header {
+      border-bottom: 3px solid aquamarine;
+      margin-bottom: 1em;
+      padding-bottom: 0.5em;
+    }
+    h1 {
+      color: #4b0082;
+    }
+    .section {
+      border: 2px solid aquamarine;
+      border-radius: 8px;
+      padding: 1em;
+      margin: 1em 0;
+      background: #fff;
+    }
+    .dual-block {
+      display: flex;
+      gap: 1em;
+    }
+    .block {
+      flex: 1;
+      border: 1px solid #ddd;
+      padding: 1em;
+      border-radius: 6px;
+      background: #f8faff;
+    }
+    .block h3 {
+      margin-top: 0;
+      color: #333;
+    }
+    .qr {
+      text-align: center;
+      margin: 1em 0;
+    }
+    a {
+      color: #0077cc;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    footer {
+      margin-top: 2em;
+      font-size: 0.85em;
+      color: #555;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
-  <header><h1>Hot Health — Report</h1></header>
+  <header>
+    <h1>Hot Health — Report</h1>
+    <p><b>Created:</b> {{created}}</p>
+    <p><b>Share Link:</b> 
+      <a href="{{shareUrl}}" target="_blank">{{shareUrl}}</a>
+    </p>
+    <div class="qr">
+      <img src="{{qrDataUrl}}" alt="QR Code for this report">
+    </div>
+  </header>
 
-  <main class="wrap">
-    <section class="card report-card">
-      <h2>Patient Report</h2>
+  <section class="section">
+    <h2>Patient Details</h2>
+    <p><b>Name:</b> {{name}}</p>
+    <p><b>Email:</b> <a href="mailto:{{email}}">{{email}}</a></p>
+    <p><b>Blood Type:</b> {{blood}}</p>
+    <p><b>Emergency Contact:</b> {{emer_name}} ({{emer_phone}}, 
+       <a href="mailto:{{emer_email}}">{{emer_email}}</a>)</p>
+  </section>
 
-      <!-- Link + Actions -->
-      <div class="row">
-        <div class="linkbox mono" id="linkBox">{{SELF_URL}}</div>
-        <div class="actions">
-          <a class="btn-outline" id="backBtn" style="display:{{SHOW_BACK}}" href="{{BACK_HREF}}">↩︎ All Reports</a>
-          <button class="btn-primary" id="copyBtn">📋 Copy Link</button>
-          <button class="btn-aqua" onclick="window.print()">🖨️ Print</button>
-        </div>
+  <section class="section">
+    <h2>Summary</h2>
+    <p><b>Medications:</b> {{medications}}</p>
+    <p><b>Allergies:</b> {{allergies}}</p>
+    <p><b>Conditions:</b> {{conditions}}</p>
+    <p><b>Blood Pressure:</b> {{bp}}</p>
+    <p><b>Weight:</b> {{weight}}</p>
+  </section>
+
+  <section class="section">
+    <h2>Transcript</h2>
+    <div class="dual-block">
+      <div class="block">
+        <h3>Original ({{detectedLang}})</h3>
+        <p>{{transcript}}</p>
       </div>
-
-      <!-- Key Info -->
-      <div class="row">
-        <div class="grid" style="width:100%">
-          <div class="block">
-            <div class="kv">
-              <p><b>Created:</b> {{DATE}}</p>
-              <p>
-                <b>Patient:</b> {{PATIENT_NAME}} {{BLOOD_PILL}}
-              </p>
-              <p><b>Email:</b> {{PATIENT_EMAIL}}</p>
-              <p><b>Emergency:</b> {{EMER}}</p>
-            </div>
-
-            <hr/>
-
-            <!-- Dual Transcripts -->
-            <h3>Transcript</h3>
-            <div class="dual">
-              <div class="panel">
-                <h4>Original</h4>
-                <pre>{{TRANSCRIPT}}</pre>
-              </div>
-              <div class="panel">
-                <h4>Translated</h4>
-                <pre>{{TRANSLATED}}</pre>
-              </div>
-            </div>
-          </div>
-
-          <!-- QR Panel -->
-          <div class="block">
-            <h3>QR Code</h3>
-            <div class="qrwrap">
-              <img alt="QR to this report" src="/reports/{{ID}}/qrcode.png"/>
-            </div>
-            <p class="note" style="margin-top:.6rem">
-              Scan to open this report on a phone.
-            </p>
-          </div>
-        </div>
+      <div class="block">
+        <h3>Translated ({{targetLang}})</h3>
+        <p>{{translatedTranscript}}</p>
       </div>
-    </section>
-  </main>
+    </div>
+  </section>
 
-  <script>
-    (function(){
-      const btn = document.getElementById('copyBtn');
-      const box = document.getElementById('linkBox');
-      btn?.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(box.textContent.trim());
-          btn.textContent = '✅ Copied!';
-          setTimeout(()=> btn.textContent='📋 Copy Link', 1200);
-        } catch {
-          btn.textContent = '❌ Copy failed';
-          setTimeout(()=> btn.textContent='📋 Copy Link', 1200);
-        }
-      });
-    })();
-  </script>
+  <footer>
+    <p>Hot Health © 2025</p>
+  </footer>
 </body>
 </html>
