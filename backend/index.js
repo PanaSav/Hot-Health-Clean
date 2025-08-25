@@ -1,86 +1,27 @@
-// backend/index.js
 import express from "express";
 import multer from "multer";
+import sqlite3 from "sqlite3";
 import fs from "fs";
 import path from "path";
 import QRCode from "qrcode";
-import sqlite3 from "sqlite3";
 import bodyParser from "body-parser";
-import dotenv from "dotenv";
 import OpenAI from "openai";
+import dotenv from "dotenv";
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 10000;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
-const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o";
-const JSON_MODEL = process.env.OPENAI_JSON_MODEL || "gpt-4o-mini";
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const port = process.env.PORT || 10000; // Render binds here by default
+const uploadDir = path.resolve("./uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// ---------- Static/public root resolution (backend/public -> public -> frontend/public)
-function resolvePublicDir() {
-  const candidates = [
-    path.join(process.cwd(), "backend", "public"),
-    path.join(process.cwd(), "public"),
-    path.join(process.cwd(), "frontend", "public"),
-  ];
-  for (const p of candidates) {
-    try { if (fs.existsSync(p)) return p; } catch {}
-  }
-  return path.join(process.cwd(), "public");
-}
-const PUBLIC_DIR = resolvePublicDir();
-
-// ---------- Uploads dir (Render-friendly)
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
-try {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  console.log("📁 Upload dir ready:", UPLOAD_DIR);
-} catch (e) {
-  console.error("❌ Could not create uploads dir:", e);
-}
-
-// ---------- Express plumbing
-app.use(bodyParser.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(PUBLIC_DIR));
-
-// ---------- SQLite (sqlite3 with Promise helpers)
-const dbFile = path.join(process.cwd(), "data.sqlite");
-sqlite3.verbose();
-const dbRaw = new sqlite3.Database(dbFile);
-const db = {
-  run(sql, params = []) {
-    return new Promise((resolve, reject) => {
-      dbRaw.run(sql, params, function (err) {
-        if (err) return reject(err);
-        resolve(this);
-      });
-    });
-  },
-  get(sql, params = []) {
-    return new Promise((resolve, reject) => {
-      dbRaw.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-    });
-  },
-  all(sql, params = []) {
-    return new Promise((resolve, reject) => {
-      dbRaw.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
-    });
-  },
-  exec(sql) {
-    return new Promise((resolve, reject) => {
-      dbRaw.exec(sql, (err) => (err ? reject(err) : resolve()));
-    });
-  },
-};
-
-async function ensureSchema() {
-  await db.exec(`
+// ---------- DB ----------
+const db = new sqlite3.Database("./reports.db");
+db.serialize(() => {
+  db.run(`
     CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY,
-      created DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT,
       patient_name TEXT,
       patient_email TEXT,
       emer_name TEXT,
@@ -88,441 +29,306 @@ async function ensureSchema() {
       emer_email TEXT,
       blood_type TEXT,
       transcript TEXT,
-      summary TEXT,
-      lang TEXT,
-      translated TEXT
-    );
+      translated TEXT,
+      language TEXT,
+      target_language TEXT,
+      meds_json TEXT,
+      allergies_json TEXT,
+      conditions_json TEXT,
+      vitals_json TEXT
+    )
   `);
-  // NOTE: make sure these migrations use NORMAL backticks (no escapes)
-  async function addCol(name, def) {
-    try {
-      await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`);
-    } catch {
-      // ignore duplicate column errors
-    }
-  }
-  await addCol("detected_lang", "TEXT");
-  await addCol("translated_summary", "TEXT");
-  await addCol("meds_json", "TEXT");
-  await addCol("allergies_json", "TEXT");
-  await addCol("conditions_json", "TEXT");
-  await addCol("vitals_json", "TEXT");
-}
-await ensureSchema();
+});
 
-// ---------- Helpers
-function inferBaseUrl(req) {
-  const proto = (req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
-  const host  = (req.headers["x-forwarded-host"]  || req.headers.host || "").split(",")[0].trim();
+function esc(s = "") {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+function safeParseJSON(s, fallback) {
+  try { return JSON.parse(s); } catch { return fallback; }
+}
+
+// ---------- OpenAI ----------
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// ---------- Middleware ----------
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(express.static(path.join(process.cwd(), "backend", "public"))); // serve /public assets
+
+// ---------- Helpers ----------
+function getBaseUrl(req) {
+  const proto = (req.headers["x-forwarded-proto"] || req.protocol || "http").split(",")[0].trim();
+  const host  = (req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
   return `${proto}://${host}`;
 }
-function baseUrlFrom(req) {
-  return process.env.PUBLIC_BASE_URL || inferBaseUrl(req);
-}
-function safeParseJSON(s, d) { try { return JSON.parse(s || ""); } catch { return d; } }
-function esc(s = "") { return String(s).replace(/</g, "&lt;"); }
 
-// ---------- OpenAI Pipelines
-async function transcribeWithOpenAI(filePath, filename = "audio.webm") {
-  // Try 4o-mini-transcribe then whisper-1
-  try {
-    console.log("🗣️ Transcribing via gpt-4o-mini-transcribe …", filename);
-    const r = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(filePath),
-      model: "gpt-4o-mini-transcribe",
+function guessFacts(text) {
+  const meds = [];
+  // e.g., "Amlodipine 10 mg", "Dexilant 60 mg", "Lisinopril 20mg twice daily"
+  const medRe = /\b([A-Z][a-z][A-Za-z\-]{1,30})\s+(\d{1,4})\s?(mg|mcg|g|ml)\b(?:[^.,;()]{0,30})?/g;
+  for (const m of text.matchAll(medRe)) {
+    meds.push({
+      name: m[1],
+      dose: m[2],
+      unit: m[3],
+      freq: undefined,
+      notes: undefined
     });
-    const text = (r.text || "").trim();
-    console.log("✅ Transcribed (gpt-4o-mini-transcribe) chars:", text.length);
-    return text;
-  } catch (err1) {
-    console.warn("⚠️ gpt-4o-mini-transcribe failed; trying whisper-1. Details:", err1?.response?.data || err1?.message || err1);
-    const r2 = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(filePath),
-      model: "whisper-1",
-    });
-    const text2 = (r2.text || "").trim();
-    console.log("✅ Transcribed (whisper-1) chars:", text2.length);
-    return text2;
   }
+
+  const allergies = [];
+  const allBlock =
+    text.match(/\ballergic to ([^.]+)[\.\n,]?/i)?.[1] ||
+    text.match(/\ballerg(?:y|ies)\s*(?:\:|to)\s*([^.]+)[\.\n,]?/i)?.[1];
+  if (allBlock) {
+    allBlock.split(/,| and /i).map(s => s.trim()).filter(Boolean).forEach(a => allergies.push(a));
+  }
+
+  const conditions = [];
+  const condRe = /\b(diabetes|hypertension|asthma|kidney (?:disease|condition)|heart (?:failure|disease)|copd|stroke|migraine|cancer)\b/ig;
+  for (const c of text.matchAll(condRe)) conditions.push(c[0].toLowerCase());
+
+  // vitals: BP & weight
+  let bp;
+  const bpRe = /\b(\d{2,3})\s*(?:over|\/)\s*(\d{2,3})\b/i;
+  const bpM = text.match(bpRe);
+  if (bpM) bp = { sys: Number(bpM[1]), dia: Number(bpM[2]) };
+
+  let weight;
+  const wtRe = /\b(\d{2,3}(?:\.\d+)?)\s*(kg|kilograms|lbs?|pounds)\b/i;
+  const wtM = text.match(wtRe);
+  if (wtM) {
+    weight = { value: Number(wtM[1]), unit: wtM[2].toLowerCase() };
+  }
+
+  return { meds, allergies, conditions, vitals: { bp, weight } };
 }
 
-async function callJSON(model, sys, user) {
-  const resp = await openai.chat.completions.create({
-    model,
-    temperature: 0.2,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: sys },
-      { role: "user", content: user },
-    ],
-  });
-  const content = resp.choices?.[0]?.message?.content || "{}";
-  try { return JSON.parse(content); } catch { return {}; }
-}
-
-async function translateText(text, targetLang) {
-  if (!text || !targetLang) return "";
-  const sys = "You are a careful medical translator. Translate faithfully without adding or removing facts.";
-  const user = `Target language: ${targetLang}\n\nText:\n${text}`;
-  const resp = await openai.chat.completions.create({
-    model: TEXT_MODEL,
-    temperature: 0.2,
-    messages: [{ role: "system", content: sys }, { role: "user", content: user }],
-  });
-  return resp.choices?.[0]?.message?.content?.trim() || "";
-}
-
-// ---------- Multer storage (preserve extension)
+// ---------- Multer ----------
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || "").toLowerCase() || ".webm";
-    const name = Date.now() + "-" + Math.random().toString(36).slice(2, 8) + ext;
-    cb(null, name);
-  },
+    const unique = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    const ext = ".webm";
+    cb(null, `${unique}${ext}`);
+  }
 });
 const upload = multer({ storage });
 
-// ---------- Health / Home
-app.get("/healthz", (req, res) => res.json({ ok: true }));
-app.get("/", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
+// ---------- Pages ----------
+app.get("/", (req, res) => {
+  res.sendFile(path.join(process.cwd(), "backend", "public", "index.html"));
+});
 
-// ---------- Upload: audio -> transcript -> extract -> persist -> link + QR
+app.get("/reports", (req, res) => {
+  // simple admin view with password gate
+  const adminPw = process.env.ADMIN_PASSWORD;
+  const provided = (req.query.password || "").trim();
+  if (adminPw && provided !== adminPw) return res.status(401).send("Unauthorized — add ?password=...");
+
+  db.all("SELECT id, created_at, patient_name, target_language FROM reports ORDER BY created_at DESC LIMIT 200", [], (err, rows = []) => {
+    if (err) return res.status(500).send("DB error");
+    const tpl = fs.readFileSync(path.join(process.cwd(), "backend", "templates", "reports.html"), "utf8");
+    const list = rows.map(r => `
+      <tr>
+        <td>${esc(r.created_at || "")}</td>
+        <td>${esc(r.patient_name || "(anon)")}</td>
+        <td>${esc(r.id)}</td>
+        <td>${esc(r.target_language || "-")}</td>
+        <td>
+          <a class="btn-outline" href="/reports/${r.id}${adminPw ? `?password=${encodeURIComponent(provided)}` : ""}">View</a>
+          <form method="post" action="/reports/${r.id}/translate" style="display:inline-block;margin-left:6px">
+            ${adminPw ? `<input type="hidden" name="password" value="${esc(provided)}"/>` : ""}
+            <select name="to">
+              <option value="fr">fr</option><option value="es">es</option><option value="pt">pt</option>
+              <option value="de">de</option><option value="it">it</option><option value="ar">ar</option>
+              <option value="hi">hi</option><option value="zh">zh</option><option value="ja">ja</option><option value="ko">ko</option>
+            </select>
+            <button class="btn-aqua" type="submit">Translate</button>
+          </form>
+        </td>
+      </tr>
+    `).join("");
+    res.send(tpl.replace("{{ROWS}}", list).replace("{{PWQS}}", adminPw ? `?password=${encodeURIComponent(provided)}` : ""));
+  });
+});
+
+// ---------- Upload ----------
 app.post("/upload", upload.single("audio"), async (req, res) => {
-  let tmpFile = null;
   try {
-    const id = Math.random().toString(36).slice(2, 12);
-    console.log("📥 Upload received:", {
-      hasFile: !!req.file,
-      filePath: req.file?.path,
-      originalName: req.file?.originalname,
-      mime: req.file?.mimetype,
-      size: req.file?.size,
+    const hasFile = !!req.file;
+    if (!hasFile) return res.status(400).json({ ok: false, error: "No file uploaded" });
+
+    const id = Math.random().toString(36).slice(2);
+    const fp = req.file.path;
+
+    // Transcribe
+    let transcript = "";
+    try {
+      const tr = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(fp),
+        model: "gpt-4o-mini-transcribe"
+      });
+      transcript = (tr.text || "").trim();
+    } catch (e) {
+      console.error("Transcription error:", e);
+      return res.status(500).json({ ok: false, error: "Transcription failed" });
+    }
+
+    // Parse basic facts
+    const facts = guessFacts(transcript);
+    const meds_json = JSON.stringify(facts.meds);
+    const allergies_json = JSON.stringify(facts.allergies);
+    const conditions_json = JSON.stringify(facts.conditions);
+    const vitals_json = JSON.stringify(facts.vitals);
+
+    // Optional initial translate
+    const lang = "en"; // default unless you detect otherwise
+    const requestedTarget = (req.body.lang || "").trim();
+    let translated = "";
+    let target_language = "";
+    if (requestedTarget) {
+      try {
+        const model = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
+        const prompt = `Translate the following text into ${requestedTarget}. Output only the translated text:\n\n${transcript}`;
+        const resp = await openai.responses.create({ model, input: prompt });
+        translated = (resp.output_text || "").trim();
+        target_language = requestedTarget;
+      } catch (e) {
+        console.error("Initial translate fail (continuing without it):", e);
+      }
+    }
+
+    // Save
+    const nowIso = new Date().toISOString().replace("T", " ").slice(0, 19);
+    await new Promise((resolve, reject) => {
+      db.run(
+        `INSERT INTO reports (id, created_at, patient_name, patient_email, emer_name, emer_phone, emer_email, blood_type,
+                              transcript, translated, language, target_language, meds_json, allergies_json, conditions_json, vitals_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, nowIso,
+          req.body.name || "", req.body.email || "",
+          req.body.emer_name || "", req.body.emer_phone || "", req.body.emer_email || "",
+          req.body.blood_type || "",
+          transcript, translated, lang, target_language,
+          meds_json, allergies_json, conditions_json, vitals_json
+        ],
+        (err) => err ? reject(err) : resolve()
+      );
     });
 
-    const {
-      name, email, emer_name, emer_phone, emer_email,
-      blood_type, lang: langFromForm,
-      transcript: postedTranscript, debug_transcript,
-    } = req.body;
+    const base = getBaseUrl(req);
+    const link = `${base}/reports/${id}`;
+    const qr = await QRCode.toDataURL(link);
 
-    // Accept either file or transcript (for testing)
-    let transcript = (postedTranscript || debug_transcript || "").trim();
-    if (!transcript) {
-      if (!req.file) {
-        return res.status(400).json({
-          ok: false,
-          error: "No audio file or transcript provided. Field name must be 'audio'.",
-        });
-      }
-      tmpFile = req.file.path;
-      transcript = await transcribeWithOpenAI(req.file.path, req.file.originalname || "audio.webm");
-    }
-
-    const targetLang = (langFromForm || req.body.targetLang || "").trim();
-
-    // Extract facts with JSON model
-    const sys =
-      "Extract medical facts from the text. Output JSON with keys: detected_lang (ISO-639-1), meds (array of {name, dose?, unit?, freq?, notes?}), allergies (array of string), conditions (array of string), vitals { bp? {sys, dia}, weight? {value, unit} }, blood_type? (A+, A-, B+, B-, AB+, AB-, O+, O-). If uncertain, leave fields empty.";
-    const user = `Text:\n${transcript}\n\nCanadian English or French is possible. Interpret “120 over 75” as blood pressure. Preserve unknown drug tokens.`;
-    let facts = await callJSON(JSON_MODEL, sys, user);
-    if (!facts || typeof facts !== "object") facts = {};
-
-    // Regex fallback (dose units, allergies, BP, weight)
-    function regexFallback() {
-      const meds = [];
-      const medRX = /\b([A-Za-z][A-Za-z0-9\-']{2,})\b(?:[^.\n]{0,40})?\b(\d+(?:\.\d+)?)\s?(iu|mcg|µg|mg|g|ml|mL|units?)\b/gi;
-      let m;
-      while ((m = medRX.exec(transcript))) meds.push({ name: m[1], dose: m[2], unit: m[3] });
-      const allergyRX = /\ballergic to ([^.\n]+)/i;
-      const a = allergyRX.exec(transcript);
-      const allergies = a ? a[1].split(/,|\band\b/).map(s => s.trim()).filter(Boolean) : [];
-      const bpRX = /\b(\d{2,3})\s*(?:over|\/)\s*(\d{2,3})\b/i;
-      const bpMatch = bpRX.exec(transcript);
-      const bp = bpMatch ? { sys: +bpMatch[1], dia: +bpMatch[2] } : undefined;
-      const wtRX = /\b(\d{2,3})\s?(kg|kilograms|kgs|lb|lbs|pounds)\b/i;
-      const w = wtRX.exec(transcript);
-      const weight = w ? { value: +w[1], unit: w[2].toLowerCase() } : undefined;
-      return { meds, allergies, conditions: [], vitals: { bp, weight } };
-    }
-
-    if (!Array.isArray(facts.meds) && !Array.isArray(facts.medications)) {
-      const f = regexFallback();
-      facts.meds = f.meds;
-      facts.allergies = f.allergies;
-      facts.conditions = f.conditions;
-      facts.vitals = f.vitals;
-    }
-
-    // Normalize
-    const meds = (facts.meds || facts.medications || []).map(x => ({
-      name: x.name || x.drug || "",
-      dose: x.dose || x.dosage || "",
-      unit: (x.unit || x.units || "").replace(/^µg$/i, "mcg"),
-      freq: x.freq || x.frequency || "",
-      notes: x.notes || "",
-    })).filter(x => x.name);
-
-    const allergies = Array.isArray(facts.allergies) ? facts.allergies : [];
-    const conditions = Array.isArray(facts.conditions) ? facts.conditions : [];
-    const vitals = facts.vitals && typeof facts.vitals === "object" ? facts.vitals : {};
-    const detected_lang = (facts.detected_lang || "").trim() || "und";
-    const bloodTypeFinal = (facts.blood_type && typeof facts.blood_type === "string")
-      ? facts.blood_type.toUpperCase()
-      : (blood_type || "");
-
-    // Original summary (dual block source)
-    const parts = [];
-    if (meds.length) {
-      parts.push("Medications:");
-      meds.forEach(m => {
-        const p = [m.name];
-        if (m.dose) p.push(m.dose + (m.unit ? ` ${m.unit}` : ""));
-        if (m.freq) p.push(`(${m.freq})`);
-        if (m.notes) p.push(`— ${m.notes}`);
-        parts.push("• " + p.join(" "));
-      });
-    } else {
-      parts.push("Medications: none mentioned");
-    }
-    parts.push("");
-    if (allergies.length) {
-      parts.push("Allergies:");
-      allergies.forEach(a => parts.push("• " + a));
-    } else {
-      parts.push("Allergies: none mentioned");
-    }
-    parts.push("");
-    if (conditions.length) {
-      parts.push("Conditions:");
-      conditions.forEach(c => parts.push("• " + c));
-    } else {
-      parts.push("Conditions: none mentioned");
-    }
-    if (vitals?.bp?.sys && vitals?.bp?.dia) parts.push("", `Blood pressure: ${vitals.bp.sys}/${vitals.bp.dia}`);
-    if (vitals?.weight?.value) parts.push(`Weight: ${vitals.weight.value} ${vitals.weight.unit || ""}`.trim());
-    const originalSummary = parts.join("\n");
-
-    // Translate if requested at creation
-    let translatedTranscript = "";
-    let translatedSummary = "";
-    if (targetLang) {
-      translatedTranscript = await translateText(transcript, targetLang);
-      translatedSummary   = await translateText(originalSummary, targetLang);
-    }
-
-    // Persist
-    const saveId = Math.random().toString(36).slice(2, 12);
-    await db.run(
-      `INSERT INTO reports
-        (id, patient_name, patient_email, emer_name, emer_phone, emer_email, blood_type,
-         transcript, summary, lang, translated, detected_lang, translated_summary,
-         meds_json, allergies_json, conditions_json, vitals_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        saveId, name || "", email || "", emer_name || "", emer_phone || "", emer_email || "", bloodTypeFinal,
-        transcript, originalSummary, targetLang || "", translatedTranscript,
-        detected_lang, translatedSummary,
-        JSON.stringify(meds), JSON.stringify(allergies), JSON.stringify(conditions), JSON.stringify(vitals),
-      ]
-    );
-
-    const link = `${baseUrlFrom(req)}/reports/${saveId}`;
-    let qr = "";
-    try { qr = await QRCode.toDataURL(link); } catch (e) { console.warn("QR dataURL fallback failed:", e.message); }
-
-    res.json({ ok: true, id: saveId, link, qr });
+    res.json({ ok: true, id, link, qr, reportId: id, reportUrl: link });
   } catch (e) {
-    console.error("❌ Upload error:", e?.response?.data || e);
-    res.status(500).json({ ok: false, error: String(e?.message || e || "Unknown server error") });
-  } finally {
-    // If you want to remove uploaded files immediately (you currently keep them during request)
-    // try { if (tmpFile) fs.unlink(tmpFile, () => {}); } catch {}
+    console.error("Upload error:", e);
+    res.status(500).json({ ok: false, error: "Server error" });
   }
 });
 
-// ---------- QR PNG endpoint (robust QR in report)
+// ---------- Report page ----------
+app.get("/reports/:id", (req, res) => {
+  const adminPw = process.env.ADMIN_PASSWORD;
+  const provided = (req.query.password || "").trim();
+
+  db.get("SELECT * FROM reports WHERE id = ?", [req.params.id], (err, r) => {
+    if (err || !r) return res.status(404).send("Report not found");
+
+    const tplPath = path.join(process.cwd(), "backend", "templates", "report.html");
+    if (!fs.existsSync(tplPath)) return res.status(500).send("Template missing");
+
+    const meds = safeParseJSON(r.meds_json, []);
+    const allergies = safeParseJSON(r.allergies_json, []);
+    const conditions = safeParseJSON(r.conditions_json, []);
+    const vitals = safeParseJSON(r.vitals_json, {});
+
+    const base = getBaseUrl(req);
+    const selfUrl = `${base}${req.originalUrl.split("?")[0]}${adminPw && provided ? `?password=${encodeURIComponent(provided)}` : ""}`;
+
+    // Assemble small HTML pieces for template
+    const bloodPill = r.blood_type ? `<span class="pill">Blood: ${esc(r.blood_type)}</span>` : "";
+    const emerLine = [r.emer_name, r.emer_phone, r.emer_email].filter(Boolean).join(" · ");
+
+    // Render
+    let html = fs.readFileSync(tplPath, "utf8");
+    function put(key, val) { html = html.replaceAll(`{{${key}}}`, val ?? ""); }
+
+    put("SELF_URL", esc(selfUrl));
+    put("BACK_HREF", adminPw && provided ? `/reports?password=${encodeURIComponent(provided)}` : "#");
+    put("SHOW_BACK", adminPw && provided ? "block" : "none");
+
+    put("DATE", esc(r.created_at || ""));
+    put("PATIENT_NAME", esc(r.patient_name || "(anon)"));
+    put("BLOOD_PILL", bloodPill);
+    put("PATIENT_EMAIL", esc(r.patient_email || ""));
+    put("EMER", esc(emerLine || "(none)"));
+    put("TRANSCRIPT", esc(r.transcript || ""));
+    put("TRANSLATED", esc(r.translated || ""));
+    put("ID", esc(r.id));
+
+    res.send(html);
+  });
+});
+
+// ---------- QR image ----------
 app.get("/reports/:id/qrcode.png", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const row = await db.get("SELECT id FROM reports WHERE id = ?", [id]);
-    if (!row) return res.status(404).send("Not found");
-    const link = `${baseUrlFrom(req)}/reports/${id}`;
-    const buf = await QRCode.toBuffer(link, { type: "png", margin: 1, width: 512 });
-    res.setHeader("Content-Type", "image/png");
-    res.send(buf);
-  } catch (e) {
-    console.error("❌ QR endpoint error:", e);
-    res.status(500).send("QR generation failed");
-  }
+  db.get("SELECT id FROM reports WHERE id = ?", [req.params.id], async (err, row) => {
+    if (err || !row) return res.status(404).send("Report not found");
+    try {
+      const url = `${getBaseUrl(req)}/reports/${row.id}`;
+      const png = await QRCode.toBuffer(url, { type: "png", errorCorrectionLevel: "M", margin: 1, width: 512 });
+      res.setHeader("Content-Type", "image/png");
+      res.send(png);
+    } catch (e) {
+      console.error("QR error:", e);
+      res.status(500).send("QR generation failed");
+    }
+  });
 });
 
-// ---------- Translate existing report
+// ---------- Translate ----------
 app.post("/reports/:id/translate", async (req, res) => {
   try {
-    const id = req.params.id;
-    const to = (req.body.to || req.query.to || "").trim();
-    const pw = (req.body.password || req.query.password || "").trim();
+    const adminPw = process.env.ADMIN_PASSWORD;
+    const provided = (req.body.password || req.query.password || "").trim();
+    if (adminPw && provided !== adminPw) return res.status(401).send("Unauthorized — add ?password= or include 'password'");
 
-    const r = await db.get("SELECT * FROM reports WHERE id = ?", [id]);
-    if (!r) return res.status(404).send("Report not found");
-    if (!to) return res.status(400).send("Missing target language 'to'");
+    const to = (req.body.to || "").trim();
+    if (!to) return res.status(400).send("Missing target language");
 
-    const translatedSummary = await translateText(r.summary || "", to);
-    const translatedTranscript = await translateText(r.transcript || "", to);
+    const row = await new Promise((resolve, reject) => {
+      db.get("SELECT transcript FROM reports WHERE id = ?", [req.params.id], (err, r) => err ? reject(err) : resolve(r));
+    });
+    if (!row) return res.status(404).send("Report not found");
+    if (!row.transcript) return res.status(400).send("No transcript to translate");
 
-    await db.run(
-      "UPDATE reports SET lang = ?, translated = ?, translated_summary = ? WHERE id = ?",
-      [to, translatedTranscript, translatedSummary, id]
-    );
+    const model = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
+    const prompt = `Translate the following text into ${to}. Output only the translated text:\n\n${row.transcript}`;
+    const resp = await openai.responses.create({ model, input: prompt });
+    const translated = (resp.output_text || "").trim();
 
-    const suffix = pw ? `?password=${encodeURIComponent(pw)}` : "";
-    res.redirect(`/reports/${id}${suffix}`);
+    await new Promise((resolve, reject) => {
+      db.run("UPDATE reports SET translated=?, target_language=? WHERE id=?",
+        [translated, to, req.params.id],
+        (err) => err ? reject(err) : resolve()
+      );
+    });
+
+    const qs = (adminPw && provided) ? `?password=${encodeURIComponent(provided)}` : "";
+    res.redirect(`/reports/${req.params.id}${qs}`);
   } catch (e) {
-    console.error("❌ Translate error:", e);
-    res.status(500).send("Translation failed");
+    console.error("Translate error:", e);
+    res.status(500).send("Translate failed");
   }
 });
 
-// ---------- Admin list
-app.get("/reports", async (req, res) => {
-  if ((req.query.password || "") !== ADMIN_PASSWORD) {
-    return res.status(401).send("Unauthorized — add ?password=...");
-  }
-  const rows = await db.all("SELECT id, created, patient_name FROM reports ORDER BY created DESC");
-  const items = rows.map(r =>
-    `<li><a href="/reports/${r.id}?password=${encodeURIComponent(ADMIN_PASSWORD)}">${esc(r.created)} — ${esc(r.patient_name || "(anon)")}</a></li>`
-  ).join("");
-  res.send(`
-    <!doctype html><html><head>
-      <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-      <title>Reports</title><link rel="stylesheet" href="/styles.css"/>
-    </head><body>
-      <header><h1>All Reports</h1></header>
-      <main class="wrap">
-        <section class="card"><h2>Reports</h2><div class="row"><ul>${items || "<li>(none yet)</li>"}</ul></div></section>
-      </main>
-    </body></html>
-  `);
-});
-
-// ---------- View single report (dual blocks + QR)
-import fs from "fs";
-import path from "path";
-// ... (rest of your imports)
-
-// inside index.js, replace the whole app.get("/reports/:id", ...) with:
-
-app.get("/reports/:id", async (req, res) => {
-  const r = await db.get("SELECT * FROM reports WHERE id = ?", [req.params.id]);
-  if (!r) return res.status(404).send("Report not found");
-
-  const proto = (req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
-  const host  = (req.headers["x-forwarded-host"]  || req.headers.host || "").split(",")[0].trim();
-  const base  = `${proto}://${host}`;
-  const selfUrl = `${base}${req.originalUrl.split("?")[0]}`;
-  const pw = (req.query.password || "").trim();
-
-  // JSON fields
-  const meds = safeParseJSON(r.meds_json, []);
-  const allergies = safeParseJSON(r.allergies_json, []);
-  const conditions = safeParseJSON(r.conditions_json, []);
-  const vitals = safeParseJSON(r.vitals_json, {});
-
-  // Build pieces
-  const backHref = pw ? `${base}/reports?password=${encodeURIComponent(pw)}` : "";
-  const back_link = backHref ? `<a class="btn-outline" href="${backHref}">↩︎ All Reports</a>` : "";
-  const blood_type_badge = r.blood_type ? `<span class="badge" title="Blood Type">${esc(r.blood_type)}</span>` : "";
-  const patient_email_link = r.patient_email ? `<a href="mailto:${esc(r.patient_email)}">${esc(r.patient_email)}</a>` : `<span class="muted">(none)</span>`;
-  const emer_bits = [r.emer_name, r.emer_phone, r.emer_email ? `<a href="mailto:${esc(r.emer_email)}">${esc(r.emer_email)}</a>` : ""]
-    .filter(Boolean).join(" · ");
-  const emer_line = emer_bits || `<span class="muted">(none)</span>`;
-
-  const detected_lang_tag = r.detected_lang ? `(${esc(r.detected_lang)})` : "";
-  const target_lang_tag = r.lang ? `(${esc(r.lang)})` : "(select below)";
-
-  const meds_block = meds.length
-    ? `<ul>${meds.map(m => `<li>${esc(m.name)}${m.dose?` — ${esc(m.dose)} ${esc(m.unit||"")}`:""}${m.freq?` (${esc(m.freq)})`:""}${m.notes?` — ${esc(m.notes)}`:""}</li>`).join("")}</ul>`
-    : `<div class="muted">None mentioned</div>`;
-
-  const allergies_block = allergies.length
-    ? `<ul>${allergies.map(a => `<li>${esc(a)}</li>`).join("")}</ul>`
-    : `<div class="muted">None mentioned</div>`;
-
-  const conditions_block = conditions.length
-    ? `<ul>${conditions.map(c => `<li>${esc(c)}</li>`).join("")}</ul>`
-    : `<div class="muted">None mentioned</div>`;
-
-  const vitals_piece = []
-  if (vitals?.bp?.sys && vitals?.bp?.dia) vitals_piece.push(`<div><b>Blood Pressure:</b> ${vitals.bp.sys}/${vitals.bp.dia}</div>`);
-  if (vitals?.weight?.value) vitals_piece.push(`<div><b>Weight:</b> ${vitals.weight.value} ${vitals.weight.unit || ""}</div>`);
-  const vitals_block = vitals_piece.length ? vitals_piece.join("") : `<div class="muted">None mentioned</div>`;
-
-  // If no translation yet, show picker; else hide it.
-  const translatePicker = (r.translated || r.translated_summary) ? "" : `
-    <form method="post" action="/reports/${r.id}/translate" style="display:flex;gap:8px;align-items:center;margin:8px 0;">
-      <input type="hidden" name="password" value="${esc(pw)}"/>
-      <label for="to" class="muted">Translate to:</label>
-      <select id="to" name="to">
-        <option value="fr">Français</option>
-        <option value="es">Español</option>
-        <option value="pt">Português</option>
-        <option value="de">Deutsch</option>
-        <option value="it">Italiano</option>
-        <option value="ar">العربية</option>
-        <option value="hi">हिन्दी</option>
-        <option value="zh">中文</option>
-        <option value="ja">日本語</option>
-        <option value="ko">한국어</option>
-      </select>
-      <button class="btn-aqua" type="submit">🌍 Translate this report</button>
-    </form>`;
-
-  // Load template
-  const tplPath = path.join(process.cwd(), "backend", "templates", "report.html");
-  let html = "";
-  try {
-    html = fs.readFileSync(tplPath, "utf8");
-  } catch {
-    return res.status(500).send("Template missing (backend/templates/report.html)");
-  }
-
-  // Helper replace
-  function put(key, value) {
-    html = html.replaceAll(`{{${key}}}`, value ?? "");
-    // optional blocks {{#key}}...{{/key}} shown only if value is truthy
-    const blockRegex = new RegExp(`{{#${key}}}([\\s\\S]*?){{\\/${key}}}`, "g");
-    html = html.replace(blockRegex, value ? value : "");
-  }
-
-  put("self_url", `${base}${req.originalUrl.split("?")[0]}`);
-  put("created", esc(r.created || ""));
-  put("patient_name", esc(r.patient_name || "(anon)"));
-  put("blood_type_badge", blood_type_badge);
-  put("patient_email_link", patient_email_link);
-  put("emer_line", emer_line);
-
-  put("detected_lang_tag", detected_lang_tag);
-  put("target_lang_tag", target_lang_tag);
-
-  // transcripts: always show original; translated panel can be blank gracefully
-  put("transcript", esc(r.transcript || ""));
-  put("translated", esc(r.translated || ""));
-
-  put("meds_block", meds_block);
-  put("allergies_block", allergies_block);
-  put("conditions_block", conditions_block);
-  put("vitals_block", vitals_block);
-
-  put("qr_src", `/reports/${r.id}/qrcode.png`);
-  put("back_link", back_link);
-  put("translate_picker", translatePicker);
-
-  res.send(html);
-});
-
-
-// ---------- Start server
-app.listen(PORT, () => {
-  console.log(`✅ Backend listening on ${PORT}`);
+// ---------- Start ----------
+app.listen(port, () => {
+  console.log(`✅ Backend listening on ${port}`);
 });

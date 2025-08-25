@@ -3,71 +3,76 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Hot Health — Report</title>
+  <title>Hot Health — Report {{ID}}</title>
   <link rel="stylesheet" href="/styles.css"/>
+  <style>
+    .report-card{border:2px solid var(--aqua)}
+    .kv p{margin:.25rem 0}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+    .pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#e6fffb;border:1px solid var(--aqua);font-size:12px;margin-left:.4rem}
+    .note{color:var(--muted);font-size:.9rem}
+    .qrwrap{display:flex;justify-content:center;align-items:center;padding:12px;border-radius:12px;border:2px dashed var(--aqua);background:#fbfdff}
+    .qrwrap img{max-width:100%;height:auto}
+    .dual h4{margin:.25rem 0 .5rem;color:#6b46c1}
+    .dual pre{min-height:120px}
+    .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:.5rem}
+  </style>
 </head>
 <body>
   <header><h1>Hot Health — Report</h1></header>
-  <main class="wrap">
-    <section class="card">
-      <h2>Report</h2>
 
+  <main class="wrap">
+    <section class="card report-card">
+      <h2>Patient Report</h2>
+
+      <!-- Link + Actions -->
       <div class="row">
-        <div class="linkbox" id="linkBox">{{self_url}}</div>
+        <div class="linkbox mono" id="linkBox">{{SELF_URL}}</div>
         <div class="actions">
-          {{back_link}}
-          <button class="btn-primary" onclick="window.print()">🖨️ Print</button>
-          <button class="btn-aqua" id="copyBtn">📋 Copy Link</button>
+          <a class="btn-outline" id="backBtn" style="display:{{SHOW_BACK}}" href="{{BACK_HREF}}">↩︎ All Reports</a>
+          <button class="btn-primary" id="copyBtn">📋 Copy Link</button>
+          <button class="btn-aqua" onclick="window.print()">🖨️ Print</button>
         </div>
       </div>
 
-      {{#translate_picker}}
-      <div class="row">{{translate_picker}}</div>
-      {{/translate_picker}}
-
+      <!-- Key Info -->
       <div class="row">
         <div class="grid" style="width:100%">
           <div class="block">
-            <div class="kvs">
-              <p><b>Created:</b> {{created}}</p>
-              <p><b>Patient:</b> {{patient_name}} {{blood_type_badge}}</p>
-              <p><b>Email:</b> {{patient_email_link}}</p>
-              <p><b>Emergency:</b> {{emer_line}}</p>
+            <div class="kv">
+              <p><b>Created:</b> {{DATE}}</p>
+              <p>
+                <b>Patient:</b> {{PATIENT_NAME}} {{BLOOD_PILL}}
+              </p>
+              <p><b>Email:</b> {{PATIENT_EMAIL}}</p>
+              <p><b>Emergency:</b> {{EMER}}</p>
             </div>
+
             <hr/>
 
+            <!-- Dual Transcripts -->
             <h3>Transcript</h3>
             <div class="dual">
               <div class="panel">
-                <h4>Original {{detected_lang_tag}}</h4>
-                <pre>{{transcript}}</pre>
+                <h4>Original</h4>
+                <pre>{{TRANSCRIPT}}</pre>
               </div>
               <div class="panel">
-                <h4>Translated {{target_lang_tag}}</h4>
-                <pre>{{translated}}</pre>
+                <h4>Translated</h4>
+                <pre>{{TRANSLATED}}</pre>
               </div>
-            </div>
-
-            <hr/>
-            <h3>Key Facts</h3>
-            <div class="kf-list">
-              <h4>Medications</h4>
-              {{meds_block}}
-              <h4>Allergies</h4>
-              {{allergies_block}}
-              <h4>Conditions</h4>
-              {{conditions_block}}
-              <h4>Vitals</h4>
-              {{vitals_block}}
             </div>
           </div>
 
+          <!-- QR Panel -->
           <div class="block">
             <h3>QR Code</h3>
-            <div class="qrbox">
-              <img alt="QR to this report" src="{{qr_src}}"/>
+            <div class="qrwrap">
+              <img alt="QR to this report" src="/reports/{{ID}}/qrcode.png"/>
             </div>
-            <p class="muted" style="margin-top:8px">Scan with a phone to open this report.</p>
+            <p class="note" style="margin-top:.6rem">
+              Scan to open this report on a phone.
+            </p>
           </div>
         </div>
       </div>

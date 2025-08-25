@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Hot Health — Reports</title>
+  <link rel="stylesheet" href="/styles.css"/>
+  <style>
+    table{width:100%; border-collapse:collapse}
+    th,td{border-bottom:1px solid var(--border); padding:10px; text-align:left}
+    th{background:#f7fafc}
+  </style>
+</head>
+<body>
+  <header><h1>Hot Health — Reports</h1></header>
+  <main class="wrap">
+    <section class="card">
+      <h2>All Reports</h2>
+      <p class="muted">Tip: use the Translate form to add translated text to a report.</p>
+      <table>
+        <thead>
+          <tr><th>Created</th><th>Patient</th><th>ID</th><th>Target</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          {{ROWS}}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
