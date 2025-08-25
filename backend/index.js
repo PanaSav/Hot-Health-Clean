@@ -1,4 +1,4 @@
-// backend/index.js
+// backend/index.js  (sqlite3-only, no 'sqlite' helper)
 import express from "express";
 import multer from "multer";
 import path from "path";
@@ -8,7 +8,6 @@ import QRCode from "qrcode";
 import dotenv from "dotenv";
 import sqlite3 from "sqlite3";
 import { fileURLToPath } from "url";
-import { open } from "sqlite";
 import bodyParser from "body-parser";
 import fetch from "node-fetch";
 
@@ -19,9 +18,8 @@ const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 10000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").trim(); // if blank, derive from req
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").trim();
 
-// --- OpenAI config ---
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o";
 const TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
@@ -30,7 +28,6 @@ if (!OPENAI_API_KEY) {
   console.warn("⚠️  OPENAI_API_KEY missing — transcription/LLM calls will fail.");
 }
 
-// --- App & static ---
 const app = express();
 app.use(bodyParser.json({ limit: "2mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -39,7 +36,7 @@ app.use(express.static(path.join(__dirname, "public")));
 const uploadDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// --- Multer (accept .webm and other audio mimetypes) ---
+// Multer
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => {
@@ -51,19 +48,34 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (_req, file, cb) => {
-    const ok = /audio\/(webm|wav|ogg|mp3|mpeg|mp4|m4a|oga|flac)/i.test(
-      file.mimetype || ""
-    );
+    const ok = /audio\/(webm|wav|ogg|mp3|mpeg|mp4|m4a|oga|flac)/i.test(file.mimetype || "");
     cb(ok ? null : new Error("UNSUPPORTED_AUDIO_TYPE"));
   },
   limits: { fileSize: 30 * 1024 * 1024 },
 });
 
-// --- DB init (sqlite3 only, no `sqlite` peer) ---
-let db;
+// --- sqlite3 ONLY (promisified helpers) ---
+sqlite3.verbose();
+const dbFile = path.join(process.cwd(), "hothealth.sqlite");
+const db = new sqlite3.Database(dbFile);
+
+const dbExec = (sql) =>
+  new Promise((res, rej) => db.exec(sql, (err) => (err ? rej(err) : res())));
+const dbRun = (sql, params = []) =>
+  new Promise((res, rej) =>
+    db.run(sql, params, function (err) {
+      if (err) rej(err);
+      else res(this);
+    })
+  );
+const dbGet = (sql, params = []) =>
+  new Promise((res, rej) => db.get(sql, params, (err, row) => (err ? rej(err) : res(row))));
+const dbAll = (sql, params = []) =>
+  new Promise((res, rej) => db.all(sql, params, (err, rows) => (err ? rej(err) : res(rows))));
+
+// Init schema
 async function initDb() {
-  db = await open({ filename: path.join(process.cwd(), "hothealth.sqlite"), driver: sqlite3.Database });
-  await db.exec(`
+  await dbExec(`
     CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY,
       created TEXT,
@@ -93,9 +105,8 @@ async function initDb() {
       weightT TEXT
     );
   `);
-  // ensure cols exist (safe, ignore if exist)
   async function addCol(name, def) {
-    try { await db.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`); } catch {}
+    try { await dbExec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`); } catch {}
   }
   await addCol("doc_name", "TEXT");
   await addCol("doc_phone", "TEXT");
@@ -109,7 +120,7 @@ async function initDb() {
 }
 await initDb();
 
-// --- tiny helpers ---
+// Helpers
 function baseUrlFrom(req) {
   if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL.replace(/\/+$/, "");
   const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
@@ -120,13 +131,13 @@ function shortId() {
   return crypto.randomBytes(8).toString("hex");
 }
 function cleanList(arr) {
-  return (arr || []).map(s => (s || "").trim()).filter(Boolean);
+  return (arr || []).map((s) => (s || "").trim()).filter(Boolean);
 }
 function uniq(arr) {
   return [...new Set(arr)];
 }
 
-// --- OpenAI calls ---
+// OpenAI calls
 async function openaiTranscribe(localPath, filename, model) {
   const endpoint = "https://api.openai.com/v1/audio/transcriptions";
   const form = new (await import("form-data")).default();
@@ -142,7 +153,7 @@ async function openaiTranscribe(localPath, filename, model) {
     const t = await resp.text();
     throw new Error(`${resp.status} ${t}`);
   }
-  return resp.json(); // { text }
+  return resp.json();
 }
 
 async function openaiExtractFacts(transcript) {
@@ -155,8 +166,7 @@ You will extract structured health facts from the user's note. Return strict JSO
   "weight": "e.g., 200 lb" or "" }
 
 Rules:
-- Do NOT place weight or "I weigh..." into conditions.
-- Do NOT place blood pressure into conditions.
+- Do NOT place weight or blood pressure into conditions.
 - Normalize units (mg, g, mcg, lb/lbs, kg).
 - Keep medication names as-is (no hallucination).
 - If nothing found for a category, use [] or "" accordingly.
@@ -173,10 +183,7 @@ Text:
       temperature: 0.2,
     }),
   });
-  if (!resp.ok) {
-    const t = await resp.text();
-    throw new Error(`OpenAI extract error: ${t}`);
-  }
+  if (!resp.ok) throw new Error(await resp.text());
   const data = await resp.json();
   const text = data?.choices?.[0]?.message?.content || "{}";
   try { return JSON.parse(text); } catch { return { medications:[], allergies:[], conditions:[], blood_pressure:"", weight:"" }; }
@@ -194,33 +201,26 @@ async function openaiTranslate(text, targetLangCode) {
       temperature: 0.2,
     }),
   });
-  if (!resp.ok) {
-    const t = await resp.text();
-    throw new Error(`OpenAI translate error: ${t}`);
-  }
+  if (!resp.ok) throw new Error(await resp.text());
   const data = await resp.json();
   return data?.choices?.[0]?.message?.content?.trim() || text;
 }
 
-// --- GET / (landing)
+// Routes
 app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
-
-// --- simple health ---
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-// --- REPORT VIEW
 app.get("/reports/:id", async (req, res) => {
   const id = req.params.id;
-  const row = await db.get("SELECT * FROM reports WHERE id = ?", [id]);
+  const row = await dbGet("SELECT * FROM reports WHERE id = ?", [id]);
   if (!row) return res.status(404).send("Report not found");
 
   const shareUrl = `${baseUrlFrom(req)}/reports/${id}`;
   const qrDataUrl = await QRCode.toDataURL(shareUrl);
   const adminPw = encodeURIComponent(ADMIN_PASSWORD);
 
-  // Build template with icon-only share and dual summary
   const tpl = fs.readFileSync(path.join(__dirname, "templates", "report.html"), "utf8");
   function esc(v){ return (v ?? "").toString().replace(/[&<>]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[s])); }
   const html = tpl
@@ -257,12 +257,13 @@ app.get("/reports/:id", async (req, res) => {
   res.send(html);
 });
 
-// --- REPORTS LIST (admin)
 app.get("/reports", async (req, res) => {
   const password = (req.query.password || "").toString();
   if (password !== ADMIN_PASSWORD) return res.status(401).send("Unauthorized — add ?password=");
 
-  const rows = await db.all("SELECT id, created, name, email, blood, emer_name, emer_phone, emer_email, doc_name, doc_phone, doc_email, detectedLang, targetLang FROM reports ORDER BY datetime(created) DESC");
+  const rows = await dbAll(
+    "SELECT id, created, name, email, blood, emer_name, emer_phone, emer_email, doc_name, doc_phone, doc_email, detectedLang, targetLang FROM reports ORDER BY datetime(created) DESC"
+  );
 
   const tpl = fs.readFileSync(path.join(__dirname, "templates", "reports.html"), "utf8");
   const base = baseUrlFrom(req);
@@ -291,9 +292,7 @@ app.get("/reports", async (req, res) => {
             <span class="badge">Report for</span> <b>${(r.name||"—")}</b>
           </div>
           <div class="actions">
-            <a class="btn" target="_blank" href="${share}" title="Open">
-              <span class="ico">🔗</span> Open
-            </a>
+            <a class="btn" target="_blank" href="${share}" title="Open">🔗 Open</a>
             <a class="btn" target="_blank" href="mailto:${r.email}?subject=Hot%20Health%20Report&body=${encodeURIComponent(share)}" title="Email Patient">📧 Patient</a>
             <a class="btn" target="_blank" href="mailto:${r.emer_email}?subject=Shared%20Hot%20Health%20Report&body=${encodeURIComponent(share)}" title="Email Emergency">🆘 Emergency</a>
             <a class="btn danger" href="${base}/reports/${r.id}/delete?password=${ADMIN_PASSWORD}" title="Delete">🗑️ Delete</a>
@@ -321,16 +320,14 @@ app.get("/reports", async (req, res) => {
   res.send(html);
 });
 
-// --- translate existing report
 app.get("/reports/:id/translate", async (req, res) => {
   const password = (req.query.password || "").toString();
   if (password !== ADMIN_PASSWORD) return res.status(401).send("Unauthorized");
   const id = req.params.id;
   const targetLang = (req.query.lang || "").toString().trim();
-  const row = await db.get("SELECT * FROM reports WHERE id = ?", [id]);
+  const row = await dbGet("SELECT * FROM reports WHERE id = ?", [id]);
   if (!row) return res.status(404).send("Not found");
 
-  // translate summary bits + transcript
   let [medsT, allergiesT, conditionsT, bpT, weightT, translatedTranscript] =
     ["", "", "", "", "", ""];
   try {
@@ -344,28 +341,26 @@ app.get("/reports/:id/translate", async (req, res) => {
     console.error("translate error:", e.message);
   }
 
-  await db.run(`
-    UPDATE reports SET
+  await dbRun(
+    `UPDATE reports SET
       targetLang = ?,
       translatedTranscript = ?,
       medicationsT = ?, allergiesT = ?, conditionsT = ?,
       bpT = ?, weightT = ?
-    WHERE id = ?`,
+     WHERE id = ?`,
     [targetLang, translatedTranscript, medsT, allergiesT, conditionsT, bpT, weightT, id]
   );
 
   res.redirect(`/reports/${id}`);
 });
 
-// --- delete (admin)
 app.get("/reports/:id/delete", async (req, res) => {
   const password = (req.query.password || "").toString();
   if (password !== ADMIN_PASSWORD) return res.status(401).send("Unauthorized");
-  await db.run("DELETE FROM reports WHERE id = ?", [req.params.id]);
+  await dbRun("DELETE FROM reports WHERE id = ?", [req.params.id]);
   res.redirect(`/reports?password=${ADMIN_PASSWORD}`);
 });
 
-// --- upload (recorded audio + form fields) ---
 app.post("/upload", upload.single("audio"), async (req, res) => {
   try {
     const file = req.file;
@@ -381,14 +376,13 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     const doc_phone = (req.body.doc_phone || "").trim();
     const doc_fax   = (req.body.doc_fax || "").trim();
     const doc_email = (req.body.doc_email || "").trim();
-    const targetLang = (req.body.lang || "").trim(); // optional
+    const targetLang = (req.body.lang || "").trim();
 
     console.log("📥 Upload received:", {
       hasFile: !!file, filePath: file.path, originalName: file.originalname,
       mime: file.mimetype, size: file.size
     });
 
-    // Transcribe with retries + fallback
     let transcript = "";
     try {
       const t1 = await openaiTranscribe(file.path, file.originalname, TRANSCRIBE_MODEL);
@@ -401,7 +395,6 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       console.log("✅ Transcribed (whisper-1) chars:", transcript.length);
     }
 
-    // Extract facts
     const facts = await openaiExtractFacts(transcript);
     const meds = cleanList(facts.medications || []);
     let allergies = cleanList(facts.allergies || []);
@@ -409,7 +402,6 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     const bp = (facts.blood_pressure || "").trim();
     const weight = (facts.weight || "").trim();
 
-    // refine: keep weight/BP out of conditions
     function looksLikeWeight(s){
       return /\b(weigh(?:ed|s|ing)?|weight)\b/i.test(s) ||
              /\b(\d{2,3})\s?(kg|kilograms|kilos|lbs|pounds)\b/i.test(s);
@@ -421,7 +413,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
     allergies = uniq(allergies);
     conditions = uniq(conditions);
 
-    // Detect language (very light heuristic)
+    // detect language (simple)
     let detectedLang = "en";
     try {
       const det = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -440,14 +432,13 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       console.warn("lang detect failed:", e.message);
     }
 
-    // Optional translate at upload
+    // upload-time translate (optional)
     let translatedTranscript = transcript;
     let medsT = meds.join(", ");
     let allergiesT = allergies.join(", ");
     let conditionsT = conditions.join(", ");
     let bpT = bp;
     let weightT = weight;
-
     if (targetLang) {
       try {
         translatedTranscript = await openaiTranslate(transcript, targetLang);
@@ -463,7 +454,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
 
     const id = shortId();
     const created = new Date().toISOString().replace("T", " ").slice(0, 19);
-    await db.run(
+    await dbRun(
       `INSERT INTO reports
         (id, created, name, email, emer_name, emer_phone, emer_email, blood,
          doc_name, doc_phone, doc_fax, doc_email,
@@ -471,24 +462,19 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
          medications, medicationsT, allergies, allergiesT, conditions, conditionsT,
          bp, bpT, weight, weightT)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-       [
+      [
         id, created, name, email, emer_name, emer_phone, emer_email, blood,
         doc_name, doc_phone, doc_fax, doc_email,
         transcript, translatedTranscript, detectedLang, targetLang,
         meds.join(", "), medsT, allergies.join(", "), allergiesT, conditions.join(", "), conditionsT,
         bp, bpT, weight, weightT
-       ]
+      ]
     );
 
     const shareUrl = `${baseUrlFrom(req)}/reports/${id}`;
     const qrDataUrl = await QRCode.toDataURL(shareUrl);
 
-    res.json({
-      ok: true,
-      id,
-      shareUrl,
-      qrDataUrl,
-    });
+    res.json({ ok: true, id, shareUrl, qrDataUrl });
   } catch (e) {
     console.error("UPLOAD error:", e);
     res.status(500).json({ ok: false, error: e.message || "Server error" });
