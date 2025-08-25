@@ -1,132 +1,95 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Hot Health — Report for {{name}}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="UTF-8"/>
+  <title>Hot Health Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    :root{--indigo:#4b0082;--aqua:#00e5c0;--blue:#0077cc;--ink:#222}
-    *{box-sizing:border-box}
-    body{font-family:system-ui,Segoe UI,Inter,Arial,sans-serif;background:#f7fbff;margin:0;color:var(--ink)}
-    .header-shell{display:flex;justify-content:center;background:#fff;border-bottom:3px solid var(--aqua)}
-    header{width:100%;max-width:980px;padding:16px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
-    .title{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-    .title h1{color:var(--indigo);margin:0;font-size:1.2rem}
-    .title .patient{display:inline-flex;gap:8px;align-items:center;font-weight:600;color:#333}
-    .title svg{width:18px;height:18px;fill:var(--indigo)}
-    .shell{display:flex;justify-content:center;padding:18px}
-    .wrap{width:100%;max-width:980px;border:2px solid var(--aqua);border-radius:14px;background:#fff;padding:18px}
-    .section{border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:12px 0;background:#fff;box-shadow:0 6px 18px rgba(0,0,0,.03);page-break-inside:avoid}
-    .dual{display:flex;gap:12px;flex-wrap:wrap}
-    .block{flex:1;min-width:280px;border:1px solid #ddd;padding:12px;border-radius:8px;background:#f8faff}
-    .block h3{margin:0 0 6px 0;color:#333}
-    .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-    .btn{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border:1px solid #2e0051;border-radius:10px;background:var(--indigo);color:#fff;text-decoration:none}
-    .btn.secondary{background:#fff;color:var(--indigo)}
-    .btn:focus,.btn:hover{filter:brightness(1.04)}
-    .icon{width:18px;height:18px;display:inline-block;vertical-align:middle}
-    .muted{color:#666;font-size:.95em}
-    .qr img{border:1px dashed var(--aqua);padding:6px;border-radius:8px;background:#fff}
-    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-    @media (max-width:720px){.grid2{grid-template-columns:1fr}}
-    @media print{.print-hide{display:none}.wrap{border:none;padding:0}.section{box-shadow:none}}
-    .share-icon{display:inline-flex;align-items:center;gap:6px}
-    .share-icon .icon{fill:#0077cc}
+    body{font-family:Arial, sans-serif;background:#fdfdfd;margin:0;padding:2em;color:#222;}
+    header{border-bottom:3px solid aquamarine;margin-bottom:1em;padding-bottom:.5em;}
+    h1{color:#4b0082;}
+    .section{border:2px solid aquamarine;border-radius:8px;padding:1em;margin:1em 0;background:#fff;}
+    .dual-block{display:flex;gap:1em;flex-wrap:wrap;}
+    .block{flex:1;min-width:260px;border:1px solid #ddd;padding:1em;border-radius:6px;background:#f8faff;}
+    .block h3{margin-top:0;color:#333;}
+    .qr{text-align:center;margin:1em 0;}
+    a{color:#0077cc;text-decoration:none;}
+    a:hover{text-decoration:underline;}
+    footer{margin-top:2em;font-size:.85em;color:#555;text-align:center;}
+    .row{display:flex;gap:1em;flex-wrap:wrap}
+    .field{min-width:200px}
   </style>
 </head>
 <body>
-  <div class="header-shell">
-    <header>
-      <div class="title">
-        <svg viewBox="0 0 24 24"><path d="M12 12c2.7 0 5-2.3 5-5s-2.3-5-5-5-5 2.3-5 5 2.3 5 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
-        <h1>Report for {{name}}</h1>
+  <header>
+    <h1>Hot Health — Report</h1>
+    <p><b>Created:</b> {{created}}</p>
+    <p><b>Share Link:</b> <a href="{{shareUrl}}" target="_blank">Open report</a></p>
+    <div class="qr">
+      <p>Scan on a phone or click the link above:</p>
+      <img src="{{qrDataUrl}}" alt="QR Code for this report"/>
+    </div>
+  </header>
+
+  <section class="section">
+    <h2>Patient Details</h2>
+    <div class="row">
+      <div class="field"><b>Name:</b> {{name}}</div>
+      <div class="field"><b>Email:</b> <a href="mailto:{{email}}">{{email}}</a></div>
+      <div class="field"><b>Blood Type:</b> {{blood}}</div>
+    </div>
+    <div class="row">
+      <div class="field"><b>Emergency Contact:</b> {{emer_name}}</div>
+      <div class="field"><b>Phone:</b> {{emer_phone}}</div>
+      <div class="field"><b>Email:</b> <a href="mailto:{{emer_email}}">{{emer_email}}</a></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Doctor</h2>
+    <div class="row">
+      <div class="field"><b>Name:</b> {{doc_name}}</div>
+      <div class="field"><b>Phone:</b> {{doc_phone}}</div>
+      <div class="field"><b>Fax:</b> {{doc_fax}}</div>
+      <div class="field"><b>Email:</b> <a href="mailto:{{doc_email}}">{{doc_email}}</a></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Pharmacy</h2>
+    <div class="row">
+      <div class="field"><b>Name:</b> {{pharm_name}}</div>
+      <div class="field"><b>Phone:</b> {{pharm_phone}}</div>
+      <div class="field"><b>Fax:</b> {{pharm_fax}}</div>
+    </div>
+    <div class="row">
+      <div class="field"><b>Address:</b> {{pharm_address}}</div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Summary</h2>
+    <p><b>Medications:</b> {{medications}}</p>
+    <p><b>Allergies:</b> {{allergies}}</p>
+    <p><b>Conditions:</b> {{conditions}}</p>
+    <p><b>Blood Pressure:</b> {{bp}}</p>
+    <p><b>Weight:</b> {{weight}}</p>
+  </section>
+
+  <section class="section">
+    <h2>Transcript</h2>
+    <div class="dual-block">
+      <div class="block">
+        <h3>Original ({{detectedLang}})</h3>
+        <p>{{transcript}}</p>
       </div>
-      <span class="muted">Created: {{created}}</span>
-    </header>
-  </div>
+      <div class="block">
+        <h3>Translated ({{targetLang}})</h3>
+        <p>{{translatedTranscript}}</p>
+      </div>
+    </div>
+  </section>
 
-  <div class="shell">
-    <main class="wrap">
-
-      <section class="section print-hide">
-        <div class="toolbar">
-          <a class="btn" href="javascript:window.print()" title="Print">🖨️ Print</a>
-          <a class="btn secondary" href="mailto:{{email}}?subject=Your%20Hot%20Health%20Report&body={{shareUrl}}">📧 Email Patient</a>
-          <a class="btn secondary" href="mailto:{{emer_email}}?subject=Shared%20Hot%20Health%20Report&body={{shareUrl}}">🆘 Email Emergency</a>
-          <a class="btn secondary" href="mailto:?subject=Hot%20Health%20Report&body={{shareUrl}}">✉️ Email Other</a>
-          <a class="btn secondary" href="/reports?password={{adminPw}}" target="_blank">📚 Open All Reports</a>
-          <a class="btn secondary" href="/">➕ Create Another</a>
-          <a class="share-icon" href="{{shareUrl}}" target="_blank" title="Open share link">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M14 3h7v7h-2V6.41l-7.29 7.3-1.42-1.42 7.3-7.29H14V3zM5 5h6v2H7v10h10v-4h2v6H5V5z"/></svg>
-          </a>
-        </div>
-        <div class="muted" style="margin-top:6px">Scan the QR below or tap the share icon to open this report on a phone.</div>
-      </section>
-
-      <section class="section">
-        <h2>Patient Details</h2>
-        <div class="grid2">
-          <div>
-            <p><b>Name:</b> {{name}}</p>
-            <p><b>Email:</b> <a href="mailto:{{email}}">{{email}}</a></p>
-            <p><b>Blood Type:</b> {{blood}}</p>
-            <p><b>Emergency Contact:</b> {{emer_name}} • {{emer_phone}} • <a href="mailto:{{emer_email}}">{{emer_email}}</a></p>
-          </div>
-          <div>
-            <h3 style="margin:0 0 6px 0;">Family Doctor</h3>
-            <p><b>Name:</b> {{doc_name}}</p>
-            <p><b>Phone:</b> {{doc_phone}}</p>
-            <p><b>Fax:</b> {{doc_fax}}</p>
-            <p><b>Email:</b> <a href="mailto:{{doc_email}}">{{doc_email}}</a></p>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <h2>Summary</h2>
-        <div class="dual">
-          <div class="block">
-            <h3>Original ({{detectedLang}})</h3>
-            <p><b>Medications:</b> {{medications}}</p>
-            <p><b>Allergies:</b> {{allergies}}</p>
-            <p><b>Conditions:</b> {{conditions}}</p>
-            <p><b>Blood Pressure:</b> {{bp}}</p>
-            <p><b>Weight:</b> {{weight}}</p>
-          </div>
-          <div class="block">
-            <h3>Translated ({{targetLang}})</h3>
-            <p><b>Medications:</b> {{medicationsT}}</p>
-            <p><b>Allergies:</b> {{allergiesT}}</p>
-            <p><b>Conditions:</b> {{conditionsT}}</p>
-            <p><b>Blood Pressure:</b> {{bpT}}</p>
-            <p><b>Weight:</b> {{weightT}}</p>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <h2>Transcript</h2>
-        <div class="dual">
-          <div class="block">
-            <h3>Original ({{detectedLang}})</h3>
-            <p>{{transcript}}</p>
-          </div>
-          <div class="block">
-            <h3>Translated ({{targetLang}})</h3>
-            <p>{{translatedTranscript}}</p>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <h2>QR</h2>
-        <p class="muted">Scan with a phone to open this report.</p>
-        <div class="qr">
-          <img src="{{qrDataUrl}}" alt="QR Code for this report" width="180" />
-        </div>
-      </section>
-
-    </main>
-  </div>
+  <footer>Hot Health © 2025</footer>
 </body>
 </html>

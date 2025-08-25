@@ -1,89 +1,96 @@
 // backend/public/app.js
-function $(id){ return document.getElementById(id); }
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const btn = $("btnRec");
+  const result = $("result");
+  const recMeta = $("recMeta");
+  const errBox = $("error");
 
-const LS_KEYS = [
-  "pName","pEmail","blood","eName","ePhone","eEmail",
-  "docName","docPhone","docFax","docEmail","lang"
-];
+  let mediaRecorder, chunks = [], recStart = 0;
 
-window.addEventListener('DOMContentLoaded', ()=>{
-  LS_KEYS.forEach(k=>{
-    const el = $(k);
-    if (el && localStorage.getItem(k) !== null) el.value = localStorage.getItem(k);
-  });
-});
+  function showError(msg){ errBox.textContent = msg || ""; }
+  function setResult(html){ result.innerHTML = html; }
 
-LS_KEYS.forEach(k=>{
-  const el = $(k);
-  if (el) el.addEventListener('change', ()=> localStorage.setItem(k, el.value || ""));
-});
-
-function appendFormValues(fd){
-  const fields = {
-    name: $("pName")?.value?.trim() || "",
-    email: $("pEmail")?.value?.trim() || "",
-    blood_type: $("blood")?.value || "",
-    emer_name: $("eName")?.value?.trim() || "",
-    emer_phone: $("ePhone")?.value?.trim() || "",
-    emer_email: $("eEmail")?.value?.trim() || "",
-    doc_name: $("docName")?.value?.trim() || "",
-    doc_phone: $("docPhone")?.value?.trim() || "",
-    doc_fax: $("docFax")?.value?.trim() || "",
-    doc_email: $("docEmail")?.value?.trim() || "",
-    lang: $("lang")?.value || ""
-  };
-  Object.entries(fields).forEach(([k,v])=> fd.append(k, v));
-}
-
-// --- recording ---
-let mediaRecorder, chunks = [];
-const btnRec = $("btnRec");
-const recMeta = $("recMeta");
-const result = $("result");
-const errorEl = $("error");
-
-async function startRec(){
-  errorEl.textContent = "";
-  try {
-    const secure = location.protocol === "https:" || location.hostname === "localhost";
-    if (!secure) throw new Error("Microphone requires HTTPS or localhost.");
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  async function startRec(){
+    showError("");
     chunks = [];
-    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-    mediaRecorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    }catch(e){
+      showError("Microphone requires HTTPS or localhost, and a supported browser.");
+      return;
+    }
+    mediaRecorder.ondataavailable = (e)=>{ if(e.data?.size) chunks.push(e.data); };
     mediaRecorder.onstop = onStop;
     mediaRecorder.start();
-    btnRec.textContent = "Stop";
-    recMeta.textContent = "Recording… click Stop when done.";
-  } catch (e) {
-    errorEl.textContent = "ERROR: " + e.message;
+    recStart = Date.now();
+    btn.textContent = "Stop";
+    $("recHint").textContent = "Recording… click Stop when done.";
   }
-}
-async function stopRec(){
-  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
-  btnRec.textContent = "Record";
-}
-btnRec.addEventListener("click", ()=> (btnRec.textContent === "Record" ? startRec() : stopRec()));
 
-async function onStop(){
-  const blob = new Blob(chunks, { type: "audio/webm" });
-  recMeta.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB`;
-  const fd = new FormData();
-  fd.append("audio", blob, "recording.webm");
-  appendFormValues(fd);
+  async function onStop(){
+    try{
+      const blob = new Blob(chunks, { type: "audio/webm" });
+      const kb = Math.round(blob.size/1024);
+      recMeta.textContent = `Recorded ${kb} KB`;
 
-  result.innerHTML = "⏫ Uploading…";
+      if (!blob.size) { showError("No audio captured."); return; }
 
-  try {
-    const resp = await fetch("/upload", { method: "POST", body: fd });
-    const data = await resp.json().catch(()=> ({}));
-    if (!resp.ok || !data.ok) throw new Error((data && data.error) || "Upload failed");
-    // show QR + link (icon only on report page; here we can preview)
-    result.innerHTML = `
-      <div class="qrprev"><img src="${data.qrDataUrl}" width="140"></div>
-      <div><a class="btn" target="_blank" href="${data.shareUrl}">Open Report</a></div>
-    `;
-  } catch (e) {
-    result.textContent = `Upload failed: ${e.message}`;
+      const fd = new FormData();
+      fd.append("audio", blob, "recording.webm"); // <-- critical name "audio"
+
+      fd.append("name", $("pName").value || "");
+      fd.append("email", $("pEmail").value || "");
+      fd.append("blood_type", $("blood").value || "");
+      fd.append("emer_name", $("eName").value || "");
+      fd.append("emer_phone", $("ePhone").value || "");
+      fd.append("emer_email", $("eEmail").value || "");
+
+      fd.append("doc_name",  $("docName").value || "");
+      fd.append("doc_phone", $("docPhone").value || "");
+      fd.append("doc_fax",   $("docFax").value || "");
+      fd.append("doc_email", $("docEmail").value || "");
+
+      fd.append("pharm_name",    $("phName").value || "");
+      fd.append("pharm_phone",   $("phPhone").value || "");
+      fd.append("pharm_fax",     $("phFax").value || "");
+      fd.append("pharm_address", $("phAddr").value || "");
+
+      fd.append("lang", $("lang").value || "");
+
+      setResult("Uploading…");
+      const base = location.origin; // works for Render and local
+      const res = await fetch(`${base}/upload`, { method: "POST", body: fd });
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || `Upload failed (${res.status})`);
+      }
+      // show QR + link
+      setResult(`
+        <div class="qr-wrap">
+          <img class="qr" src="${data.qrDataUrl}" alt="QR"/>
+        </div>
+        <div class="linkRow">
+          <a class="btn" target="_blank" href="${data.shareUrl}">Open report</a>
+          <button class="btn" onclick="navigator.clipboard.writeText('${data.shareUrl}').then(()=>alert('Link copied'))">Copy link</button>
+        </div>
+      `);
+    }catch(e){
+      console.error(e);
+      showError(`Upload failed: ${e.message}`);
+      setResult("Record and stop to generate a report + QR.");
+    }finally{
+      btn.textContent = "Record";
+      $("recHint").textContent = "Click to record a short health note (3–10s).";
+    }
   }
-}
+
+  btn.addEventListener("click", ()=>{
+    if (!mediaRecorder || mediaRecorder.state === "inactive") {
+      startRec();
+    } else {
+      mediaRecorder.stop();
+    }
+  });
+})();
