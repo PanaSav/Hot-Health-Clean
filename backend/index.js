@@ -34,7 +34,6 @@ app.use(express.static(path.join(__dirname, "public")));
 const uploadDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// Multer (expects field name: "audio")
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => {
@@ -43,14 +42,21 @@ const storage = multer.diskStorage({
     cb(null, `${id}${ext}`);
   },
 });
+
 const upload = multer({
   storage,
+  // Accept even if the browser marks the part as application/octet-stream
   fileFilter: (_req, file, cb) => {
-    const ok = /audio\/(webm|wav|ogg|mp3|mpeg|mp4|m4a|oga|flac)/i.test(file.mimetype || "");
-    cb(ok ? null : new Error("UNSUPPORTED_AUDIO_TYPE"));
+    const mt = (file.mimetype || "").toLowerCase();
+    if (
+      mt === "application/octet-stream" ||
+      /audio\/(webm|wav|ogg|mp3|mpeg|mp4|m4a|oga|flac)/i.test(mt)
+    ) cb(null, true);
+    else cb(null, true); // be permissive; we validate by extension/attempt
   },
   limits: { fileSize: 30 * 1024 * 1024 },
 });
+
 
 // sqlite3 helper (promisified)
 sqlite3.verbose();
