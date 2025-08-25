@@ -1,20 +1,25 @@
 // backend/index.js
 import express from "express";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
 import QRCode from "qrcode";
-import bodyParser from "body-parser";
-import OpenAI from "openai";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4000;
+
+// ✅ Serve static frontend assets from backend/public
+app.use(express.static(path.join(__dirname, "public")));
+
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
