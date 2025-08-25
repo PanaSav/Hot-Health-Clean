@@ -1,74 +1,94 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>Health Report</title>
-    <link rel="stylesheet" href="/templates/report.css" />
-  </head>
-  <body>
-    <div class="container">
-      <header>
-        <h1>Health Report</h1>
-        <div class="meta">
-          Created {{createdAt}} • Detected / Target: {{detected}}
-          <span style="float:right">
-            <a href="{{adminLink}}">All reports</a>
-          </span>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Hot Health — Report</title>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body>
+  <header><h1>Hot Health — Report</h1></header>
+  <main class="wrap">
+    <section class="card">
+      <h2>Report</h2>
+
+      <div class="row">
+        <div class="linkbox" id="linkBox">{{self_url}}</div>
+        <div class="actions">
+          {{back_link}}
+          <button class="btn-primary" onclick="window.print()">🖨️ Print</button>
+          <button class="btn-aqua" id="copyBtn">📋 Copy Link</button>
         </div>
-      </header>
-
-      <div class="card">
-        <h2>Patient</h2>
-        <div>Blood Type: <strong>{{bloodType}}</strong></div>
-        <div>Share Link: <a href="{{shareLink}}">{{shareLink}}</a></div>
       </div>
 
-      <div class="card">
-        <h2>Medications</h2>
-        <div class="list">{{origMeds}}</div>
-        {{#transMeds}}
-        <h3>Translated Medications{{viewLangLabel}}</h3>
-        <div class="list">{{transMeds}}</div>
-        {{/transMeds}}
-      </div>
+      {{#translate_picker}}
+      <div class="row">{{translate_picker}}</div>
+      {{/translate_picker}}
 
-      <div class="card">
-        <h2>Allergies</h2>
-        <div class="list">{{origAllergies}}</div>
-        {{#transAllergies}}
-        <h3>Translated Allergies{{viewLangLabel}}</h3>
-        <div class="list">{{transAllergies}}</div>
-        {{/transAllergies}}
-      </div>
+      <div class="row">
+        <div class="grid" style="width:100%">
+          <div class="block">
+            <div class="kvs">
+              <p><b>Created:</b> {{created}}</p>
+              <p><b>Patient:</b> {{patient_name}} {{blood_type_badge}}</p>
+              <p><b>Email:</b> {{patient_email_link}}</p>
+              <p><b>Emergency:</b> {{emer_line}}</p>
+            </div>
+            <hr/>
 
-      <div class="card">
-        <h2>Conditions</h2>
-        <div class="list">{{origConditions}}</div>
-        {{#transConditions}}
-        <h3>Translated Conditions{{viewLangLabel}}</h3>
-        <div class="list">{{transConditions}}</div>
-        {{/transConditions}}
-      </div>
+            <h3>Transcript</h3>
+            <div class="dual">
+              <div class="panel">
+                <h4>Original {{detected_lang_tag}}</h4>
+                <pre>{{transcript}}</pre>
+              </div>
+              <div class="panel">
+                <h4>Translated {{target_lang_tag}}</h4>
+                <pre>{{translated}}</pre>
+              </div>
+            </div>
 
-      <div class="card">
-        <h2>Transcript</h2>
-        <div class="block">{{origTranscript}}</div>
-        {{#transTranscript}}
-        <div class="block alt">{{transTranscript}}</div>
-        {{/transTranscript}}
-      </div>
+            <hr/>
+            <h3>Key Facts</h3>
+            <div class="kf-list">
+              <h4>Medications</h4>
+              {{meds_block}}
+              <h4>Allergies</h4>
+              {{allergies_block}}
+              <h4>Conditions</h4>
+              {{conditions_block}}
+              <h4>Vitals</h4>
+              {{vitals_block}}
+            </div>
+          </div>
 
-      <div class="card qr">
-        <h2>Share</h2>
-        <img src="{{qrDataUrl}}" alt="QR Code" width="180" height="180" />
-        <div><a href="{{shareLink}}">{{shareLink}}</a></div>
+          <div class="block">
+            <h3>QR Code</h3>
+            <div class="qrbox">
+              <img alt="QR to this report" src="{{qr_src}}"/>
+            </div>
+            <p class="muted" style="margin-top:8px">Scan with a phone to open this report.</p>
+          </div>
+        </div>
       </div>
-    </div>
-    <script>
-      // remove mustache tags for empty translated blocks
-      document.body.innerHTML = document.body.innerHTML
-        .replace(/{{#\w+}}/g,'')
-        .replace(/{{\/\w+}}/g,'');
-    </script>
-  </body>
+    </section>
+  </main>
+
+  <script>
+    (function(){
+      const btn = document.getElementById('copyBtn');
+      const box = document.getElementById('linkBox');
+      btn?.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(box.textContent.trim());
+          btn.textContent = '✅ Copied!';
+          setTimeout(()=> btn.textContent='📋 Copy Link', 1200);
+        } catch {
+          btn.textContent = '❌ Copy failed';
+          setTimeout(()=> btn.textContent='📋 Copy Link', 1200);
+        }
+      });
+    })();
+  </script>
+</body>
 </html>

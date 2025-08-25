@@ -407,6 +407,12 @@ app.get("/reports", async (req, res) => {
 });
 
 // ---------- View single report (dual blocks + QR)
+import fs from "fs";
+import path from "path";
+// ... (rest of your imports)
+
+// inside index.js, replace the whole app.get("/reports/:id", ...) with:
+
 app.get("/reports/:id", async (req, res) => {
   const r = await db.get("SELECT * FROM reports WHERE id = ?", [req.params.id]);
   if (!r) return res.status(404).send("Report not found");
@@ -416,33 +422,44 @@ app.get("/reports/:id", async (req, res) => {
   const base  = `${proto}://${host}`;
   const selfUrl = `${base}${req.originalUrl.split("?")[0]}`;
   const pw = (req.query.password || "").trim();
-  const backHref = pw ? `${base}/reports?password=${encodeURIComponent(pw)}` : "";
 
+  // JSON fields
   const meds = safeParseJSON(r.meds_json, []);
   const allergies = safeParseJSON(r.allergies_json, []);
   const conditions = safeParseJSON(r.conditions_json, []);
   const vitals = safeParseJSON(r.vitals_json, {});
 
-  const medsList = meds.length
-    ? `<ul>${meds.map(m =>
-        `<li>${esc(m.name)}${m.dose?` — ${esc(m.dose)} ${esc(m.unit||"")}`:""}${m.freq?` (${esc(m.freq)})`:""}${m.notes?` — ${esc(m.notes)}`:""}</li>`
-      ).join("")}</ul>`
+  // Build pieces
+  const backHref = pw ? `${base}/reports?password=${encodeURIComponent(pw)}` : "";
+  const back_link = backHref ? `<a class="btn-outline" href="${backHref}">↩︎ All Reports</a>` : "";
+  const blood_type_badge = r.blood_type ? `<span class="badge" title="Blood Type">${esc(r.blood_type)}</span>` : "";
+  const patient_email_link = r.patient_email ? `<a href="mailto:${esc(r.patient_email)}">${esc(r.patient_email)}</a>` : `<span class="muted">(none)</span>`;
+  const emer_bits = [r.emer_name, r.emer_phone, r.emer_email ? `<a href="mailto:${esc(r.emer_email)}">${esc(r.emer_email)}</a>` : ""]
+    .filter(Boolean).join(" · ");
+  const emer_line = emer_bits || `<span class="muted">(none)</span>`;
+
+  const detected_lang_tag = r.detected_lang ? `(${esc(r.detected_lang)})` : "";
+  const target_lang_tag = r.lang ? `(${esc(r.lang)})` : "(select below)";
+
+  const meds_block = meds.length
+    ? `<ul>${meds.map(m => `<li>${esc(m.name)}${m.dose?` — ${esc(m.dose)} ${esc(m.unit||"")}`:""}${m.freq?` (${esc(m.freq)})`:""}${m.notes?` — ${esc(m.notes)}`:""}</li>`).join("")}</ul>`
     : `<div class="muted">None mentioned</div>`;
 
-  const allergiesList = allergies.length
+  const allergies_block = allergies.length
     ? `<ul>${allergies.map(a => `<li>${esc(a)}</li>`).join("")}</ul>`
     : `<div class="muted">None mentioned</div>`;
 
-  const conditionsList = conditions.length
+  const conditions_block = conditions.length
     ? `<ul>${conditions.map(c => `<li>${esc(c)}</li>`).join("")}</ul>`
     : `<div class="muted">None mentioned</div>`;
 
-  const vitalsBlock = `
-    ${vitals?.bp?.sys && vitals?.bp?.dia ? `<div><b>Blood Pressure:</b> ${vitals.bp.sys}/${vitals.bp.dia}</div>` : ""}
-    ${vitals?.weight?.value ? `<div><b>Weight:</b> ${vitals.weight.value} ${vitals.weight.unit || ""}</div>` : ""}
-  `;
+  const vitals_piece = []
+  if (vitals?.bp?.sys && vitals?.bp?.dia) vitals_piece.push(`<div><b>Blood Pressure:</b> ${vitals.bp.sys}/${vitals.bp.dia}</div>`);
+  if (vitals?.weight?.value) vitals_piece.push(`<div><b>Weight:</b> ${vitals.weight.value} ${vitals.weight.unit || ""}</div>`);
+  const vitals_block = vitals_piece.length ? vitals_piece.join("") : `<div class="muted">None mentioned</div>`;
 
-  const translatePicker = `
+  // If no translation yet, show picker; else hide it.
+  const translatePicker = (r.translated || r.translated_summary) ? "" : `
     <form method="post" action="/reports/${r.id}/translate" style="display:flex;gap:8px;align-items:center;margin:8px 0;">
       <input type="hidden" name="password" value="${esc(pw)}"/>
       <label for="to" class="muted">Translate to:</label>
@@ -458,119 +475,52 @@ app.get("/reports/:id", async (req, res) => {
         <option value="ja">日本語</option>
         <option value="ko">한국어</option>
       </select>
-      <button class="btn btn-copy" type="submit">🌍 Translate this report</button>
+      <button class="btn-aqua" type="submit">🌍 Translate this report</button>
     </form>`;
 
-  res.send(`
-  <!doctype html>
-  <html lang="en">
-  <head>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width,initial-scale=1"/>
-    <title>Hot Health — Report</title>
-    <link rel="stylesheet" href="/styles.css"/>
-    <style>
-      .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 18px}
-      .btn{padding:10px 14px;border-radius:10px;border:0;cursor:pointer;font-weight:700}
-      .btn-print{background:#111;color:#fff}
-      .btn-copy{background:#00d1d1;color:#073b3b}
-      .btn-back{background:#6b46c1;color:#fff}
-      .linkbox{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid rgba(0,0,0,.1);background:#f7fafc;word-break:break-all}
-      @media print {.toolbar{display:none}}
-      .grid{display:grid;grid-template-columns:2fr 1fr;gap:16px}
-      @media (max-width:980px){ .grid{grid-template-columns:1fr} }
-      .block h3{margin:10px 0 8px}
-      .kvs p{margin:4px 0}
-      .qrbox{display:flex;justify-content:center;align-items:center;border:1px dashed #a0aec0;border-radius:12px;padding:12px;background:#f7fafc}
-      .qrbox img{max-width:100%;height:auto}
-    </style>
-  </head>
-  <body>
-    <header><h1>Hot Health — Report</h1></header>
-    <main class="wrap">
-      <section class="card">
-        <h2>Report</h2>
-        <div class="row">
-          <div class="toolbar">
-            ${ backHref ? `<a class="btn btn-back" href="${backHref}">↩︎ Back to All Reports</a>` : "" }
-            <button class="btn btn-print" onclick="window.print()">🖨️ Print Report</button>
-            <button class="btn btn-copy" id="copyBtn">📋 Copy Link</button>
-          </div>
-          <div class="linkbox" id="linkBox">${selfUrl}</div>
-        </div>
+  // Load template
+  const tplPath = path.join(process.cwd(), "backend", "templates", "report.html");
+  let html = "";
+  try {
+    html = fs.readFileSync(tplPath, "utf8");
+  } catch {
+    return res.status(500).send("Template missing (backend/templates/report.html)");
+  }
 
-        ${ (r.translated || r.translated_summary) ? "" : `<div class="row">${translatePicker}</div>` }
+  // Helper replace
+  function put(key, value) {
+    html = html.replaceAll(`{{${key}}}`, value ?? "");
+    // optional blocks {{#key}}...{{/key}} shown only if value is truthy
+    const blockRegex = new RegExp(`{{#${key}}}([\\s\\S]*?){{\\/${key}}}`, "g");
+    html = html.replace(blockRegex, value ? value : "");
+  }
 
-        <div class="row">
-          <div class="grid" style="width:100%">
-            <div class="block">
-              <div class="kvs">
-                <p><b>Created:</b> ${esc(r.created)}</p>
-                <p><b>Patient:</b> ${esc(r.patient_name)} ${r.blood_type ? `(${esc(r.blood_type)})` : ""}</p>
-                <p><b>Email:</b> ${r.patient_email ? `<a href="mailto:${esc(r.patient_email)}">${esc(r.patient_email)}</a>` : ""}</p>
-                <p><b>Emergency:</b> ${esc(r.emer_name || "")}${r.emer_phone ? " · "+esc(r.emer_phone) : ""}${r.emer_email ? ` · <a href="mailto:${esc(r.emer_email)}">${esc(r.emer_email)}</a>` : ""}</p>
-              </div>
-              <hr/>
+  put("self_url", `${base}${req.originalUrl.split("?")[0]}`);
+  put("created", esc(r.created || ""));
+  put("patient_name", esc(r.patient_name || "(anon)"));
+  put("blood_type_badge", blood_type_badge);
+  put("patient_email_link", patient_email_link);
+  put("emer_line", emer_line);
 
-              <h3>Summary (Original${r.detected_lang?`: ${esc(r.detected_lang)}`:""})</h3>
-              <pre>${esc(r.summary || "")}</pre>
+  put("detected_lang_tag", detected_lang_tag);
+  put("target_lang_tag", target_lang_tag);
 
-              <h3>Transcript (Original)</h3>
-              <pre>${esc(r.transcript || "")}</pre>
+  // transcripts: always show original; translated panel can be blank gracefully
+  put("transcript", esc(r.transcript || ""));
+  put("translated", esc(r.translated || ""));
 
-              <h3>Medications</h3>
-              ${medsList}
+  put("meds_block", meds_block);
+  put("allergies_block", allergies_block);
+  put("conditions_block", conditions_block);
+  put("vitals_block", vitals_block);
 
-              <h3>Allergies</h3>
-              ${allergiesList}
+  put("qr_src", `/reports/${r.id}/qrcode.png`);
+  put("back_link", back_link);
+  put("translate_picker", translatePicker);
 
-              <h3>Conditions</h3>
-              ${conditionsList}
-
-              ${vitalsBlock}
-
-              ${(r.translated || r.translated_summary) ? `
-                <hr/>
-                <h3>Summary (Translated${r.lang?`: ${esc(r.lang)}`:""})</h3>
-                <pre>${esc(r.translated_summary || "")}</pre>
-
-                <h3>Transcript (Translated)</h3>
-                <pre>${esc(r.translated || "")}</pre>
-              ` : ""}
-            </div>
-
-            <div class="block">
-              <h3>QR Code</h3>
-              <div class="qrbox">
-                <img alt="QR to this report" src="/reports/${r.id}/qrcode.png"/>
-              </div>
-              <p class="muted" style="margin-top:8px">Scan with a phone to open this exact report.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <script>
-      (function(){
-        const btn = document.getElementById('copyBtn');
-        const box = document.getElementById('linkBox');
-        btn?.addEventListener('click', async () => {
-          try {
-            await navigator.clipboard.writeText(box.textContent.trim());
-            btn.textContent = '✅ Copied!';
-            setTimeout(()=> btn.textContent='📋 Copy Link', 1200);
-          } catch {
-            btn.textContent = '❌ Copy failed';
-            setTimeout(()=> btn.textContent='📋 Copy Link', 1200);
-          }
-        });
-      })();
-    </script>
-  </body>
-  </html>
-  `);
+  res.send(html);
 });
+
 
 // ---------- Start server
 app.listen(PORT, () => {
