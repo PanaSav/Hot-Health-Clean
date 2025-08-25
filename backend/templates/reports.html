@@ -1,31 +1,79 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="UTF-8">
   <title>Hot Health — Reports</title>
-  <link rel="stylesheet" href="/styles.css"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    table{width:100%; border-collapse:collapse}
-    th,td{border-bottom:1px solid var(--border); padding:10px; text-align:left}
-    th{background:#f7fafc}
+    :root{--indigo:#4b0082;--aqua:#00e5c0;--blue:#0077cc;--ink:#222}
+    body{font-family:system-ui,Segoe UI,Inter,Arial,sans-serif;background:#f7fbff;margin:0;color:var(--ink)}
+    header{background:#fff;border-bottom:3px solid var(--aqua);padding:14px 20px}
+    h1{margin:0;color:var(--indigo)}
+    main{padding:20px;max-width:960px;margin:auto}
+    ul.reports{list-style:none;padding:0;display:flex;flex-direction:column;gap:14px}
+    li.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.05);padding:16px;display:flex;flex-direction:column;gap:8px}
+    .top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+    .patient{font-weight:600;color:#333;display:flex;align-items:center;gap:6px}
+    .patient svg{width:18px;height:18px;fill:var(--indigo)}
+    .meta{font-size:.9em;color:#666}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}
+    .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:.9em;border-radius:8px;text-decoration:none}
+    .btn svg{width:16px;height:16px}
+    .btn.open{background:var(--indigo);color:#fff}
+    .btn.trans{background:#fff;border:1px solid var(--blue);color:var(--blue)}
+    .btn.del{background:#fff;border:1px solid #e33;color:#e33}
+    select{padding:4px 8px;border-radius:6px}
   </style>
 </head>
 <body>
-  <header><h1>Hot Health — Reports</h1></header>
-  <main class="wrap">
-    <section class="card">
-      <h2>All Reports</h2>
-      <p class="muted">Tip: use the Translate form to add translated text to a report.</p>
-      <table>
-        <thead>
-          <tr><th>Created</th><th>Patient</th><th>ID</th><th>Target</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-          {{ROWS}}
-        </tbody>
-      </table>
-    </section>
+  <header>
+    <h1>Hot Health — Reports</h1>
+  </header>
+  <main>
+    <ul class="reports">
+      {{#reports}}
+      <li class="card">
+        <div class="top">
+          <div class="patient">
+            <svg viewBox="0 0 24 24"><path d="M12 12c2.7 0 5-2.3 5-5s-2.3-5-5-5-5 2.3-5 5 2.3 5 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
+            Report for {{name}}
+          </div>
+          <div class="meta">{{id}} — {{created}}</div>
+        </div>
+        <div class="actions">
+          <a class="btn open" href="/reports/{{id}}?password={{adminPw}}" target="_blank">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zM11 6h2v6h4v2h-6V6z"/></svg>
+            Open
+          </a>
+          <!-- Translate dropdown -->
+          <form method="get" action="/reports/{{id}}/translate" target="_blank">
+            <input type="hidden" name="password" value="{{adminPw}}">
+            <select name="lang" onchange="this.form.submit()">
+              <option value="">Translate…</option>
+              <option value="fr">French</option>
+              <option value="es">Spanish</option>
+              <option value="pt">Portuguese</option>
+              <option value="de">German</option>
+              <option value="it">Italian</option>
+              <option value="ar">Arabic</option>
+              <option value="hi">Hindi</option>
+              <option value="zh">Chinese</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="he">Hebrew</option>
+              <option value="pa">Punjabi</option>
+              <option value="sr">Serbian</option>
+            </select>
+          </form>
+          <!-- Delete -->
+          <a class="btn del" href="/reports/{{id}}/delete?password={{adminPw}}" onclick="return confirm('Delete this report?')">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12zm3.46-9h1.54v8H9.46V10zM13 10h1.54v8H13v-8zM15.5 4l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            Delete
+          </a>
+        </div>
+      </li>
+      {{/reports}}
+    </ul>
   </main>
 </body>
 </html>

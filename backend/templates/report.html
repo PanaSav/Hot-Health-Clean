@@ -1,29 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Hot Health Report</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8" />
+  <title>Hot Health — Report for {{name}}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root{--indigo:#4b0082;--aqua:#00e5c0;--blue:#0077cc;}
+    :root{--indigo:#4b0082;--aqua:#00e5c0;--blue:#0077cc;--ink:#222}
     *{box-sizing:border-box}
-    body{font-family:system-ui,Segoe UI,Inter,Arial,sans-serif;background:#f7fbff;margin:0;color:#222;}
+    body{font-family:system-ui,Segoe UI,Inter,Arial,sans-serif;background:#f7fbff;margin:0;color:var(--ink)}
     .header-shell{display:flex;justify-content:center;background:#fff;border-bottom:3px solid var(--aqua)}
-    header{width:100%;max-width:980px;padding:16px 20px}
-    h1{color:var(--indigo);margin:0}
+    header{width:100%;max-width:980px;padding:16px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+    .title{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .title h1{color:var(--indigo);margin:0;font-size:1.2rem}
+    .title .patient{display:inline-flex;gap:8px;align-items:center;font-weight:600;color:#333}
+    .title svg{width:18px;height:18px;fill:var(--indigo)}
     .shell{display:flex;justify-content:center;padding:18px}
     .wrap{width:100%;max-width:980px;border:2px solid var(--aqua);border-radius:14px;background:#fff;padding:18px}
-    .section{border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:12px 0;background:#fff;box-shadow:0 6px 18px rgba(0,0,0,.03); page-break-inside:avoid}
+    .section{border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:12px 0;background:#fff;box-shadow:0 6px 18px rgba(0,0,0,.03);page-break-inside:avoid}
     .dual{display:flex;gap:12px;flex-wrap:wrap}
     .block{flex:1;min-width:280px;border:1px solid #ddd;padding:12px;border-radius:8px;background:#f8faff}
     .block h3{margin:0 0 6px 0;color:#333}
     .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-    .btn{padding:8px 12px;border:1px solid #2e0051;border-radius:8px;background:var(--indigo);color:#fff;text-decoration:none;display:inline-block}
-    a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+    .btn{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border:1px solid #2e0051;border-radius:10px;background:var(--indigo);color:#fff;text-decoration:none}
+    .btn.secondary{background:#fff;color:var(--indigo)}
+    .btn:focus,.btn:hover{filter:brightness(1.04)}
+    .icon{width:18px;height:18px;display:inline-block;vertical-align:middle}
+    .muted{color:#666;font-size:.95em}
     .qr img{border:1px dashed var(--aqua);padding:6px;border-radius:8px;background:#fff}
     .ec-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
     .label{color:#555}
-    .muted{color:#666;font-size:.95em}
+    .menu{position:relative;display:inline-block}
+    .menu-btn{cursor:pointer}
+    .menu-list{position:absolute;z-index:10;min-width:240px;right:0;top:calc(100% + 6px);background:#fff;border:1px solid #ddd;border-radius:10px;box-shadow:0 10px 24px rgba(0,0,0,.12);padding:6px;display:none}
+    .menu.open .menu-list{display:block}
+    .menu a.item{display:flex;gap:8px;align-items:center;padding:8px 10px;border-radius:8px;color:#111;text-decoration:none}
+    .menu a.item:hover{background:#f3f5ff}
+    .pill{display:inline-flex;gap:6px;align-items:center;border:1px solid #ddd;border-radius:999px;padding:6px 10px;background:#fff}
+    a.linky{display:inline-flex;gap:6px;align-items:center}
+    .pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    @media (max-width:720px){.pair{grid-template-columns:1fr}}
     @media print{
       .print-hide{display:none}
       body{background:#fff}
@@ -33,36 +48,117 @@
   </style>
 </head>
 <body>
-  <div class="header-shell"><header><h1>Hot Health — Report</h1></header></div>
+  <div class="header-shell">
+    <header>
+      <div class="title">
+        <svg viewBox="0 0 24 24"><path d="M12 12c2.7 0 5-2.3 5-5s-2.3-5-5-5-5 2.3-5 5 2.3 5 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
+        <h1>Report for {{name}}</h1>
+      </div>
+      <span class="pill" title="Created at">
+        <svg class="icon" viewBox="0 0 24 24" fill="#666"><path d="M7 2v2H5a2 2 0 0 0-2 2v2h18V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7zm14 8H3v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V10zm-8 3h2v4h-2v-4z"/></svg>
+        {{created}}
+      </span>
+    </header>
+  </div>
+
   <div class="shell">
     <main class="wrap">
+
+      <!-- TOOLBAR -->
       <section class="section print-hide">
         <div class="toolbar">
-          <a class="btn" href="javascript:window.print()">🖨️ Print</a>
-          <div>
-            <b>Email link:</b>
-            <a class="btn" href="{{mailto}}">Mail</a>
-            <a class="btn" href="{{gmail}}" target="_blank">Gmail</a>
-            <a class="btn" href="{{outlook}}" target="_blank">Outlook</a>
+          <!-- Print -->
+          <a class="btn" href="javascript:window.print()" title="Print">
+            <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M6 9V2h12v7h1a3 3 0 0 1 3 3v6h-4v4H6v-4H2v-6a3 3 0 0 1 3-3h1zm2-5v5h8V4H8zm8 13H8v4h8v-4zM4 12v4h16v-4a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1z"/></svg>
+            Print
+          </a>
+
+          <!-- Email (single dropdown: Gmail/Outlook + quick mailto’s) -->
+          <div class="menu" id="emailMenu">
+            <a class="btn secondary menu-btn" href="javascript:void(0)" onclick="toggleMenu('emailMenu')" title="Email options">
+              <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 2v.01L12 13 4 6.01V6h16zM4 18V8.24l8 6.67 8-6.67V18H4z"/></svg>
+              Email
+            </a>
+            <div class="menu-list">
+              <a class="item" href="{{gmail}}" target="_blank">
+                <svg class="icon" viewBox="0 0 24 24"><path fill="#EA4335" d="M12 12.713L0 5.25V18a2 2 0 0 0 2 2h4V9.694l6 3.694 6-3.694V20h4a2 2 0 0 0 2-2V5.25l-12 7.463z"/><path fill="#188038" d="M18 20h4a2 2 0 0 0 2-2V5.25l-6 3.732V20z"/><path fill="#1967D2" d="M0 5.25l12 7.463 12-7.463V6L12 13.463 0 6z"/><path fill="#FBBC04" d="M2 20h4V9.694L0 6v12a2 2 0 0 0 2 2z"/></svg>
+                Gmail (compose)
+              </a>
+              <a class="item" href="{{outlook}}" target="_blank">
+                <svg class="icon" viewBox="0 0 24 24"><path fill="#0A64AD" d="M2 6a2 2 0 0 1 2-2h12v16H4a2 2 0 0 1-2-2V6z"/><path fill="#106EBE" d="M16 4h4a2 2 0 0 1 2 2v2l-6 4V4z"/><path fill="#28A0F0" d="M22 8l-6 4v8h4a2 2 0 0 0 2-2V8z"/></svg>
+                Outlook (compose)
+              </a>
+              <a class="item" href="mailto:{{email}}?subject=Your%20Hot%20Health%20Report&body={{shareUrl}}">
+                <svg class="icon" viewBox="0 0 24 24" fill="#666"><path d="M20 4H4a2 2 0 0 0-2 2v.01L12 13l10-6.99V6a2 2 0 0 0-2-2zM2 8.24V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8.24l-8.8 5.87a2 2 0 0 1-2.4 0L2 8.24z"/></svg>
+                Email Patient
+              </a>
+              <a class="item" href="mailto:{{emer_email}}?subject=Shared%20Hot%20Health%20Report&body={{shareUrl}}">
+                <svg class="icon" viewBox="0 0 24 24" fill="#666"><path d="M20 4H4a2 2 0 0 0-2 2v.01L12 13l10-6.99V6a2 2 0 0 0 2-2zM2 8.24V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8.24l-8.8 5.87a2 2 0 0 1-2.4 0L2 8.24z"/></svg>
+                Email Emergency Contact
+              </a>
+            </div>
           </div>
-          <a class="btn" href="/reports" target="_blank">Open All Reports</a>
-          <span><b>Created:</b> {{created}}</span>
+
+          <!-- Translate dropdown -->
+          <div class="menu" id="translateMenu">
+            <a class="btn secondary menu-btn" href="javascript:void(0)" onclick="toggleMenu('translateMenu')" title="Translate">
+              <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h9v2H6.41l2.3 2.3A15.9 15.9 0 0 0 12 7.9a15.9 15.9 0 0 0 3.29.4l1.02-1.02H14V4h6v6h-3.28l-1.31 1.31c.37.93.61 1.9.72 2.91h2.87v2h-3a9.97 9.97 0 0 1-1.84 4l1.84 1.84-1.41 1.41L14 21.41 11.41 24l-1.41-1.41L12.84 20a9.97 9.97 0 0 1-4-1.84l-1.84 1.84-1.41-1.41L6.59 17A9.97 9.97 0 0 1 4.75 13H2v-2h2.87c.11-1.01.35-1.98.72-2.91L4 6.41 5.41 5l1.84 1.84A9.97 9.97 0 0 1 9 5.75V3h2v2.75c1.01.11 1.98.35 2.91.72L15.59 4 17 5.41 15.16 7.25c.45.32.88.67 1.28 1.04L14.59 10H20z"/></svg>
+              Translate
+            </a>
+            <div class="menu-list">
+              <!-- The backend will replace {{translateBase}} with /reports/{{id}}/translate?password=... -->
+              <a class="item" href="{{translateBase}}&lang=fr" target="_blank">French</a>
+              <a class="item" href="{{translateBase}}&lang=es" target="_blank">Spanish</a>
+              <a class="item" href="{{translateBase}}&lang=pt" target="_blank">Portuguese</a>
+              <a class="item" href="{{translateBase}}&lang=de" target="_blank">German</a>
+              <a class="item" href="{{translateBase}}&lang=it" target="_blank">Italian</a>
+              <a class="item" href="{{translateBase}}&lang=ar" target="_blank">Arabic</a>
+              <a class="item" href="{{translateBase}}&lang=hi" target="_blank">Hindi</a>
+              <a class="item" href="{{translateBase}}&lang=zh" target="_blank">Chinese</a>
+              <a class="item" href="{{translateBase}}&lang=ja" target="_blank">Japanese</a>
+              <a class="item" href="{{translateBase}}&lang=ko" target="_blank">Korean</a>
+              <a class="item" href="{{translateBase}}&lang=he" target="_blank">Hebrew</a>
+              <a class="item" href="{{translateBase}}&lang=pa" target="_blank">Punjabi</a>
+              <a class="item" href="{{translateBase}}&lang=sr" target="_blank">Serbian</a>
+            </div>
+          </div>
+
+          <!-- Open All Reports -->
+          <a class="btn secondary" href="/reports" target="_blank" title="Reports">
+            <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h10v4h6v12H4V4zm12 2.414L18.586 9H16V6.414zM6 6v12h12v-7h-4V6H6z"/></svg>
+            Open All Reports
+          </a>
+
+          <!-- Create another report -->
+          <a class="btn secondary" href="/" title="Create another">
+            <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M11 11V6h2v5h5v2h-5v5h-2v-5H6v-2h5z"/></svg>
+            Create Another
+          </a>
         </div>
-        <div style="margin-top:8px">{{translateSelect}}</div>
+
+        <!-- Share link (compact) -->
+        <div style="margin-top:10px">
+          <span class="muted">Share:</span>
+          <a class="linky" href="{{shareUrl}}" target="_blank" title="Open share link">
+            <svg class="icon" viewBox="0 0 24 24" fill="#0077cc"><path d="M14 3h7v7h-2V6.41l-7.29 7.3-1.42-1.42 7.3-7.29H14V3zM5 5h6v2H7v10h10v-4h2v6H5V5z"/></svg>
+            Open link
+          </a>
+          <span class="muted" style="margin-left:8px;">(icon opens the report; QR below works on phones)</span>
+        </div>
       </section>
 
+      <!-- PATIENT DETAILS -->
       <section class="section">
         <h2>Patient Details</h2>
-        <p><b>Name:</b> {{name}}</p>
-        <p><b>Email:</b> <a href="mailto:{{email}}">{{email}}</a></p>
-        <p><b>Blood Type:</b> {{blood}}</p>
-        <div class="ec-grid">
-          <div><span class="label">Emergency Contact:</span> {{emer_name}}</div>
-          <div><span class="label">Phone:</span> {{emer_phone}}</div>
-          <div><span class="label">Email:</span> <a href="mailto:{{emer_email}}">{{emer_email}}</a></div>
+        <div class="pair">
+          <p><b>Name:</b> {{name}}</p>
+          <p><b>Email:</b> <a href="mailto:{{email}}">{{email}}</a></p>
+          <p><b>Blood Type:</b> {{blood}}</p>
+          <p><b>Emergency Contact:</b> {{emer_name}} &nbsp; • &nbsp; {{emer_phone}} &nbsp; • &nbsp; <a href="mailto:{{emer_email}}">{{emer_email}}</a></p>
         </div>
       </section>
 
+      <!-- SUMMARY (dual) -->
       <section class="section">
         <h2>Summary</h2>
         <div class="dual">
@@ -85,6 +181,7 @@
         </div>
       </section>
 
+      <!-- TRANSCRIPTS (dual) -->
       <section class="section">
         <h2>Transcript</h2>
         <div class="dual">
@@ -99,15 +196,25 @@
         </div>
       </section>
 
+      <!-- QR (after transcripts) -->
       <section class="section">
         <h2>QR</h2>
-        <p class="muted">Scan this QR with a phone, or click the link below to open the report.</p>
+        <p class="muted">Scan this QR with a phone to open the report, or use the “Open link” icon above.</p>
         <div class="qr">
-          <img src="{{qrDataUrl}}" alt="QR Code for this report" width="180">
-          <p><a href="{{shareUrl}}" target="_blank">{{shareUrl}}</a></p>
+          <img src="{{qrDataUrl}}" alt="QR Code for this report" width="180" />
         </div>
       </section>
+
     </main>
   </div>
+
+  <script>
+    function toggleMenu(id){
+      const m = document.getElementById(id);
+      m.classList.toggle('open');
+      const closer = (e)=>{ if(!m.contains(e.target)){ m.classList.remove('open'); document.removeEventListener('click', closer); } };
+      document.addEventListener('click', closer);
+    }
+  </script>
 </body>
 </html>

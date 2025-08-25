@@ -90,3 +90,6 @@ button:active{transform:translateY(1px)}
 .reports-list .item { display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid #eee; }
 .reports-list .rid { font-weight:700; color:#4b0082; }
 .reports-list .meta { color:#666; font-size:12px; margin-top:2px; }
+/* Optional: keep list and buttons consistent sitewide */
+.icon { width:18px; height:18px; }
+.menu-list a.item { font-size:14px; }
