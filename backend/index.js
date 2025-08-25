@@ -27,15 +27,17 @@ const app = express();
 app.use(bodyParser.json({ limit: "2mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "2mb" }));
 
-// Static frontend
+// serve static
 app.use(express.static(path.join(__dirname, "public")));
-app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+app.get("/", (req, res) =>
+  res.sendFile(path.join(__dirname, "public", "index.html"))
+);
 
-// Ensure uploads dir
+// ensure uploads
 const uploadsDir = path.join(__dirname, "uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
-// Multer storage
+// multer
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadsDir),
@@ -48,7 +50,7 @@ const upload = multer({
 // OpenAI
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// SQLite3 (promisified)
+// sqlite3 (promisified)
 sqlite3.verbose();
 const dbPath = path.join(__dirname, "data.db");
 const db = new sqlite3.Database(dbPath);
@@ -57,7 +59,7 @@ const dbGet = promisify(db.get.bind(db));
 const dbAll = promisify(db.all.bind(db));
 const dbExec = promisify(db.exec.bind(db));
 
-// Init DB
+// init db
 async function initDB() {
   await dbExec(`
     CREATE TABLE IF NOT EXISTS reports (
@@ -83,7 +85,7 @@ async function initDB() {
   console.log("✅ DB ready:", dbPath);
 }
 
-// Esc + template
+// helpers
 function esc(s = "") {
   return String(s)
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
@@ -91,14 +93,40 @@ function esc(s = "") {
     .replaceAll("'", "&#39;");
 }
 function renderTemplate(tpl, data) {
-  return tpl.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, k) => (k in data ? data[k] : ""));
+  return tpl.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, k) =>
+    (k in data ? data[k] : "")
+  );
 }
 
-// —— Parsing helpers ————————————————————————————————————————————
-const NOT_CONDITION = new Set([
-  "three medications","medications","medication","medicine","meds",
-  "allergies","allergy","allergic","mold","dust"
-]);
+// ——— Parsing ————————————————————————————————
+const STOPWORDS = /\b(?:i|have|a|an|the|my|to|of|and|with|for)\b/gi;
+
+function titlecase(s) {
+  return s.replace(/\w\S*/g, (w) => w[0].toUpperCase() + w.slice(1).toLowerCase());
+}
+function cleanConditionPhrase(s) {
+  if (!s) return "";
+  let t = s.toLowerCase().trim();
+
+  // remove leading "i have (a|an|the)"
+  t = t.replace(/^i\s+have\s+(?:a|an|the)\s+/i, "");
+  t = t.replace(/^i\s+have\s+/i, "");
+
+  // remove trailing generic words
+  t = t.replace(/\b(?:disease|condition|issue|problem)\b\.?$/i, "").trim();
+
+  // kill commas introduced by weird matches
+  t = t.replace(/\s*,\s*/g, " ");
+
+  // remove lone stopwords
+  t = t.replace(STOPWORDS, " ").replace(/\s+/g, " ").trim();
+
+  // too short? skip
+  if (t.length < 2) return "";
+
+  return titlecase(t);
+}
+
 function splitList(s) {
   return s.split(/,| and |\band\b/gi).map(x => x.trim()).filter(Boolean);
 }
@@ -116,7 +144,7 @@ function parseHealthInfo(textRaw = "") {
   const text = textRaw.trim();
   const lower = text.toLowerCase();
 
-  // BP: "120/75" or "120 over 75"
+  // BP
   let bp = null;
   const mSlash = lower.match(/\b(\d{2,3})\s*\/\s*(\d{2,3})\b/);
   const mOver  = lower.match(/\b(\d{2,3})\s*over\s*(\d{2,3})\b/);
@@ -133,42 +161,53 @@ function parseHealthInfo(textRaw = "") {
   const mAll = lower.match(/\ballerg(?:ic|y)\s+to\s+([^.\n]+)/);
   if (mAll) {
     const raw = mAll[1].replace(/\bi have\b.+/i,"");
-    allergies = splitList(raw).filter(w => w && !/^(i|have|a|an)$/.test(w));
+    allergies = splitList(raw).filter(w => w && !/^(i|have|a|an|the)$/.test(w));
   }
 
-  // Conditions
-  let conditions = [];
+  // Conditions (collect multiple phrases)
   const candidates = [];
-  const r1 = text.match(/\bdiagnosed with ([a-z0-9 \-]+?)([.,;]|$)/i);
-  if (r1) candidates.push(r1[1].trim());
-  const r2 = text.match(/\bi have (?:a |an )?([a-z0-9 \-]+?)(?: disease| condition| issue| problem|$|[.,;])/i);
-  if (r2) candidates.push(r2[1].trim());
-  const r3 = text.match(/\b([a-z0-9 \-]+) condition\b/i);
-  if (r3) candidates.push(r3[1].trim());
 
-  for (let c of candidates) {
-    c = c.replace(/\b(my|the|a|an)\b/gi,"").trim();
-    if (!c || c.length < 3) continue;
-    if (NOT_CONDITION.has(c.toLowerCase())) continue;
-    if (/\bmedications?\b/i.test(c)) continue;
-    conditions.push(c);
+  // i have (a|an|the) X (disease|condition|issue|problem)?
+  const reHave = /\bi have(?:\s+(?:a|an|the))?\s+([a-z0-9 \-]+?)(?:\s+(?:disease|condition|issue|problem))?(?=[.,;]|$)/gi;
+  let m;
+  while ((m = reHave.exec(lower))) {
+    candidates.push(m[1]);
   }
+
+  // diagnosed with X
+  const reDx = /\bdiagnosed with\s+([a-z0-9 \-]+?)(?=[.,;]|$)/gi;
+  while ((m = reDx.exec(lower))) {
+    candidates.push(m[1]);
+  }
+
+  // X condition
+  const reCond = /\b([a-z0-9 \-]+)\s+condition\b/gi;
+  while ((m = reCond.exec(lower))) {
+    candidates.push(m[1]);
+  }
+
+  let conditions = candidates
+    .map(cleanConditionPhrase)
+    .filter(Boolean);
+
+  // dedupe
   conditions = Array.from(new Set(conditions));
 
-  // Medications
+  // Medications: ProperName — dose unit
   const meds = [];
   const medRegex = /\b([A-Z][A-Za-z0-9-]{2,})\b[^.\n,;]*?\b(\d{1,4})\s*(mg|mcg|g|ml|milligrams|micrograms|grams|milliliters)?\b/g;
-  let m;
-  while ((m = medRegex.exec(text))) {
-    const name = m[1];
-    const dose = m[2];
-    const unit = normalizeUnit(m[3]);
+  let mm;
+  while ((mm = medRegex.exec(text))) {
+    const name = mm[1];
+    const dose = mm[2];
+    const unit = normalizeUnit(mm[3]);
     if (/^\w-\[bloodtype\]/i.test(name)) continue;
     meds.push(`${name} — ${dose} ${unit}`);
   }
 
   return { meds, allergies, conditions, bp, weight };
 }
+// ————————————————————————————————————————
 
 async function translateText(target, text) {
   if (!target || target === "en" || !text) return text;
@@ -182,9 +221,8 @@ async function translateText(target, text) {
   });
   return comp?.choices?.[0]?.message?.content?.trim() || text;
 }
-// ———————————————————————————————————————————————————————————————
 
-// Upload -> create report
+// upload -> create report
 app.post("/upload", upload.single("audio"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: "No file" });
@@ -200,7 +238,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       lang_target: (req.body.lang || "").trim()
     };
 
-    // Transcribe
+    // transcribe
     let transcript = "";
     try {
       const stream = fs.createReadStream(filePath);
@@ -216,7 +254,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
 
     const { meds, allergies, conditions, bp, weight } = parseHealthInfo(transcript);
 
-    // Optional translation on upload
+    // optional first-shot translation (stored)
     let translation = "";
     const target = meta.lang_target;
     if (target && target !== "en") {
@@ -236,7 +274,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       [
         id,
         meta.name, meta.email, meta.emer_name, meta.emer_phone, meta.emer_email, meta.blood_type,
-        transcript, translation, "auto", target || "",
+        transcript, translation, "en", target || "", // detected set "en" as placeholder
         JSON.stringify(meds), JSON.stringify(allergies), JSON.stringify(conditions),
         bp || "", weight || ""
       ]
@@ -252,36 +290,53 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
   }
 });
 
-// Minimal /reports list
+// nicely formatted /reports list (no QR here)
 app.get("/reports", async (req, res) => {
   try {
     const rows = await dbAll(
-      "SELECT id, created, patient_name FROM reports ORDER BY created DESC LIMIT 100"
+      "SELECT id, created, patient_name FROM reports ORDER BY created DESC LIMIT 200"
     );
     const items = rows.map(r => {
       const base = `${PUBLIC_BASE_URL}/reports/${r.id}`;
-      return `<li>
-        <a href="${esc(base)}" target="_blank">${esc(r.id)}</a>
-        — <small>${esc(r.created)}${r.patient_name ? " • " + esc(r.patient_name) : ""}</small>
-        <div class="small">
-          Translate:
-          <a href="${esc(base)}?lang=fr" target="_blank">FR</a> ·
-          <a href="${esc(base)}?lang=es" target="_blank">ES</a> ·
-          <a href="${esc(base)}?lang=pt" target="_blank">PT</a> ·
-          <a href="${esc(base)}?lang=de" target="_blank">DE</a> ·
-          <a href="${esc(base)}?lang=sr" target="_blank">SR</a> ·
-          <a href="${esc(base)}?lang=pa" target="_blank">PA</a> ·
+      return `<li class="item">
+        <div class="left">
+          <a class="rid" href="${esc(base)}" target="_blank">${esc(r.id)}</a>
+          <div class="meta">${esc(r.created)}${r.patient_name ? " • " + esc(r.patient_name) : ""}</div>
+        </div>
+        <div class="langs">
+          <span>Translate:</span>
+          <a href="${esc(base)}?lang=fr" target="_blank">FR</a>
+          <a href="${esc(base)}?lang=es" target="_blank">ES</a>
+          <a href="${esc(base)}?lang=pt" target="_blank">PT</a>
+          <a href="${esc(base)}?lang=de" target="_blank">DE</a>
+          <a href="${esc(base)}?lang=sr" target="_blank">SR</a>
+          <a href="${esc(base)}?lang=pa" target="_blank">PA</a>
           <a href="${esc(base)}?lang=he" target="_blank">HE</a>
         </div>
       </li>`;
     }).join("");
+
     res.send(`<!doctype html><html><head><meta charset="utf-8"/>
       <title>Reports</title>
       <link rel="stylesheet" href="/styles.css"/>
-      <style>.small{color:#666;margin-top:4px}</style>
+      <style>
+        body{background:#f7fbff;font-family:system-ui,Segoe UI,Inter,Arial,sans-serif}
+        .header-shell{display:flex;justify-content:center;background:#fff;border-bottom:3px solid #00e5c0}
+        header{width:100%;max-width:980px;padding:16px 20px}
+        h1{color:#4b0082;margin:0}
+        .shell{display:flex;justify-content:center;padding:18px}
+        .wrap{width:100%;max-width:980px;border:2px solid #00e5c0;border-radius:14px;background:#fff;padding:18px}
+        ul{list-style:none;margin:0;padding:0}
+        .item{display:flex;justify-content:space-between;align-items:center;padding:12px;border-bottom:1px solid #eee;gap:10px}
+        .rid{font-weight:600;color:#4b0082}
+        .meta{color:#666;font-size:12px;margin-top:2px}
+        .langs a{margin-left:8px}
+      </style>
     </head><body>
       <div class="header-shell"><header><h1>Reports</h1></header></div>
-      <div class="shell"><main class="wrap"><ul>${items || "<li>No reports yet.</li>"}</ul></main></div>
+      <div class="shell"><main class="wrap">
+        <ul>${items || "<li>No reports yet.</li>"}</ul>
+      </main></div>
     </body></html>`);
   } catch (e) {
     console.error(e);
@@ -289,7 +344,7 @@ app.get("/reports", async (req, res) => {
   }
 });
 
-// Single report; ?lang=xx renders translated blocks (transcript + summary)
+// single report with dual blocks + “translate to” selector
 app.get("/reports/:id", async (req, res) => {
   try {
     const id = req.params.id;
@@ -310,36 +365,29 @@ app.get("/reports/:id", async (req, res) => {
     const bpText = row.bp || "Not provided";
     const weightText = row.weight || "Not provided";
 
-    // Transcript
-    let translatedTranscript =
-      row.translation && row.translation.trim() ? row.translation : row.transcript;
+    // ALWAYS translate from the ORIGINAL transcript each time
+    const fromTranscript = row.transcript || "";
 
-    // Translated summary (on the fly if target differs)
+    let translatedTranscript = fromTranscript;
     let medsTextTr = medsText, allergiesTextTr = allergiesText, conditionsTextTr = conditionsText;
     let bpTextTr = bpText, weightTextTr = weightText;
 
     if (targetLang && targetLang !== detectedLang) {
       try {
-        const [a,b,c,d,e] = await Promise.all([
+        const [tt, a,b,c,d,e] = await Promise.all([
+          translateText(targetLang, fromTranscript),
           translateText(targetLang, medsText),
           translateText(targetLang, allergiesText),
           translateText(targetLang, conditionsText),
           translateText(targetLang, bpText),
           translateText(targetLang, weightText),
         ]);
+        translatedTranscript = tt;
         medsTextTr = a; allergiesTextTr = b; conditionsTextTr = c;
         bpTextTr = d; weightTextTr = e;
-
-        // Also translate transcript if not already
-        if (!row.translation || detectedLang === targetLang) {
-          translatedTranscript = await translateText(targetLang, row.transcript || "");
-        }
       } catch (e) {
-        console.warn("Translate (summary/view) failed:", e?.message || e);
-        targetLang = detectedLang; // fall back
-        medsTextTr = medsText; allergiesTextTr = allergiesText; conditionsTextTr = conditionsText;
-        bpTextTr = bpText; weightTextTr = weightText;
-        translatedTranscript = row.transcript || "";
+        console.warn("Translate (view) failed:", e?.message || e);
+        targetLang = detectedLang;
       }
     } else {
       targetLang = detectedLang;
@@ -347,6 +395,17 @@ app.get("/reports/:id", async (req, res) => {
 
     const shareUrl = `${PUBLIC_BASE_URL}/reports/${id}`;
     const qrDataUrl = await QRCode.toDataURL(shareUrl);
+
+    // tiny “translate to” options for server render
+    const translateOptions = [
+      ["", "— Select language —"],
+      ["en","English"],["fr","Français"],["es","Español"],["pt","Português"],
+      ["de","Deutsch"],["it","Italiano"],["ar","العربية"],["hi","हिन्दी"],
+      ["zh","中文"],["ja","日本語"],["ko","한국어"],["sr","Srpski"],
+      ["pa","ਪੰਜਾਬੀ"],["he","עברית"]
+    ].map(([val,label]) =>
+      `<option value="${esc(val)}"${val===targetLang?' selected':''}>${esc(label)}</option>`
+    ).join("");
 
     const tplPath = path.join(__dirname, "templates", "report.html");
     const tpl = fs.existsSync(tplPath) ? fs.readFileSync(tplPath, "utf8") : null;
@@ -377,77 +436,89 @@ app.get("/reports/:id", async (req, res) => {
           weightT: esc(weightTextTr),
 
           detectedLang: esc(detectedLang),
-          targetLang: esc(targetLang || detectedLang),
-          transcript: esc(row.transcript || ""),
-          translatedTranscript: esc(translatedTranscript || "")
+          targetLang: esc(targetLang),
+          transcript: esc(fromTranscript),
+          translatedTranscript: esc(translatedTranscript),
+
+          // inject a small translate select (handled by inline JS below)
+          translateSelect: `<form class="print-hide" method="GET" style="margin:8px 0">
+            <label for="tlang"><b>Translate to:</b></label>
+            <select id="tlang" name="lang" onchange="this.form.submit()">
+              ${translateOptions}
+            </select>
+          </form>`
         })
       : `<!doctype html><html><head><meta charset="utf-8"/>
-         <title>Report ${esc(id)}</title>
-         <link rel="stylesheet" href="/styles.css"/>
-         <style>
-           .toolbar{display:flex;gap:10px;align-items:center}
-           @media print{.print-hide{display:none}}
-         </style>
+          <title>Report ${esc(id)}</title>
+          <link rel="stylesheet" href="/styles.css"/>
         </head><body>
-         <div class="header-shell"><header><h1>Hot Health — Report</h1></header></div>
-         <div class="shell"><main class="wrap">
-           <div class="section print-hide">
-             <div class="toolbar">
-               <button onclick="window.print()">🖨️ Print</button>
-               <a href="${esc(shareUrl)}" target="_blank">Open share link</a>
-               <a href="/reports" target="_blank">Open All Reports</a>
-             </div>
-             <div><b>Created:</b> ${esc(row.created || "")}</div>
-           </div>
+          <div class="header-shell"><header><h1>Hot Health — Report</h1></header></div>
+          <div class="shell"><main class="wrap">
+            <div class="section print-hide">
+              <div class="toolbar">
+                <button onclick="window.print()">🖨️ Print</button>
+                <a href="${esc(shareUrl)}" target="_blank">Open share link</a>
+                <a href="/reports" target="_blank">Open All Reports</a>
+              </div>
+              <div style="margin-top:6px">
+                <form method="GET">
+                  <label for="tlang"><b>Translate to:</b></label>
+                  <select id="tlang" name="lang" onchange="this.form.submit()">
+                    ${translateOptions}
+                  </select>
+                </form>
+              </div>
+              <div><b>Created:</b> ${esc(row.created || "")}</div>
+            </div>
 
-           <div class="section"><h2>Patient</h2>
-             <p>${esc(row.patient_name || "")} — <a href="mailto:${esc(row.patient_email || "")}">${esc(row.patient_email || "")}</a></p>
-             <p>EC: ${esc(row.emer_name || "")} ${esc(row.emer_phone || "")} — <a href="mailto:${esc(row.emer_email || "")}">${esc(row.emer_email || "")}</a></p>
-             <p>Blood: ${esc(row.blood_type || "")}</p>
-           </div>
+            <div class="section"><h2>Patient</h2>
+              <p>${esc(row.patient_name || "")} — <a href="mailto:${esc(row.patient_email || "")}">${esc(row.patient_email || "")}</a></p>
+              <p>EC: ${esc(row.emer_name || "")} ${esc(row.emer_phone || "")} — <a href="mailto:${esc(row.emer_email || "")}">${esc(row.emer_email || "")}</a></p>
+              <p>Blood: ${esc(row.blood_type || "")}</p>
+            </div>
 
-           <div class="section">
-             <h2>Summary</h2>
-             <div style="display:flex;gap:12px;flex-wrap:wrap">
-               <div style="flex:1;min-width:280px">
-                 <h3>Original (${esc(detectedLang)})</h3>
-                 <p><b>Medications:</b> ${esc(medsText)}</p>
-                 <p><b>Allergies:</b> ${esc(allergiesText)}</p>
-                 <p><b>Conditions:</b> ${esc(conditionsText)}</p>
-                 <p><b>Blood Pressure:</b> ${esc(bpText)}</p>
-                 <p><b>Weight:</b> ${esc(weightText)}</p>
-               </div>
-               <div style="flex:1;min-width:280px">
-                 <h3>Translated (${esc(targetLang)})</h3>
-                 <p><b>Medications:</b> ${esc(medsTextTr)}</p>
-                 <p><b>Allergies:</b> ${esc(allergiesTextTr)}</p>
-                 <p><b>Conditions:</b> ${esc(conditionsTextTr)}</p>
-                 <p><b>Blood Pressure:</b> ${esc(bpTextTr)}</p>
-                 <p><b>Weight:</b> ${esc(weightTextTr)}</p>
-               </div>
-             </div>
-           </div>
+            <div class="section">
+              <h2>Summary</h2>
+              <div style="display:flex;gap:12px;flex-wrap:wrap">
+                <div style="flex:1;min-width:280px">
+                  <h3>Original (${esc(detectedLang)})</h3>
+                  <p><b>Medications:</b> ${esc(medsText)}</p>
+                  <p><b>Allergies:</b> ${esc(allergiesText)}</p>
+                  <p><b>Conditions:</b> ${esc(conditionsText)}</p>
+                  <p><b>Blood Pressure:</b> ${esc(bpText)}</p>
+                  <p><b>Weight:</b> ${esc(weightText)}</p>
+                </div>
+                <div style="flex:1;min-width:280px">
+                  <h3>Translated (${esc(targetLang)})</h3>
+                  <p><b>Medications:</b> ${esc(medsTextTr)}</p>
+                  <p><b>Allergies:</b> ${esc(allergiesTextTr)}</p>
+                  <p><b>Conditions:</b> ${esc(conditionsTextTr)}</p>
+                  <p><b>Blood Pressure:</b> ${esc(bpTextTr)}</p>
+                  <p><b>Weight:</b> ${esc(weightTextTr)}</p>
+                </div>
+              </div>
+            </div>
 
-           <div class="section">
-             <h2>Transcript</h2>
-             <div style="display:flex; gap:12px; flex-wrap:wrap">
-               <div style="flex:1; min-width:280px">
-                 <h3>Original (${esc(detectedLang)})</h3>
-                 <pre>${esc(row.transcript || "")}</pre>
-               </div>
-               <div style="flex:1; min-width:280px">
-                 <h3>Translated (${esc(targetLang || detectedLang)})</h3>
-                 <pre>${esc(translatedTranscript || "")}</pre>
-               </div>
-             </div>
-           </div>
+            <div class="section">
+              <h2>Transcript</h2>
+              <div style="display:flex; gap:12px; flex-wrap:wrap">
+                <div style="flex:1; min-width:280px">
+                  <h3>Original (${esc(detectedLang)})</h3>
+                  <pre>${esc(fromTranscript)}</pre>
+                </div>
+                <div style="flex:1; min-width:280px">
+                  <h3>Translated (${esc(targetLang)})</h3>
+                  <pre>${esc(translatedTranscript)}</pre>
+                </div>
+              </div>
+            </div>
 
-           <div class="section">
-             <h2>QR</h2>
-             <img src="${esc(qrDataUrl)}" width="180" alt="QR for this report"/>
-             <p><a href="${esc(shareUrl)}">${esc(shareUrl)}</a></p>
-           </div>
-         </main></div>
+            <div class="section">
+              <h2>QR</h2>
+              <img src="${esc(qrDataUrl)}" width="180" alt="QR for this report"/>
+              <p><a href="${esc(shareUrl)}">${esc(shareUrl)}</a></p>
+            </div>
+          </main></div>
         </body></html>`;
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -458,7 +529,7 @@ app.get("/reports/:id", async (req, res) => {
   }
 });
 
-// Health
+// health
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
 await initDB();
