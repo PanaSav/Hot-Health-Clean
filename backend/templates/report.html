@@ -21,6 +21,9 @@
     .btn{padding:8px 12px;border:1px solid #2e0051;border-radius:8px;background:var(--indigo);color:#fff;text-decoration:none;display:inline-block}
     a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
     .qr img{border:1px dashed var(--aqua);padding:6px;border-radius:8px;background:#fff}
+    .ec-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .label{color:#555}
+    .muted{color:#666;font-size:.95em}
     @media print{
       .print-hide{display:none}
       body{background:#fff}
@@ -36,7 +39,12 @@
       <section class="section print-hide">
         <div class="toolbar">
           <a class="btn" href="javascript:window.print()">🖨️ Print</a>
-          <a class="btn" href="{{shareUrl}}" target="_blank">Open Share Link</a>
+          <div>
+            <b>Email link:</b>
+            <a class="btn" href="{{mailto}}">Mail</a>
+            <a class="btn" href="{{gmail}}" target="_blank">Gmail</a>
+            <a class="btn" href="{{outlook}}" target="_blank">Outlook</a>
+          </div>
           <a class="btn" href="/reports" target="_blank">Open All Reports</a>
           <span><b>Created:</b> {{created}}</span>
         </div>
@@ -48,7 +56,11 @@
         <p><b>Name:</b> {{name}}</p>
         <p><b>Email:</b> <a href="mailto:{{email}}">{{email}}</a></p>
         <p><b>Blood Type:</b> {{blood}}</p>
-        <p><b>Emergency Contact:</b> {{emer_name}} ({{emer_phone}}, <a href="mailto:{{emer_email}}">{{emer_email}}</a>)</p>
+        <div class="ec-grid">
+          <div><span class="label">Emergency Contact:</span> {{emer_name}}</div>
+          <div><span class="label">Phone:</span> {{emer_phone}}</div>
+          <div><span class="label">Email:</span> <a href="mailto:{{emer_email}}">{{emer_email}}</a></div>
+        </div>
       </section>
 
       <section class="section">
@@ -89,6 +101,7 @@
 
       <section class="section">
         <h2>QR</h2>
+        <p class="muted">Scan this QR with a phone, or click the link below to open the report.</p>
         <div class="qr">
           <img src="{{qrDataUrl}}" alt="QR Code for this report" width="180">
           <p><a href="{{shareUrl}}" target="_blank">{{shareUrl}}</a></p>

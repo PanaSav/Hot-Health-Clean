@@ -27,13 +27,13 @@ const app = express();
 app.use(bodyParser.json({ limit: "2mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "2mb" }));
 
-// serve static
+// static
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (req, res) =>
   res.sendFile(path.join(__dirname, "public", "index.html"))
 );
 
-// ensure uploads
+// uploads
 const uploadsDir = path.join(__dirname, "uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -274,7 +274,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       [
         id,
         meta.name, meta.email, meta.emer_name, meta.emer_phone, meta.emer_email, meta.blood_type,
-        transcript, translation, "en", target || "", // detected set "en" as placeholder
+        transcript, translation, "en", target || "",
         JSON.stringify(meds), JSON.stringify(allergies), JSON.stringify(conditions),
         bp || "", weight || ""
       ]
@@ -290,28 +290,35 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
   }
 });
 
-// nicely formatted /reports list (no QR here)
+// reports list: Patient name first, translate dropdown
 app.get("/reports", async (req, res) => {
   try {
     const rows = await dbAll(
       "SELECT id, created, patient_name FROM reports ORDER BY created DESC LIMIT 200"
     );
+
+    const langOptions = [
+      ["", "— Select —"], ["en","English"],["fr","Français"],["es","Español"],
+      ["pt","Português"],["de","Deutsch"],["it","Italiano"],["ar","العربية"],
+      ["hi","हिन्दी"],["zh","中文"],["ja","日本語"],["ko","한국어"],
+      ["sr","Srpski"],["pa","ਪੰਜਾਬੀ"],["he","עברית"]
+    ];
+
     const items = rows.map(r => {
       const base = `${PUBLIC_BASE_URL}/reports/${r.id}`;
+      const name = r.patient_name?.trim() || "Unknown patient";
+      const select = `<select onchange="if(this.value){location.href='${esc(base)}?lang='+this.value;this.selectedIndex=0;}">
+        ${langOptions.map(([v,l])=>`<option value="${esc(v)}">${esc(l)}</option>`).join("")}
+      </select>`;
+
       return `<li class="item">
         <div class="left">
-          <a class="rid" href="${esc(base)}" target="_blank">${esc(r.id)}</a>
-          <div class="meta">${esc(r.created)}${r.patient_name ? " • " + esc(r.patient_name) : ""}</div>
+          <a class="rid" href="${esc(base)}" target="_blank">Report for ${esc(name)}</a>
+          <div class="meta">${esc(r.created)}</div>
         </div>
         <div class="langs">
-          <span>Translate:</span>
-          <a href="${esc(base)}?lang=fr" target="_blank">FR</a>
-          <a href="${esc(base)}?lang=es" target="_blank">ES</a>
-          <a href="${esc(base)}?lang=pt" target="_blank">PT</a>
-          <a href="${esc(base)}?lang=de" target="_blank">DE</a>
-          <a href="${esc(base)}?lang=sr" target="_blank">SR</a>
-          <a href="${esc(base)}?lang=pa" target="_blank">PA</a>
-          <a href="${esc(base)}?lang=he" target="_blank">HE</a>
+          <label>Translate:</label>
+          ${select}
         </div>
       </li>`;
     }).join("");
@@ -327,10 +334,11 @@ app.get("/reports", async (req, res) => {
         .shell{display:flex;justify-content:center;padding:18px}
         .wrap{width:100%;max-width:980px;border:2px solid #00e5c0;border-radius:14px;background:#fff;padding:18px}
         ul{list-style:none;margin:0;padding:0}
-        .item{display:flex;justify-content:space-between;align-items:center;padding:12px;border-bottom:1px solid #eee;gap:10px}
-        .rid{font-weight:600;color:#4b0082}
+        .item{display:flex;justify-content:space-between;align-items:center;padding:12px;border-bottom:1px solid #eee;gap:12px}
+        .rid{font-weight:700;color:#4b0082}
         .meta{color:#666;font-size:12px;margin-top:2px}
-        .langs a{margin-left:8px}
+        .langs label{margin-right:6px;color:#333;font-size:14px}
+        select{padding:6px 8px;border:1px solid #ddd;border-radius:8px}
       </style>
     </head><body>
       <div class="header-shell"><header><h1>Reports</h1></header></div>
@@ -344,7 +352,7 @@ app.get("/reports", async (req, res) => {
   }
 });
 
-// single report with dual blocks + “translate to” selector
+// single report with dual blocks + email share + qr instructions
 app.get("/reports/:id", async (req, res) => {
   try {
     const id = req.params.id;
@@ -396,7 +404,14 @@ app.get("/reports/:id", async (req, res) => {
     const shareUrl = `${PUBLIC_BASE_URL}/reports/${id}`;
     const qrDataUrl = await QRCode.toDataURL(shareUrl);
 
-    // tiny “translate to” options for server render
+    // Email share links
+    const subject = encodeURIComponent("Shared Hot Health Report");
+    const body = encodeURIComponent(`Here is the patient's report:\n\n${shareUrl}`);
+    const mailto = `mailto:?subject=${subject}&body=${body}`;
+    const gmail = `https://mail.google.com/mail/?view=cm&fs=1&su=${subject}&body=${body}`;
+    const outlook = `https://outlook.office.com/mail/deeplink/compose?subject=${subject}&body=${body}`;
+
+    // “Translate to” dropdown
     const translateOptions = [
       ["", "— Select language —"],
       ["en","English"],["fr","Français"],["es","Español"],["pt","Português"],
@@ -407,6 +422,7 @@ app.get("/reports/:id", async (req, res) => {
       `<option value="${esc(val)}"${val===targetLang?' selected':''}>${esc(label)}</option>`
     ).join("");
 
+    // load template if present
     const tplPath = path.join(__dirname, "templates", "report.html");
     const tpl = fs.existsSync(tplPath) ? fs.readFileSync(tplPath, "utf8") : null;
 
@@ -440,27 +456,41 @@ app.get("/reports/:id", async (req, res) => {
           transcript: esc(fromTranscript),
           translatedTranscript: esc(translatedTranscript),
 
-          // inject a small translate select (handled by inline JS below)
           translateSelect: `<form class="print-hide" method="GET" style="margin:8px 0">
             <label for="tlang"><b>Translate to:</b></label>
             <select id="tlang" name="lang" onchange="this.form.submit()">
               ${translateOptions}
             </select>
-          </form>`
+          </form>`,
+
+          // email share links
+          mailto: esc(mailto),
+          gmail: esc(gmail),
+          outlook: esc(outlook)
         })
       : `<!doctype html><html><head><meta charset="utf-8"/>
-          <title>Report ${esc(id)}</title>
+          <title>Report</title>
           <link rel="stylesheet" href="/styles.css"/>
+          <style>
+            .ec-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+            .label{color:#555}
+            .btn{padding:8px 12px;border-radius:8px;background:#4b0082;color:#fff;text-decoration:none}
+          </style>
         </head><body>
           <div class="header-shell"><header><h1>Hot Health — Report</h1></header></div>
           <div class="shell"><main class="wrap">
-            <div class="section print-hide">
-              <div class="toolbar">
-                <button onclick="window.print()">🖨️ Print</button>
-                <a href="${esc(shareUrl)}" target="_blank">Open share link</a>
-                <a href="/reports" target="_blank">Open All Reports</a>
+            <section class="section print-hide">
+              <div class="toolbar" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+                <a class="btn" href="javascript:window.print()">🖨️ Print</a>
+                <div>
+                  <b>Email link:</b>
+                  <a class="btn" href="${esc(mailto)}">Mail</a>
+                  <a class="btn" href="${esc(gmail)}" target="_blank">Gmail</a>
+                  <a class="btn" href="${esc(outlook)}" target="_blank">Outlook</a>
+                </div>
+                <a class="btn" href="/reports" target="_blank">Open All Reports</a>
               </div>
-              <div style="margin-top:6px">
+              <div style="margin-top:8px">
                 <form method="GET">
                   <label for="tlang"><b>Translate to:</b></label>
                   <select id="tlang" name="lang" onchange="this.form.submit()">
@@ -469,15 +499,21 @@ app.get("/reports/:id", async (req, res) => {
                 </form>
               </div>
               <div><b>Created:</b> ${esc(row.created || "")}</div>
-            </div>
+            </section>
 
-            <div class="section"><h2>Patient</h2>
-              <p>${esc(row.patient_name || "")} — <a href="mailto:${esc(row.patient_email || "")}">${esc(row.patient_email || "")}</a></p>
-              <p>EC: ${esc(row.emer_name || "")} ${esc(row.emer_phone || "")} — <a href="mailto:${esc(row.emer_email || "")}">${esc(row.emer_email || "")}</a></p>
-              <p>Blood: ${esc(row.blood_type || "")}</p>
-            </div>
+            <section class="section">
+              <h2>Patient Details</h2>
+              <p><b>Name:</b> ${esc(row.patient_name || "")}</p>
+              <p><b>Email:</b> <a href="mailto:${esc(row.patient_email || "")}">${esc(row.patient_email || "")}</a></p>
+              <p><b>Blood Type:</b> ${esc(row.blood_type || "")}</p>
+              <div class="ec-grid">
+                <div><span class="label">Emergency Contact:</span> ${esc(row.emer_name || "")}</div>
+                <div><span class="label">Phone:</span> ${esc(row.emer_phone || "")}</div>
+                <div><span class="label">Email:</span> <a href="mailto:${esc(row.emer_email || "")}">${esc(row.emer_email || "")}</a></div>
+              </div>
+            </section>
 
-            <div class="section">
+            <section class="section">
               <h2>Summary</h2>
               <div style="display:flex;gap:12px;flex-wrap:wrap">
                 <div style="flex:1;min-width:280px">
@@ -497,9 +533,9 @@ app.get("/reports/:id", async (req, res) => {
                   <p><b>Weight:</b> ${esc(weightTextTr)}</p>
                 </div>
               </div>
-            </div>
+            </section>
 
-            <div class="section">
+            <section class="section">
               <h2>Transcript</h2>
               <div style="display:flex; gap:12px; flex-wrap:wrap">
                 <div style="flex:1; min-width:280px">
@@ -511,13 +547,14 @@ app.get("/reports/:id", async (req, res) => {
                   <pre>${esc(translatedTranscript)}</pre>
                 </div>
               </div>
-            </div>
+            </section>
 
-            <div class="section">
+            <section class="section">
               <h2>QR</h2>
-              <img src="${esc(qrDataUrl)}" width="180" alt="QR for this report"/>
-              <p><a href="${esc(shareUrl)}">${esc(shareUrl)}</a></p>
-            </div>
+              <p class="muted">Scan this QR with a phone, or click the link below to open the report.</p>
+              <img src="${esc(qrDataUrl)}" width="180" alt="QR for this report" style="border:1px dashed #00e5c0;padding:6px;border-radius:8px;background:#fff"/>
+              <p><a href="${esc(shareUrl)}" target="_blank">${esc(shareUrl)}</a></p>
+            </section>
           </main></div>
         </body></html>`;
 
