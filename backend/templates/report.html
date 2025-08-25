@@ -5,108 +5,69 @@
   <title>Hot Health Report</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #fdfdfd;
-      margin: 0;
-      padding: 2em;
-      color: #222;
-    }
-    header {
-      border-bottom: 3px solid aquamarine;
-      margin-bottom: 1em;
-      padding-bottom: 0.5em;
-    }
-    h1 {
-      color: #4b0082;
-    }
-    .section {
-      border: 2px solid aquamarine;
-      border-radius: 8px;
-      padding: 1em;
-      margin: 1em 0;
-      background: #fff;
-    }
-    .dual-block {
-      display: flex;
-      gap: 1em;
-    }
-    .block {
-      flex: 1;
-      border: 1px solid #ddd;
-      padding: 1em;
-      border-radius: 6px;
-      background: #f8faff;
-    }
-    .block h3 {
-      margin-top: 0;
-      color: #333;
-    }
-    .qr {
-      text-align: center;
-      margin: 1em 0;
-    }
-    a {
-      color: #0077cc;
-      text-decoration: none;
-    }
-    a:hover {
-      text-decoration: underline;
-    }
-    footer {
-      margin-top: 2em;
-      font-size: 0.85em;
-      color: #555;
-      text-align: center;
-    }
+    :root{--indigo:#4b0082;--aqua:#00e5c0;--blue:#0077cc;}
+    body{font-family:system-ui,Segoe UI,Inter,Arial,sans-serif;background:#fdfdfd;margin:0;padding:0;color:#222;}
+    .header-shell{display:flex;justify-content:center;background:#fff;border-bottom:3px solid var(--aqua)}
+    header{width:100%;max-width:980px;padding:16px 20px}
+    h1{color:var(--indigo);margin:0}
+    .shell{display:flex;justify-content:center;padding:18px}
+    .wrap{width:100%;max-width:980px;border:2px solid var(--aqua);border-radius:14px;background:#fff;padding:18px}
+    .section{border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:12px 0;background:#fff;box-shadow:0 6px 18px rgba(0,0,0,.03)}
+    .dual-block{display:flex;gap:12px;flex-wrap:wrap}
+    .block{flex:1;min-width:280px;border:1px solid #ddd;padding:12px;border-radius:8px;background:#f8faff}
+    .block h3{margin:0 0 6px 0;color:#333}
+    .qr{text-align:left;margin:10px 0}
+    a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    .printbar{display:flex;gap:10px;align-items:center}
+    .btn{padding:8px 12px;border:1px solid #2e0051;border-radius:8px;background:var(--indigo);color:#fff;cursor:pointer}
+    @media print{.print-hide{display:none}}
   </style>
 </head>
 <body>
-  <header>
-    <h1>Hot Health — Report</h1>
-    <p><b>Created:</b> {{created}}</p>
-    <p><b>Share Link:</b> 
-      <a href="{{shareUrl}}" target="_blank">{{shareUrl}}</a>
-    </p>
-    <div class="qr">
-      <img src="{{qrDataUrl}}" alt="QR Code for this report">
-    </div>
-  </header>
+  <div class="header-shell"><header><h1>Hot Health — Report</h1></header></div>
+  <div class="shell">
+    <main class="wrap">
+      <section class="section print-hide">
+        <div class="row printbar">
+          <button class="btn" onclick="window.print()">🖨️ Print</button>
+          <div><b>Share Link:</b> <a href="{{shareUrl}}" target="_blank">{{shareUrl}}</a></div>
+        </div>
+        <div class="qr"><img src="{{qrDataUrl}}" alt="QR Code for this report" width="160"></div>
+        <div><b>Created:</b> {{created}}</div>
+      </section>
 
-  <section class="section">
-    <h2>Patient Details</h2>
-    <p><b>Name:</b> {{name}}</p>
-    <p><b>Email:</b> <a href="mailto:{{email}}">{{email}}</a></p>
-    <p><b>Blood Type:</b> {{blood}}</p>
-    <p><b>Emergency Contact:</b> {{emer_name}} ({{emer_phone}}, 
-       <a href="mailto:{{emer_email}}">{{emer_email}}</a>)</p>
-  </section>
+      <section class="section">
+        <h2>Patient Details</h2>
+        <p><b>Name:</b> {{name}}</p>
+        <p><b>Email:</b> <a href="mailto:{{email}}">{{email}}</a></p>
+        <p><b>Blood Type:</b> {{blood}}</p>
+        <p><b>Emergency Contact:</b> {{emer_name}} ({{emer_phone}}, <a href="mailto:{{emer_email}}">{{emer_email}}</a>)</p>
+      </section>
 
-  <section class="section">
-    <h2>Summary</h2>
-    <p><b>Medications:</b> {{medications}}</p>
-    <p><b>Allergies:</b> {{allergies}}</p>
-    <p><b>Conditions:</b> {{conditions}}</p>
-    <p><b>Blood Pressure:</b> {{bp}}</p>
-    <p><b>Weight:</b> {{weight}}</p>
-  </section>
+      <section class="section">
+        <h2>Summary</h2>
+        <p><b>Medications:</b> {{medications}}</p>
+        <p><b>Allergies:</b> {{allergies}}</p>
+        <p><b>Conditions:</b> {{conditions}}</p>
+        <p><b>Blood Pressure:</b> {{bp}}</p>
+        <p><b>Weight:</b> {{weight}}</p>
+      </section>
 
-  <section class="section">
-    <h2>Transcript</h2>
-    <div class="dual-block">
-      <div class="block">
-        <h3>Original ({{detectedLang}})</h3>
-        <p>{{transcript}}</p>
-      </div>
-      <div class="block">
-        <h3>Translated ({{targetLang}})</h3>
-        <p>{{translatedTranscript}}</p>
-      </div>
-    </div>
-  </section>
-
-  <footer>
-    <p>Hot Health © 2025</p>
-  </footer>
+      <section class="section">
+        <h2>Transcript</h2>
+        <div class="dual-block">
+          <div class="block">
+            <h3>Original ({{detectedLang}})</h3>
+            <p>{{transcript}}</p>
+          </div>
+          <div class="block">
+            <h3>Translated ({{targetLang}})</h3>
+            <p>{{translatedTranscript}}</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
 </body>
 </html>
