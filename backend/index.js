@@ -7,57 +7,50 @@ import path from 'path';
 import fs from 'fs';
 import QRCode from 'qrcode';
 import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
 import { fileURLToPath } from 'url';
 
+// ----- Paths / env -----
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ── ENV
 const PORT = Number(process.env.PORT) || 10000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Hotest';
-let PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').trim();
 
-// ── Paths
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const UPLOAD_DIR = path.join(__dirname, '..', 'uploads'); // keep uploads outside code dir if you prefer
+const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// ── App
+// ----- App -----
 const app = express();
 app.use(bodyParser.json({ limit: '2mb' }));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static(PUBLIC_DIR));
 
-// Health/version to confirm deployed file
+// Health/version
 const APP_BUILD = process.env.RENDER_GIT_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || 'local-dev';
 app.get('/healthz', (_, res) => res.type('text').send('ok'));
 app.get('/_version', (_, res) => res.json({ ok: true, build: APP_BUILD }));
 
-// Multer for uploads
+// ----- Multer upload -----
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
   filename: (_, file, cb) => {
     const ts = Date.now();
     const rnd = Math.random().toString(36).slice(2, 8);
-    const ext = path.extname(file.originalname || '.webm') || '.webm';
+    const ext = path.extname(file?.originalname || '') || '.webm';
     cb(null, `${ts}-${rnd}${ext}`);
   },
 });
 const upload = multer({ storage });
 
-// Helpers
+// ----- Helpers -----
+function esc(s = '') {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
 function absoluteBaseUrl(req) {
-  if (PUBLIC_BASE_URL && /^https?:\/\//i.test(PUBLIC_BASE_URL)) {
-    return PUBLIC_BASE_URL.replace(/\/+$/, '');
-  }
   const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https');
   const host = String(req.headers['x-forwarded-host'] || req.headers.host || '');
   return `${proto}://${host}`;
-}
-
-function esc(s = '') {
-  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 function safeJSON(s, d = []) { try { return JSON.parse(s); } catch { return d; } }
 
@@ -182,7 +175,7 @@ function renderReportHTML(row, shareUrl) {
 </html>`;
 }
 
-// Dummy transcribe for sanity (replace with OpenAI call if needed)
+// ----- Dummy transcription (replace with OpenAI client if desired) -----
 async function transcribe(filePath) {
   console.log('[AI] Dummy transcription for', path.basename(filePath));
   return {
@@ -191,32 +184,49 @@ async function transcribe(filePath) {
   };
 }
 
-// DB handle populated in start()
+// ----- sqlite3 (no "sqlite" package) -----
 let db;
-
-// Routes (that don’t require DB)
-app.get('/', (req, res) => {
-  const idx = path.join(PUBLIC_DIR, 'index.html');
-  if (!fs.existsSync(idx)) {
-    return res
-      .status(200)
-      .type('text')
-      .send('Backend is running. Place your frontend in backend/public/index.html.');
-  }
-  res.sendFile(idx);
-});
-
-// Routes needing DB are attached after DB init inside start()
-
-async function start() {
-  // — DB init (no top-level await, no db.pragma)
-  db = await open({
-    filename: path.join(__dirname, 'data.sqlite'),
-    driver: sqlite3.Database,
+function dbInit(dbFile) {
+  return new Promise((resolve, reject) => {
+    const handle = new sqlite3.Database(dbFile, (err) => {
+      if (err) return reject(err);
+      resolve(handle);
+    });
   });
-  await db.exec('PRAGMA journal_mode = WAL;');
+}
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) return reject(err);
+      resolve(this);
+    });
+  });
+}
+function dbGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, function (err, row) {
+      if (err) return reject(err);
+      resolve(row);
+    });
+  });
+}
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, function (err, rows) {
+      if (err) return reject(err);
+      resolve(rows);
+    });
+  });
+}
 
-  await db.exec(`
+// ----- Start server (no top-level await) -----
+async function start() {
+  // DB init
+  const dbPath = path.join(__dirname, 'data.sqlite');
+  db = await dbInit(dbPath);
+
+  // Schema
+  await dbRun(`
     CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY,
       created TEXT,
@@ -226,14 +236,6 @@ async function start() {
       emer_name TEXT,
       emer_phone TEXT,
       emer_email TEXT,
-      doc_name TEXT,
-      doc_phone TEXT,
-      doc_fax TEXT,
-      doc_email TEXT,
-      pharm_name TEXT,
-      pharm_phone TEXT,
-      pharm_fax TEXT,
-      pharm_address TEXT,
       detected_lang TEXT,
       target_lang TEXT,
       medications TEXT,
@@ -247,64 +249,45 @@ async function start() {
     )
   `);
 
-  const SQL_INSERT = `
-    INSERT INTO reports (
-      id, created, name, email, blood_type,
-      emer_name, emer_phone, emer_email,
-      doc_name, doc_phone, doc_fax, doc_email,
-      pharm_name, pharm_phone, pharm_fax, pharm_address,
-      detected_lang, target_lang,
-      medications, allergies, conditions, bp, weight,
-      transcript, translated_transcript, qr_data
-    ) VALUES (?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?, ?,?,?,?, ?,?, ?,?)
-  `;
-  const SQL_GET  = `SELECT * FROM reports WHERE id = ?`;
-  const SQL_LIST = `SELECT id, created, name FROM reports ORDER BY created DESC LIMIT 200`;
+  // Routes that need DB
 
-  function requireAdmin(req, res) {
-    const pass = req.query.password || req.headers['x-admin-password'];
-    if ((pass || '') !== ADMIN_PASSWORD) {
-      res.status(401).type('text').send('Unauthorized — add ?password= or x-admin-password header');
-      return false;
+  app.get('/', (req, res) => {
+    const idx = path.join(PUBLIC_DIR, 'index.html');
+    if (!fs.existsSync(idx)) {
+      return res.status(200).type('text').send('Backend running. Place frontend at backend/public/index.html');
     }
-    return true;
-  }
+    res.sendFile(idx);
+  });
 
   app.get('/reports', async (req, res) => {
-    if (!requireAdmin(req, res)) return;
-    const rows = await db.all(SQL_LIST);
+    const pass = req.query.password || req.headers['x-admin-password'];
+    if ((pass || '') !== ADMIN_PASSWORD) return res.status(401).type('text').send('Unauthorized — add ?password=');
+    const rows = await dbAll(`SELECT id, created, name FROM reports ORDER BY created DESC LIMIT 200`);
     res.json({ ok: true, reports: rows });
   });
 
   app.get('/reports/:id', async (req, res) => {
-    const row = await db.get(SQL_GET, req.params.id);
+    const row = await dbGet(`SELECT * FROM reports WHERE id = ?`, [req.params.id]);
     if (!row) return res.status(404).type('text').send('Not found');
 
-    const base = absoluteBaseUrl(req);
-    const shareUrl = `${base}/reports/${row.id}`;
-
+    const shareUrl = `${absoluteBaseUrl(req)}/reports/${row.id}`;
     if (!row.qr_data) {
       try {
         const qr = await QRCode.toDataURL(shareUrl, { margin: 1, scale: 4 });
-        await db.run('UPDATE reports SET qr_data = ? WHERE id = ?', qr, row.id);
+        await dbRun(`UPDATE reports SET qr_data = ? WHERE id = ?`, [qr, row.id]);
         row.qr_data = qr;
       } catch (e) {
-        console.warn('[QR] Generation failed:', e.message);
+        console.warn('[QR] failed:', e.message);
       }
     }
     const html = renderReportHTML(row, shareUrl);
     res.type('html').send(html);
   });
 
-  const uploader = upload.single('audio');
-
   app.post('/upload', (req, res) => {
-    uploader(req, res, async (err) => {
+    upload.single('audio')(req, res, async (err) => {
       try {
-        if (err) {
-          console.error('[UPLOAD] Multer error:', err);
-          return res.status(400).json({ ok: false, error: 'Upload error' });
-        }
+        if (err) return res.status(400).json({ ok: false, error: 'Upload error' });
         if (!req.file) return res.status(400).json({ ok: false, error: 'No file' });
 
         const name = (req.body.name || '').trim();
@@ -318,28 +301,34 @@ async function start() {
         const t = await transcribe(req.file.path);
         const transcript = t.text || '';
         const detected = t.lang || 'en';
-
         const facts = parseFacts(transcript);
+
+        // Translate transcript (stub: if targetLang set, copy original)
         const translatedTranscript = targetLang ? transcript : '';
 
         const id = Math.random().toString(36).slice(2, 18);
         const created = new Date().toISOString();
-        const base = absoluteBaseUrl(req);
-        const shareUrl = `${base}/reports/${id}`;
+        const shareUrl = `${absoluteBaseUrl(req)}/reports/${id}`;
         const qr = await QRCode.toDataURL(shareUrl, { margin: 1, scale: 4 });
 
-        await db.run(
-          SQL_INSERT,
-          id, created, name, email, blood,
-          emer_name, emer_phone, emer_email,
-          '', '', '', '',
-          '', '', '', '',
-          detected, targetLang,
-          JSON.stringify(facts.medications || []),
-          JSON.stringify(facts.allergies || []),
-          JSON.stringify(facts.conditions || []),
-          facts.bp || '', facts.weight || '',
-          transcript, translatedTranscript, qr
+        await dbRun(
+          `INSERT INTO reports (
+            id, created, name, email, blood_type,
+            emer_name, emer_phone, emer_email,
+            detected_lang, target_lang,
+            medications, allergies, conditions, bp, weight,
+            transcript, translated_transcript, qr_data
+          ) VALUES (?,?,?,?, ?,?,?,?, ?,?, ?,?,?,?, ?,?,?,?)`,
+          [
+            id, created, name, email, blood,
+            emer_name, emer_phone, emer_email,
+            detected, targetLang,
+            JSON.stringify(facts.medications || []),
+            JSON.stringify(facts.allergies || []),
+            JSON.stringify(facts.conditions || []),
+            facts.bp || '', facts.weight || '',
+            transcript, translatedTranscript, qr
+          ]
         );
 
         res.json({ ok: true, id, url: shareUrl });
@@ -355,7 +344,8 @@ async function start() {
   });
 }
 
-start().catch((e) => {
-  console.error('[FATAL] failed to start:', e);
+// kick off
+start().catch(e => {
+  console.error('[FATAL] start failed:', e);
   process.exit(1);
 });
