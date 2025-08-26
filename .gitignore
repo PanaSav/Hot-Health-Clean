@@ -7,3 +7,5 @@ backend/node_modules/
 backend/uploads/
 backend/*.sqlite
 **/*.sqlite
+node_modules/
+backend/node_modules/
