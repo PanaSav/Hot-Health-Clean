@@ -5,7 +5,8 @@ import fs from "fs";
 import multer from "multer";
 import QRCode from "qrcode";
 import dotenv from "dotenv";
-import Database from "better-sqlite3";
+import sqlite3 from "sqlite3";
+import { open } from "sqlite";
 import bodyParser from "body-parser";
 import { fileURLToPath } from "url";
 import OpenAI from "openai";
@@ -113,7 +114,9 @@ const upload = multer({
 });
 
 /* ========== DB (better-sqlite3) ========== */
-const db = new Database(path.join(process.cwd(), "data.sqlite"));
+const db = await open({
+  filename: path.join(process.cwd(), "data.sqlite"),
+  driver: sqlite3.Database
 db.pragma("journal_mode = WAL");
 db.exec(`
   CREATE TABLE IF NOT EXISTS reports (
