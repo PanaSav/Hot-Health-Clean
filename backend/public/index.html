@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <title>Hot Health — One Port</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
@@ -11,15 +11,10 @@
 
   <main class="wrap">
     <section class="card">
-      <h2>Patient & Contacts</h2>
+      <h2>Patient & Options</h2>
       <div class="row">
         <input id="pName" placeholder="Patient Name"/>
         <input id="pEmail" placeholder="Patient Email"/>
-        <select id="blood">
-          <option value="">Blood Type (optional)</option>
-          <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
-          <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
-        </select>
       </div>
       <div class="row">
         <input id="eName" placeholder="Emergency Contact Name"/>
@@ -27,27 +22,29 @@
         <input id="eEmail" placeholder="Emergency Contact Email"/>
       </div>
       <div class="row">
-        <input id="docName" placeholder="Doctor Name (default N/A)"/>
-        <input id="docPhone" placeholder="Doctor Phone (default N/A)"/>
-        <input id="docFax" placeholder="Doctor Fax (default N/A)"/>
-        <input id="docEmail" placeholder="Doctor Email (default N/A)"/>
+        <input id="docName" placeholder="Family Doctor Name (optional)"/>
+        <input id="docPhone" placeholder="Doctor Phone (optional)"/>
+        <input id="docFax" placeholder="Doctor Fax (optional)"/>
+        <input id="docEmail" placeholder="Doctor Email (optional)"/>
       </div>
       <div class="row">
-        <input id="phName" placeholder="Pharmacy Name (default N/A)"/>
-        <input id="phPhone" placeholder="Pharmacy Phone (default N/A)"/>
-        <input id="phFax" placeholder="Pharmacy Fax (default N/A)"/>
+        <input id="pharmName" placeholder="Pharmacy Name (optional)"/>
+        <input id="pharmAddr" placeholder="Pharmacy Address (optional)"/>
+        <input id="pharmPhone" placeholder="Pharmacy Phone (optional)"/>
+        <input id="pharmFax" placeholder="Pharmacy Fax (optional)"/>
       </div>
       <div class="row">
-        <input id="phAddr" class="wide" placeholder="Pharmacy Address (default N/A)"/>
-      </div>
-      <div class="row">
+        <select id="blood">
+          <option value="">Blood Type (optional)</option>
+          <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
+          <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
+        </select>
         <select id="lang">
           <option value="">— No translation at upload —</option>
           <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
           <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
           <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
           <option value="ja">日本語</option><option value="ko">한국어</option>
-          <option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option><option value="he">עברית</option>
         </select>
       </div>
     </section>
@@ -67,6 +64,11 @@
       <div id="result">Record and stop to generate a report + QR.</div>
     </section>
   </main>
+
+  <footer class="actions">
+    <a class="btn" href="/reports?password=Hotest">Open Reports</a>
+    <a class="btn" href="/logout">Log out</a>
+  </footer>
 
   <script src="/app.js"></script>
 </body>

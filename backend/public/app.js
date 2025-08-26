@@ -1,103 +1,110 @@
-// backend/public/app.js
+// /public/app.js – mic UI + upload
 (() => {
   const $ = (id) => document.getElementById(id);
+
   const btn = $("btnRec");
-  const result = $("result");
+  const hint = $("recHint");
   const recMeta = $("recMeta");
+  const out = $("result");
   const errBox = $("error");
 
-  let mediaRecorder, chunks = [], stream;
+  let media, rec, chunks = [], recording = false;
 
-  const showError = (m) => errBox.textContent = m || "";
-  const setResult = (h) => result.innerHTML = h;
-
-  async function startRec() {
-    showError("");
-    chunks = [];
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Prefer a webm container with opus
-      const preferred = "audio/webm;codecs=opus";
-      const mimeType = MediaRecorder.isTypeSupported?.(preferred) ? preferred : "audio/webm";
-      mediaRecorder = new MediaRecorder(stream, { mimeType });
-    } catch (e) {
-      showError("Microphone requires HTTPS or localhost, and a supported browser (Chrome/Edge/Safari 14+).");
-      return;
-    }
-    mediaRecorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-    mediaRecorder.onstop = onStop;
-    mediaRecorder.start();
-    btn.textContent = "Stop";
-    $("recHint").textContent = "Recording… click Stop when done.";
+  function showError(msg) {
+    errBox.textContent = msg;
+    errBox.style.display = "block";
+    setTimeout(()=> errBox.style.display = "none", 6000);
   }
+
+  async function ensureMic() {
+    try {
+      media = await navigator.mediaDevices.getUserMedia({ audio: true });
+      return true;
+    } catch (e) {
+      showError("Mic permission denied or unavailable.");
+      return false;
+    }
+  }
+
+  function getField(id) {
+    return ($(id)?.value || "").trim();
+  }
+
+  btn.addEventListener("click", async () => {
+    if (!recording) {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        showError("This browser does not support audio recording.");
+        return;
+      }
+      if (!await ensureMic()) return;
+
+      chunks = [];
+      rec = new MediaRecorder(media, { mimeType: "audio/webm" });
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      rec.onstop = onStop;
+      rec.start();
+
+      recording = true;
+      btn.textContent = "Stop";
+      hint.textContent = "Recording… click Stop when done.";
+      recMeta.textContent = "";
+      out.innerHTML = "Recording…";
+      errBox.textContent = "";
+    } else {
+      recording = false;
+      try { rec.stop(); } catch {}
+      btn.textContent = "Record";
+      hint.textContent = "Click to record a short health note (3–10s).";
+    }
+  });
 
   async function onStop() {
+    const blob = new Blob(chunks, { type: "audio/webm" });
+    recMeta.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB`;
+
+    if (blob.size < 2048) {
+      showError("Recording too short. Try again.");
+      return;
+    }
+
+    const fd = new FormData();
+    fd.append("audio", blob, "recording.webm");
+    fd.append("name", getField("pName"));
+    fd.append("email", getField("pEmail"));
+    fd.append("emer_name", getField("eName"));
+    fd.append("emer_phone", getField("ePhone"));
+    fd.append("emer_email", getField("eEmail"));
+    fd.append("blood_type", getField("blood"));
+    // doctor & pharmacy
+    fd.append("doc_name", getField("docName"));
+    fd.append("doc_phone", getField("docPhone"));
+    fd.append("doc_fax", getField("docFax"));
+    fd.append("doc_email", getField("docEmail"));
+    fd.append("pharm_name", getField("pharmName"));
+    fd.append("pharm_address", getField("pharmAddr"));
+    fd.append("pharm_phone", getField("pharmPhone"));
+    fd.append("pharm_fax", getField("pharmFax"));
+    // translation
+    fd.append("lang", getField("lang"));
+
+    out.innerHTML = "Uploading…";
     try {
-      // stop tracks
-      stream?.getTracks()?.forEach(t => t.stop());
+      const r = await fetch("/upload", { method: "POST", body: fd });
+      if (!r.ok) {
+        const txt = await r.text().catch(()=> "");
+        throw new Error(`Upload failed (${r.status}): ${txt || r.statusText}`);
+      }
+      const data = await r.json();
+      if (!data.ok) throw new Error(data.error || "Server error");
 
-      // Build a proper File so the browser sets the part Content-Type for Multer
-      const file = new File(chunks, "recording.webm", { type: "audio/webm" });
-      if (!file.size) { showError("No audio captured."); return; }
-
-      const kb = Math.round(file.size / 1024);
-      recMeta.textContent = `Recorded ${kb} KB`;
-
-      const fd = new FormData();
-      fd.append("audio", file); // <-- CRITICAL name: "audio"
-
-      // patient/contact
-      fd.append("name", $("pName").value || "");
-      fd.append("email", $("pEmail").value || "");
-      fd.append("blood_type", $("blood").value || "");
-      fd.append("emer_name", $("eName").value || "");
-      fd.append("emer_phone", $("ePhone").value || "");
-      fd.append("emer_email", $("eEmail").value || "");
-
-      // doctor
-      fd.append("doc_name", $("docName").value || "");
-      fd.append("doc_phone", $("docPhone").value || "");
-      fd.append("doc_fax", $("docFax").value || "");
-      fd.append("doc_email", $("docEmail").value || "");
-
-      // pharmacy
-      fd.append("pharm_name", $("phName").value || "");
-      fd.append("pharm_phone", $("phPhone").value || "");
-      fd.append("pharm_fax", $("phFax").value || "");
-      fd.append("pharm_address", $("phAddr").value || "");
-
-      // optional target language
-      fd.append("lang", $("lang").value || "");
-
-      setResult("Uploading…");
-      const res = await fetch(`${location.origin}/upload`, { method: "POST", body: fd });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-
-      setResult(`
-        <div class="qr-wrap">
-          <img class="qr" src="${data.qrDataUrl}" alt="QR"/>
-        </div>
-        <div class="linkRow">
-          <a class="btn" target="_blank" href="${data.shareUrl}">Open report</a>
-          <button class="btn" onclick="navigator.clipboard.writeText('${data.shareUrl}').then(()=>alert('Link copied'))">Copy link</button>
-        </div>
-      `);
+      // show QR + link
+      out.innerHTML = `
+        <div class="qr"><img src="${data.qrDataUrl}" alt="QR"></div>
+        <p><a class="btn" target="_blank" href="${data.shareUrl}">Open Share Link</a></p>
+      `;
     } catch (e) {
-      console.error(e);
-      showError(`Upload failed: ${e.message || e}`);
-      setResult("Record and stop to generate a report + QR.");
-    } finally {
-      btn.textContent = "Record";
-      $("recHint").textContent = "Click to record a short health note (3–10s).";
-      mediaRecorder = null;
-      chunks = [];
-      stream = null;
+      showError(e.message || "Upload failed");
+      out.textContent = "Upload failed.";
     }
   }
-
-  btn.addEventListener("click", () => {
-    if (!mediaRecorder) startRec();
-    else mediaRecorder.stop();
-  });
 })();

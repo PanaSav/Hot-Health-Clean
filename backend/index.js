@@ -1,36 +1,94 @@
-// backend/index.js  (sqlite3-only, doctor defaults, pharmacy fields, no 'sqlite' helper)
+// backend/index.js — full drop-in (login gate before static + gated "/" + same API)
 import express from "express";
-import multer from "multer";
 import path from "path";
 import fs from "fs";
-import crypto from "crypto";
+import multer from "multer";
 import QRCode from "qrcode";
 import dotenv from "dotenv";
-import sqlite3 from "sqlite3";
-import { fileURLToPath } from "url";
+import Database from "better-sqlite3";
 import bodyParser from "body-parser";
-import fetch from "node-fetch";
+import { fileURLToPath } from "url";
+import OpenAI from "openai";
+import cookieParser from "cookie-parser";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT || 10000);
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").trim();
-
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o";
-const TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
-const FALLBACK_TRANSCRIBE_MODEL = "whisper-1";
-
 const app = express();
-app.use(bodyParser.json({ limit: "2mb" }));
+
+/* ========== Config ========== */
+const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/,"");
+
+const LOGIN_USER  = process.env.LOGIN_USER  || "Pana123$";
+const LOGIN_PASS  = process.env.LOGIN_PASS  || "GoGoPana$";
+const COOKIE_SECRET = process.env.COOKIE_SECRET || "hot-health-cookie-secret";
+
+const OPENAI_TRANSCRIBE_PRIMARY  = process.env.OPENAI_TRANSCRIBE_PRIMARY  || "gpt-4o-mini-transcribe";
+const OPENAI_TRANSCRIBE_FALLBACK = process.env.OPENAI_TRANSCRIBE_FALLBACK || "whisper-1";
+const OPENAI_TEXT_MODEL          = process.env.OPENAI_TEXT_MODEL          || "gpt-4o-mini";
+
+/* ========== Parsers + Cookies (no static yet) ========== */
+app.use(bodyParser.json({ limit: "1mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(cookieParser(COOKIE_SECRET));
+
+/* ========== Auth Gate BEFORE static ========== */
+const OPEN_PATHS = new Set([
+  "/healthz",
+  "/login",
+  "/logout",
+  "/styles.css",
+  "/app.js",
+  "/favicon.ico",
+]);
+
+app.use((req, res, next) => {
+  // allow login endpoints and static assets defined above
+  if (OPEN_PATHS.has(req.path) || req.path.startsWith("/assets/")) return next();
+  // allow POST /login explicitly
+  if (req.path === "/login" && req.method === "POST") return next();
+  // allow already authenticated
+  if (req.signedCookies?.hh_auth === "ok") return next();
+  // otherwise force login
+  return res.redirect("/login");
+});
+
+/* ========== Static AFTER gate ========== */
 app.use(express.static(path.join(__dirname, "public")));
 
-// uploads/
+/* ========== Healthcheck ========== */
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
+
+/* ========== Login / Logout ========== */
+app.get("/login", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+app.post("/login", (req, res) => {
+  const { user, pass } = req.body || {};
+  if (user === LOGIN_USER && pass === LOGIN_PASS) {
+    res.cookie("hh_auth", "ok", {
+      httpOnly: true,
+      sameSite: "lax",
+      signed: true,
+      maxAge: 1000 * 60 * 60 * 8, // 8h
+      // secure: true, // enable if always over https
+    });
+    return res.redirect("/");
+  }
+  return res.redirect("/login?error=1");
+});
+
+app.get("/logout", (req, res) => {
+  res.clearCookie("hh_auth");
+  res.redirect("/login");
+});
+
+/* ========== Uploads ========== */
 const uploadDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -42,370 +100,386 @@ const storage = multer.diskStorage({
     cb(null, `${id}${ext}`);
   },
 });
-
 const upload = multer({
   storage,
-  // Accept even if the browser marks the part as application/octet-stream
   fileFilter: (_req, file, cb) => {
     const mt = (file.mimetype || "").toLowerCase();
-    if (
-      mt === "application/octet-stream" ||
-      /audio\/(webm|wav|ogg|mp3|mpeg|mp4|m4a|oga|flac)/i.test(mt)
-    ) cb(null, true);
-    else cb(null, true); // be permissive; we validate by extension/attempt
+    // allow common audio or fall back to octet-stream (let OpenAI validate)
+    if (mt === "application/octet-stream" ||
+        /audio\/(webm|wav|ogg|mp3|mpeg|mp4|m4a|oga|flac)/i.test(mt)) cb(null, true);
+    else cb(null, true);
   },
   limits: { fileSize: 30 * 1024 * 1024 },
 });
 
+/* ========== DB (better-sqlite3) ========== */
+const db = new Database(path.join(process.cwd(), "data.sqlite"));
+db.pragma("journal_mode = WAL");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reports (
+    id TEXT PRIMARY KEY,
+    created TEXT,
+    name TEXT,
+    email TEXT,
+    blood_type TEXT,
+    emer_name TEXT,
+    emer_phone TEXT,
+    emer_email TEXT,
+    doc_name TEXT,
+    doc_phone TEXT,
+    doc_fax TEXT,
+    doc_email TEXT,
+    pharm_name TEXT,
+    pharm_phone TEXT,
+    pharm_fax TEXT,
+    pharm_address TEXT,
+    detected_lang TEXT,
+    target_lang TEXT,
+    medications TEXT,
+    allergies TEXT,
+    conditions TEXT,
+    bp TEXT,
+    weight TEXT,
+    transcript TEXT,
+    translated_transcript TEXT
+  )
+`);
 
-// sqlite3 helper (promisified)
-sqlite3.verbose();
-const dbFile = path.join(process.cwd(), "hothealth.sqlite");
-const db = new sqlite3.Database(dbFile);
-const dbExec = (sql) => new Promise((res, rej) => db.exec(sql, (e)=>e?rej(e):res()));
-const dbRun  = (sql, p=[]) => new Promise((res, rej)=>db.run(sql,p,function(e){e?rej(e):res(this)}));
-const dbGet  = (sql, p=[]) => new Promise((res, rej)=>db.get(sql,p,(e,r)=>e?rej(e):res(r)));
-const dbAll  = (sql, p=[]) => new Promise((res, rej)=>db.all(sql,p,(e,r)=>e?rej(e):res(r)));
+const stmtInsertReport = db.prepare(`
+  INSERT INTO reports (
+    id, created, name, email, blood_type,
+    emer_name, emer_phone, emer_email,
+    doc_name, doc_phone, doc_fax, doc_email,
+    pharm_name, pharm_phone, pharm_fax, pharm_address,
+    detected_lang, target_lang,
+    medications, allergies, conditions, bp, weight,
+    transcript, translated_transcript
+  )
+  VALUES (@id, @created, @name, @email, @blood_type,
+          @emer_name, @emer_phone, @emer_email,
+          @doc_name, @doc_phone, @doc_fax, @doc_email,
+          @pharm_name, @pharm_phone, @pharm_fax, @pharm_address,
+          @detected_lang, @target_lang,
+          @medications, @allergies, @conditions, @bp, @weight,
+          @transcript, @translated_transcript)
+`);
+const stmtGetReport   = db.prepare(`SELECT * FROM reports WHERE id = ?`);
+const stmtListReports = db.prepare(`SELECT id, created, name FROM reports ORDER BY created DESC LIMIT 200`);
 
-// schema init (adds pharmacy + doctor defaults handled at insert time)
-async function initDb(){
-  await dbExec(`
-    CREATE TABLE IF NOT EXISTS reports (
-      id TEXT PRIMARY KEY,
-      created TEXT,
-      name TEXT,
-      email TEXT,
-      emer_name TEXT,
-      emer_phone TEXT,
-      emer_email TEXT,
-      blood TEXT,
-      doc_name TEXT,
-      doc_phone TEXT,
-      doc_fax TEXT,
-      doc_email TEXT,
-      pharm_name TEXT,
-      pharm_phone TEXT,
-      pharm_fax TEXT,
-      pharm_address TEXT,
-      transcript TEXT,
-      translatedTranscript TEXT,
-      detectedLang TEXT,
-      targetLang TEXT,
-      medications TEXT,
-      medicationsT TEXT,
-      allergies TEXT,
-      allergiesT TEXT,
-      conditions TEXT,
-      conditionsT TEXT,
-      bp TEXT,
-      bpT TEXT,
-      weight TEXT,
-      weightT TEXT
-    );
-  `);
-  async function addCol(name, def){ try{ await dbExec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`);}catch{} }
-  await addCol("pharm_name","TEXT");
-  await addCol("pharm_phone","TEXT");
-  await addCol("pharm_fax","TEXT");
-  await addCol("pharm_address","TEXT");
-  await addCol("medicationsT","TEXT");
-  await addCol("allergiesT","TEXT");
-  await addCol("conditionsT","TEXT");
-  await addCol("bpT","TEXT");
-  await addCol("weightT","TEXT");
+/* ========== Helpers ========== */
+function shareBaseUrl(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const proto = req.headers["x-forwarded-proto"]?.toString() || req.protocol;
+  const host  = req.headers["x-forwarded-host"]?.toString() || req.get("host");
+  return `${proto}://${host}`;
 }
-await initDb();
+const uniq = a => Array.from(new Set(a)).filter(Boolean);
 
-function baseUrlFrom(req){
-  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL.replace(/\/+$/,"");
-  const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
-  const host  = req.headers["x-forwarded-host"]  || req.headers.host;
-  return `${proto}://${host}`.replace(/\/+$/,"");
-}
-function shortId(){ return crypto.randomBytes(8).toString("hex"); }
-function cleanList(a){ return (a||[]).map(s=>(s||"").trim()).filter(Boolean); }
-function uniq(a){ return [...new Set(a)]; }
-
-// OpenAI helpers
-async function openaiTranscribe(localPath, filename, model){
-  const endpoint = "https://api.openai.com/v1/audio/transcriptions";
-  const FormData = (await import("form-data")).default;
-  const form = new FormData();
-  form.append("model", model);
-  form.append("file", fs.createReadStream(localPath), { filename });
-  const resp = await fetch(endpoint, { method:"POST", headers:{ Authorization:`Bearer ${process.env.OPENAI_API_KEY}` }, body: form });
-  if (!resp.ok) throw new Error(`${resp.status} ${await resp.text()}`);
-  return resp.json();
-}
-async function openaiExtractFacts(transcript){
-  const prompt = `
-Return strict JSON with:
-{"medications":["name — amount units",...],
- "allergies":[],
- "conditions":[],
- "blood_pressure":"",
- "weight":""}
-Rules: Do not put weight/BP into conditions.
-Text:"""${transcript}"""`;
-  const r = await fetch("https://api.openai.com/v1/chat/completions",{
-    method:"POST",
-    headers:{ Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,"Content-Type":"application/json"},
-    body: JSON.stringify({ model: TEXT_MODEL, messages:[{role:"user",content:prompt}], temperature:0.2 })
+function parseFactsFromText(text) {
+  const lower = text.toLowerCase();
+  const meds = [];
+  const medMatch = text.match(/\b([A-Za-z][A-Za-z0-9\-]+)\b\s*(?:—|-)?\s*(\d+\s*(?:mg|mcg|g|ml))?/g);
+  if (medMatch) {
+    medMatch.forEach(m => {
+      const parts = m.split(/—|-/).map(s => s.trim());
+      if (parts[0] && !/^(i|and|the|at|my|weight|weigh|kidney|allergic)$/i.test(parts[0])) {
+        meds.push(parts[1] ? `${parts[0]} — ${parts[1]}` : parts[0]);
+      }
+    });
+  }
+  const allergies = [];
+  if (lower.includes("allergic to")) {
+    const seg = text.split(/allergic to/i)[1] || "";
+    seg.split(/,|and/).map(s=>s.trim()).forEach(w=>{
+      if (w && w.length < 60) allergies.push(w.replace(/\.$/, ""));
+    });
+  }
+  const conditions = [];
+  const condWords = ["kidney","heart","liver","diabetes","asthma","hypertension","cancer","pregnancy"];
+  condWords.forEach(w=>{
+    if (lower.includes(w)) conditions.push(w[0].toUpperCase()+w.slice(1));
   });
-  if(!r.ok) throw new Error(await r.text());
-  const j = await r.json();
-  try { return JSON.parse(j?.choices?.[0]?.message?.content || "{}"); }
-  catch { return { medications:[], allergies:[], conditions:[], blood_pressure:"", weight:"" }; }
-}
-async function openaiTranslate(text, lang){
-  if (!lang) return text;
-  const prompt = `Translate to ${lang}. Keep meds and units exact.\n"""${text}"""`;
-  const r = await fetch("https://api.openai.com/v1/chat/completions",{
-    method:"POST",
-    headers:{ Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,"Content-Type":"application/json"},
-    body: JSON.stringify({ model: TEXT_MODEL, messages:[{role:"user",content:prompt}], temperature:0.2 })
-  });
-  if(!r.ok) throw new Error(await r.text());
-  const j = await r.json();
-  return j?.choices?.[0]?.message?.content?.trim() || text;
+  let bp = "";
+  const bpMatch = text.match(/\b(\d{2,3})\s*(?:over|\/)\s*(\d{2,3})\b/i);
+  if (bpMatch) bp = `${bpMatch[1]}/${bpMatch[2]}`;
+  let weight = "";
+  const wMatch = text.match(/\b(\d{2,3})\s*(?:pounds?|lbs?)\b/i);
+  if (wMatch) weight = `${wMatch[1]} lb`;
+
+  return {
+    medications: uniq(meds).slice(0, 12),
+    allergies: uniq(allergies).slice(0, 12),
+    conditions: uniq(conditions).slice(0, 12),
+    bp, weight
+  };
 }
 
-// routes
-app.get("/", (_req,res)=>res.sendFile(path.join(__dirname,"public","index.html")));
-app.get("/health", (_req,res)=>res.json({ok:true}));
+/* ========== OpenAI ========== */
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.get("/reports/:id", async (req,res)=>{
-  const id = req.params.id;
-  const row = await dbGet("SELECT * FROM reports WHERE id = ?", [id]);
-  if (!row) return res.status(404).send("Report not found");
-
-  const shareUrl = `${baseUrlFrom(req)}/reports/${id}`;
-  const qrDataUrl = await QRCode.toDataURL(shareUrl);
-  const tpl = fs.readFileSync(path.join(__dirname,"templates","report.html"),"utf8");
-  const esc = (v)=> (v??"").toString().replace(/[&<>]/g,s=>({ "&":"&amp;","<":"&lt;",">":"&gt;"}[s]));
-  const html = tpl
-    .replaceAll("{{created}}", esc(row.created||""))
-    .replaceAll("{{name}}", esc(row.name||""))
-    .replaceAll("{{email}}", esc(row.email||""))
-    .replaceAll("{{blood}}", esc(row.blood||""))
-    .replaceAll("{{emer_name}}", esc(row.emer_name||"N/A"))
-    .replaceAll("{{emer_phone}}", esc(row.emer_phone||"N/A"))
-    .replaceAll("{{emer_email}}", esc(row.emer_email||"N/A"))
-    .replaceAll("{{doc_name}}", esc(row.doc_name||"N/A"))
-    .replaceAll("{{doc_phone}}", esc(row.doc_phone||"N/A"))
-    .replaceAll("{{doc_fax}}", esc(row.doc_fax||"N/A"))
-    .replaceAll("{{doc_email}}", esc(row.doc_email||"N/A"))
-    .replaceAll("{{pharm_name}}", esc(row.pharm_name||"N/A"))
-    .replaceAll("{{pharm_phone}}", esc(row.pharm_phone||"N/A"))
-    .replaceAll("{{pharm_fax}}", esc(row.pharm_fax||"N/A"))
-    .replaceAll("{{pharm_address}}", esc(row.pharm_address||"N/A"))
-    .replaceAll("{{shareUrl}}", esc(shareUrl))
-    .replaceAll("{{qrDataUrl}}", esc(qrDataUrl))
-    .replaceAll("{{detectedLang}}", esc(row.detectedLang||""))
-    .replaceAll("{{targetLang}}", esc(row.targetLang||""))
-    .replaceAll("{{transcript}}", esc(row.transcript||""))
-    .replaceAll("{{translatedTranscript}}", esc(row.translatedTranscript||""))
-    .replaceAll("{{medications}}", esc(row.medications||"None"))
-    .replaceAll("{{medicationsT}}", esc(row.medicationsT||row.medications||"None"))
-    .replaceAll("{{allergies}}", esc(row.allergies||"None"))
-    .replaceAll("{{allergiesT}}", esc(row.allergiesT||row.allergies||"None"))
-    .replaceAll("{{conditions}}", esc(row.conditions||"None"))
-    .replaceAll("{{conditionsT}}", esc(row.conditionsT||row.conditions||"None"))
-    .replaceAll("{{bp}}", esc(row.bp||""))
-    .replaceAll("{{bpT}}", esc(row.bpT||row.bp||""))
-    .replaceAll("{{weight}}", esc(row.weight||""))
-    .replaceAll("{{weightT}}", esc(row.weightT||row.weight||""));
-  res.setHeader("Content-Type","text/html; charset=utf-8");
-  res.send(html);
-});
-
-// list page (unchanged structurally)
-app.get("/reports", async (req,res)=>{
-  const password = (req.query.password || "").toString();
-  if (password !== ADMIN_PASSWORD) return res.status(401).send("Unauthorized — add ?password=");
-  const rows = await dbAll("SELECT id, created, name, email, blood, emer_name, emer_phone, emer_email, doc_name, doc_phone, doc_email, pharm_name, detectedLang, targetLang FROM reports ORDER BY datetime(created) DESC");
-  const tpl = fs.readFileSync(path.join(__dirname,"templates","reports.html"),"utf8");
-  const base = baseUrlFrom(req);
-  const listHtml = rows.map(r=>{
-    const share = `${base}/reports/${r.id}`;
-    return `
-      <div class="card">
-        <div class="row1">
-          <div class="title"><span class="badge">Report for</span> <b>${r.name||"—"}</b></div>
-          <div class="actions">
-            <a class="btn" target="_blank" href="${share}" title="Open">🔗 Open</a>
-            <a class="btn" target="_blank" href="mailto:${r.email}?subject=Hot%20Health%20Report&body=${encodeURIComponent(share)}" title="Email Patient">📧 Patient</a>
-          </div>
-        </div>
-        <div class="row2">
-          <div class="info">
-            <span>🕒 ${r.created}</span>
-            <span>🩸 ${r.blood||"—"}</span>
-            <span>👨‍⚕️ ${r.doc_name||"N/A"}</span>
-            <span>🏥 ${r.pharm_name||"N/A"}</span>
-            <span>🌐 ${r.detectedLang||"?"} → ${r.targetLang||"—"}</span>
-          </div>
-        </div>
-      </div>`;
-  }).join("");
-  const html = tpl.replace("{{LIST}}", listHtml);
-  res.setHeader("Content-Type","text/html; charset=utf-8");
-  res.send(html);
-});
-
-// translate + delete (unchanged)
-app.get("/reports/:id/translate", async (req,res)=>{
-  const password = (req.query.password || "").toString();
-  if (password !== ADMIN_PASSWORD) return res.status(401).send("Unauthorized");
-  const id = req.params.id;
-  const targetLang = (req.query.lang || "").toString().trim();
-  const row = await dbGet("SELECT * FROM reports WHERE id = ?", [id]);
-  if (!row) return res.status(404).send("Not found");
-  let medsT = "", allergiesT = "", conditionsT = "", bpT = "", weightT = "", translatedTranscript = "";
+async function transcribe(filePath) {
+  const stream = fs.createReadStream(filePath);
   try {
-    if (row.medications) medsT = await openaiTranslate(row.medications, targetLang);
-    if (row.allergies)   allergiesT = await openaiTranslate(row.allergies, targetLang);
-    if (row.conditions)  conditionsT = await openaiTranslate(row.conditions, targetLang);
-    if (row.bp)          bpT = await openaiTranslate(row.bp, targetLang);
-    if (row.weight)      weightT = await openaiTranslate(row.weight, targetLang);
-    if (row.transcript)  translatedTranscript = await openaiTranslate(row.transcript, targetLang);
-  } catch (e) { console.error("translate error:", e.message); }
-  await dbRun(
-    `UPDATE reports SET targetLang=?, translatedTranscript=?, medicationsT=?, allergiesT=?, conditionsT=?, bpT=?, weightT=? WHERE id=?`,
-    [targetLang, translatedTranscript, medsT, allergiesT, conditionsT, bpT, weightT, id]
-  );
-  res.redirect(`/reports/${id}`);
+    const r = await openai.audio.transcriptions.create({
+      file: stream,
+      model: OPENAI_TRANSCRIBE_PRIMARY
+    });
+    return r.text?.trim() || "";
+  } catch {
+    const r2 = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(filePath),
+      model: OPENAI_TRANSCRIBE_FALLBACK
+    });
+    return r2.text?.trim() || "";
+  }
+}
+
+async function translateText(text, target) {
+  if (!target) return text;
+  const r = await openai.chat.completions.create({
+    model: OPENAI_TEXT_MODEL,
+    messages: [
+      { role: "system", content: `Translate into ${target} and keep medical terms precise.` },
+      { role: "user", content: text }
+    ],
+    temperature: 0.2
+  });
+  return r.choices?.[0]?.message?.content?.trim() || text;
+}
+
+/* ========== Report HTML ========== */
+function renderReportHTML(data) {
+  const {
+    created, shareUrl, qrDataUrl,
+    name, email, blood,
+    emer_name, emer_phone, emer_email,
+    doc_name, doc_phone, doc_fax, doc_email,
+    pharm_name, pharm_phone, pharm_fax, pharm_address,
+    medications, allergies, conditions, bp, weight,
+    detectedLang, targetLang, transcript, translatedTranscript
+  } = data;
+
+  const list = (arr, empty = "None mentioned") =>
+    (arr && arr.length) ? `<ul>${arr.map(x=>`<li>${x}</li>`).join("")}</ul>` : `<p>${empty}</p>`;
+
+  const transcriptBlock = targetLang ? `
+  <section class="section">
+    <h2>Transcript</h2>
+    <div class="dual-block">
+      <div class="block">
+        <h3>Original (${detectedLang || "auto"})</h3>
+        <p>${(transcript || "").replace(/\n/g,"<br>")}</p>
+      </div>
+      <div class="block">
+        <h3>Translated (${targetLang})</h3>
+        <p>${(translatedTranscript || "").replace(/\n/g,"<br>")}</p>
+      </div>
+    </div>
+  </section>` : "";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Hot Health — Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body class="report-body">
+  <header>
+    <h1>Hot Health — Report</h1>
+    <p><b>Created:</b> ${created}</p>
+    <div class="share-row"><span class="hint">Scan or open the share link:</span>
+      <a class="icon-link" href="${shareUrl}" target="_blank" title="Open share link">🔗</a>
+    </div>
+    <div class="qr"><img src="${qrDataUrl}" alt="QR"></div>
+  </header>
+
+  <section class="section">
+    <h2>Patient Details</h2>
+    <div class="grid-two">
+      <div>
+        <p><b>Name:</b> ${name || "—"}</p>
+        <p><b>Email:</b> ${email ? `<a href="mailto:${email}">${email}</a>` : "—"}</p>
+        <p><b>Blood Type:</b> ${blood || "—"}</p>
+      </div>
+      <div>
+        <p><b>Emergency Contact</b><br>
+        ${emer_name || "—"}<br>
+        ${emer_phone || "—"}<br>
+        ${emer_email ? `<a href="mailto:${emer_email}">${emer_email}</a>` : "—"}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Care Team</h2>
+    <div class="grid-two">
+      <div>
+        <p><b>Family Doctor</b><br>
+        ${(doc_name || "N/A")}<br>
+        ${doc_phone || "N/A"}<br>
+        ${doc_fax || "N/A"}<br>
+        ${doc_email ? `<a href="mailto:${doc_email}">${doc_email}</a>` : "N/A"}</p>
+      </div>
+      <div>
+        <p><b>Pharmacy</b><br>
+        ${(pharm_name || "N/A")}<br>
+        ${pharm_address || "N/A"}<br>
+        ${pharm_phone || "N/A"}<br>
+        ${pharm_fax || "N/A"}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Summary</h2>
+    <div class="grid-two">
+      <div>
+        <p><b>Blood Pressure:</b> ${bp || "—"}</p>
+        <p><b>Weight:</b> ${weight || "—"}</p>
+      </div>
+      <div>
+        <p><b>Medications</b></p>
+        ${list(medications)}
+        <p><b>Allergies</b></p>
+        ${list(allergies)}
+        <p><b>Conditions</b></p>
+        ${list(conditions)}
+      </div>
+    </div>
+  </section>
+
+  ${transcriptBlock}
+
+  <footer class="actions">
+    <a class="btn" href="/">+ New Report</a>
+    <a class="btn" href="/reports?password=${encodeURIComponent(ADMIN_PASSWORD)}">Open Reports</a>
+    <a class="btn" href="mailto:?subject=${encodeURIComponent("Hot Health Report")}&body=${encodeURIComponent(shareUrl)}">Email (Default)</a>
+    <a class="btn" target="_blank" href="https://mail.google.com/mail/?view=cm&fs=1&to=&su=${encodeURIComponent("Hot Health Report")}&body=${encodeURIComponent(shareUrl)}">Gmail</a>
+    <a class="btn" target="_blank" href="https://outlook.live.com/mail/0/deeplink/compose?subject=${encodeURIComponent("Hot Health Report")}&body=${encodeURIComponent(shareUrl)}">Outlook</a>
+  </footer>
+</body>
+</html>`;
+}
+
+/* ========== Reports List ========== */
+app.get("/reports", (req, res) => {
+  const rows = stmtListReports.all();
+  const items = rows.map(r => `
+    <li>
+      <span class="muted">${r.created}</span> • <b>${r.name || "Unknown patient"}</b>
+      <a class="btn" href="/reports/${r.id}">Open</a>
+    </li>
+  `).join("");
+
+  res.send(`<!doctype html><html><head>
+  <meta charset="utf-8"/><title>Reports</title>
+  <link rel="stylesheet" href="/styles.css">
+</head><body class="report-body">
+  <header><h1>All Reports</h1></header>
+  <ul class="report-list">${items || "<li>No reports yet.</li>"}</ul>
+  <footer class="actions"><a class="btn" href="/">+ New Report</a></footer>
+</body></html>`);
 });
-app.get("/reports/:id/delete", async (req,res)=>{
-  const password = (req.query.password || "").toString();
-  if (password !== ADMIN_PASSWORD) return res.status(401).send("Unauthorized");
-  await dbRun("DELETE FROM reports WHERE id = ?", [req.params.id]);
-  res.redirect(`/reports?password=${ADMIN_PASSWORD}`);
+
+/* ========== Single Report ========== */
+app.get("/reports/:id", async (req, res) => {
+  const row = stmtGetReport.get(req.params.id);
+  if (!row) return res.status(404).send("Not found");
+
+  const base = shareBaseUrl(req);
+  const shareUrl = `${base}/reports/${row.id}`;
+  const qrDataUrl = await QRCode.toDataURL(shareUrl);
+
+  const html = renderReportHTML({
+    created: row.created,
+    shareUrl, qrDataUrl,
+    name: row.name, email: row.email, blood: row.blood_type,
+    emer_name: row.emer_name, emer_phone: row.emer_phone, emer_email: row.emer_email,
+    doc_name: row.doc_name, doc_phone: row.doc_phone, doc_fax: row.doc_fax, doc_email: row.doc_email,
+    pharm_name: row.pharm_name, pharm_phone: row.pharm_phone, pharm_fax: row.pharm_fax, pharm_address: row.pharm_address,
+    medications: JSON.parse(row.medications || "[]"),
+    allergies: JSON.parse(row.allergies || "[]"),
+    conditions: JSON.parse(row.conditions || "[]"),
+    bp: row.bp, weight: row.weight,
+    detectedLang: row.detected_lang, targetLang: row.target_lang,
+    transcript: row.transcript, translatedTranscript: row.translated_transcript
+  });
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(html);
 });
 
-// UPLOAD — critical: requires field name "audio"
-app.post("/upload", upload.single("audio"), async (req,res)=>{
-  try{
-    if (!req.file) return res.status(400).json({ ok:false, error:"No file" });
+/* ========== Upload API ========== */
+app.post("/upload", upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ ok: false, error: "No file" });
 
-    // patient + contacts
-    const name  = (req.body.name  || "").trim();
-    const email = (req.body.email || "").trim();
-    const blood = (req.body.blood_type || "").trim();
-    const emer_name  = (req.body.emer_name  || "").trim();
-    const emer_phone = (req.body.emer_phone || "").trim();
-    const emer_email = (req.body.emer_email || "").trim();
+    const {
+      name = "",
+      email = "",
+      blood_type = "",
+      emer_name = "",
+      emer_phone = "",
+      emer_email = "",
+      doc_name = "N/A",
+      doc_phone = "N/A",
+      doc_fax = "N/A",
+      doc_email = "N/A",
+      pharm_name = "N/A",
+      pharm_phone = "N/A",
+      pharm_fax = "N/A",
+      pharm_address = "N/A",
+      lang = ""
+    } = req.body;
 
-    // doctor (default N/A if blank)
-    const doc_name  = (req.body.doc_name  || "N/A").trim() || "N/A";
-    const doc_phone = (req.body.doc_phone || "N/A").trim() || "N/A";
-    const doc_fax   = (req.body.doc_fax   || "N/A").trim() || "N/A";
-    const doc_email = (req.body.doc_email || "N/A").trim() || "N/A";
+    const transcript = (await transcribe(req.file.path)) || "";
+    const detected_lang = "";
+    const facts = parseFactsFromText(transcript);
 
-    // pharmacy (new) default N/A if blank
-    const pharm_name    = (req.body.pharm_name    || "N/A").trim() || "N/A";
-    const pharm_phone   = (req.body.pharm_phone   || "N/A").trim() || "N/A";
-    const pharm_fax     = (req.body.pharm_fax     || "N/A").trim() || "N/A";
-    const pharm_address = (req.body.pharm_address || "N/A").trim() || "N/A";
+    const target_lang = lang || "";
+    const translated_transcript = target_lang ? await translateText(transcript, target_lang) : "";
 
-    const targetLang = (req.body.lang || "").trim();
+    const id = Math.random().toString(36).slice(2, 18);
+    const created = new Date().toISOString().replace("T"," ").slice(0,19);
 
-    console.log("📥 Upload received:", {
-      filePath: req.file.path, mime: req.file.mimetype, size: req.file.size
+    stmtInsertReport.run({
+      id, created, name, email, blood_type,
+      emer_name, emer_phone, emer_email,
+      doc_name, doc_phone, doc_fax, doc_email,
+      pharm_name, pharm_phone, pharm_fax, pharm_address,
+      detected_lang, target_lang,
+      medications: JSON.stringify(facts.medications || []),
+      allergies: JSON.stringify(facts.allergies || []),
+      conditions: JSON.stringify(facts.conditions || []),
+      bp: facts.bp || "",
+      weight: facts.weight || "",
+      transcript,
+      translated_transcript
     });
 
-    // transcribe
-    let transcript = "";
-    try {
-      const t1 = await openaiTranscribe(req.file.path, req.file.originalname, TRANSCRIBE_MODEL);
-      transcript = (t1.text || "").trim();
-      console.log("✅ Transcribed (gpt-4o-mini-transcribe) chars:", transcript.length);
-    } catch (e) {
-      console.warn("… primary transcribe failed; trying whisper-1:", e.message);
-      const t2 = await openaiTranscribe(req.file.path, req.file.originalname, FALLBACK_TRANSCRIBE_MODEL);
-      transcript = (t2.text || "").trim();
-      console.log("✅ Transcribed (whisper-1) chars:", transcript.length);
-    }
-
-    // extract facts
-    const facts = await openaiExtractFacts(transcript);
-    let medications = cleanList(facts.medications || []);
-    let allergies   = cleanList(facts.allergies   || []);
-    let conditions  = cleanList(facts.conditions  || []);
-    const bp        = (facts.blood_pressure || "").trim();
-    const weight    = (facts.weight || "").trim();
-
-    // remove misfiled weight/BP from conditions
-    function looksLikeWeight(s){ return /\b(weigh(?:ed|s|ing)?|weight)\b/i.test(s) || /\b\d{2,3}\s?(kg|kilograms|kilos|lbs|pounds)\b/i.test(s); }
-    function looksLikeBP(s){ return /\b\d{2,3}\s*\/\s*\d{2,3}\b/.test(s) || /\bblood\s*pressure\b/i.test(s); }
-    conditions = conditions.filter(c => c && !looksLikeWeight(c) && !looksLikeBP(c));
-
-    // language detect (best-effort)
-    let detectedLang = "en";
-    try{
-      const det = await fetch("https://api.openai.com/v1/chat/completions",{
-        method:"POST",
-        headers:{ Authorization:`Bearer ${OPENAI_API_KEY}`,"Content-Type":"application/json"},
-        body: JSON.stringify({
-          model: TEXT_MODEL,
-          messages:[{role:"user",content:`Detect 2-letter code for:\n"""${transcript}"""\nRespond with only the code.`}],
-          temperature:0
-        })
-      });
-      const dd = await det.json();
-      const code = (dd?.choices?.[0]?.message?.content || "en").trim().slice(0,2).toLowerCase();
-      if (/^[a-z]{2}$/.test(code)) detectedLang = code;
-    }catch(e){ console.warn("lang detect failed:", e.message); }
-
-    // optional live translate
-    let translatedTranscript = transcript;
-    let medicationsT = medications.join(", ");
-    let allergiesT   = allergies.join(", ");
-    let conditionsT  = conditions.join(", ");
-    let bpT = bp;
-    let weightT = weight;
-
-    if (targetLang){
-      try {
-        translatedTranscript = await openaiTranslate(transcript, targetLang);
-        if (medications.length) medicationsT = await openaiTranslate(medications.join(", "), targetLang);
-        if (allergies.length)   allergiesT   = await openaiTranslate(allergies.join(", "), targetLang);
-        if (conditions.length)  conditionsT  = await openaiTranslate(conditions.join(", "), targetLang);
-        if (bp)                 bpT          = await openaiTranslate(bp, targetLang);
-        if (weight)             weightT      = await openaiTranslate(weight, targetLang);
-      } catch(e){ console.warn("upload-time translate failed:", e.message); }
-    }
-
-    // persist
-    const id = shortId();
-    const created = new Date().toISOString().replace("T"," ").slice(0,19);
-    await dbRun(
-      `INSERT INTO reports
-      (id, created, name, email, emer_name, emer_phone, emer_email, blood,
-       doc_name, doc_phone, doc_fax, doc_email,
-       pharm_name, pharm_phone, pharm_fax, pharm_address,
-       transcript, translatedTranscript, detectedLang, targetLang,
-       medications, medicationsT, allergies, allergiesT, conditions, conditionsT,
-       bp, bpT, weight, weightT)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [
-        id, created, name, email, emer_name, emer_phone, emer_email, blood,
-        doc_name, doc_phone, doc_fax, doc_email,
-        pharm_name, pharm_phone, pharm_fax, pharm_address,
-        transcript, translatedTranscript, detectedLang, targetLang,
-        medications.join(", "), medicationsT, allergies.join(", "), allergiesT, conditions.join(", "), conditionsT,
-        bp, bpT, weight, weightT
-      ]
-    );
-
-    // response (QR + link)
-    const shareUrl = `${baseUrlFrom(req)}/reports/${id}`;
+    const base = shareBaseUrl(req);
+    const shareUrl = `${base}/reports/${id}`;
     const qrDataUrl = await QRCode.toDataURL(shareUrl);
-    res.json({ ok:true, id, shareUrl, qrDataUrl });
-  }catch(e){
-    console.error("UPLOAD error:", e);
-    res.status(500).json({ ok:false, error: e.message || "Server error" });
+
+    res.json({ ok: true, id, shareUrl, qrDataUrl });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message || "Server error" });
+  } finally {
+    setTimeout(() => {
+      try { if (req?.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {}
+    }, 15000);
   }
 });
 
-app.listen(PORT, ()=> console.log(`✅ Backend listening on ${PORT}`));
+/* ========== Gated Home (serves index.html) ========== */
+app.get("/", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+/* ========== Start ========== */
+app.listen(PORT, () => {
+  console.log(`✅ Backend listening on ${PORT}`);
+});
