@@ -1,488 +1,361 @@
-// backend/index.js — full drop-in (login gate before static + gated "/" + same API)
-import express from "express";
-import path from "path";
-import fs from "fs";
-import multer from "multer";
-import QRCode from "qrcode";
-import dotenv from "dotenv";
-import sqlite3 from "sqlite3";
-import { open } from "sqlite";
-import bodyParser from "body-parser";
-import { fileURLToPath } from "url";
-import OpenAI from "openai";
-import cookieParser from "cookie-parser";
-
-dotenv.config();
+// backend/index.js
+import 'dotenv/config';
+import express from 'express';
+import bodyParser from 'body-parser';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import QRCode from 'qrcode';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
+import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ── ENV
+const PORT = Number(process.env.PORT) || 10000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Hotest';
+let PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').trim();
+
+// ── Paths
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const UPLOAD_DIR = path.join(__dirname, '..', 'uploads'); // keep uploads outside code dir if you prefer
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// ── App
 const app = express();
-
-/* ========== Config ========== */
-const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Hotest";
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/,"");
-
-const LOGIN_USER  = process.env.LOGIN_USER  || "Pana123$";
-const LOGIN_PASS  = process.env.LOGIN_PASS  || "GoGoPana$";
-const COOKIE_SECRET = process.env.COOKIE_SECRET || "hot-health-cookie-secret";
-
-const OPENAI_TRANSCRIBE_PRIMARY  = process.env.OPENAI_TRANSCRIBE_PRIMARY  || "gpt-4o-mini-transcribe";
-const OPENAI_TRANSCRIBE_FALLBACK = process.env.OPENAI_TRANSCRIBE_FALLBACK || "whisper-1";
-const OPENAI_TEXT_MODEL          = process.env.OPENAI_TEXT_MODEL          || "gpt-4o-mini";
-
-/* ========== Parsers + Cookies (no static yet) ========== */
-app.use(bodyParser.json({ limit: "1mb" }));
+app.use(bodyParser.json({ limit: '2mb' }));
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(cookieParser(COOKIE_SECRET));
+app.use(express.static(PUBLIC_DIR));
 
-/* ========== Auth Gate BEFORE static ========== */
-const OPEN_PATHS = new Set([
-  "/healthz",
-  "/login",
-  "/logout",
-  "/styles.css",
-  "/app.js",
-  "/favicon.ico",
-]);
+// Health/version to confirm deployed file
+const APP_BUILD = process.env.RENDER_GIT_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || 'local-dev';
+app.get('/healthz', (_, res) => res.type('text').send('ok'));
+app.get('/_version', (_, res) => res.json({ ok: true, build: APP_BUILD }));
 
-app.use((req, res, next) => {
-  // allow login endpoints and static assets defined above
-  if (OPEN_PATHS.has(req.path) || req.path.startsWith("/assets/")) return next();
-  // allow POST /login explicitly
-  if (req.path === "/login" && req.method === "POST") return next();
-  // allow already authenticated
-  if (req.signedCookies?.hh_auth === "ok") return next();
-  // otherwise force login
-  return res.redirect("/login");
-});
-
-/* ========== Static AFTER gate ========== */
-app.use(express.static(path.join(__dirname, "public")));
-
-/* ========== Healthcheck ========== */
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
-
-/* ========== Login / Logout ========== */
-app.get("/login", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
-});
-
-app.post("/login", (req, res) => {
-  const { user, pass } = req.body || {};
-  if (user === LOGIN_USER && pass === LOGIN_PASS) {
-    res.cookie("hh_auth", "ok", {
-      httpOnly: true,
-      sameSite: "lax",
-      signed: true,
-      maxAge: 1000 * 60 * 60 * 8, // 8h
-      // secure: true, // enable if always over https
-    });
-    return res.redirect("/");
-  }
-  return res.redirect("/login?error=1");
-});
-
-app.get("/logout", (req, res) => {
-  res.clearCookie("hh_auth");
-  res.redirect("/login");
-});
-
-/* ========== Uploads ========== */
-const uploadDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
+// Multer for uploads
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const id = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-    const ext = (path.extname(file.originalname) || ".webm").toLowerCase();
-    cb(null, `${id}${ext}`);
+  destination: (_, __, cb) => cb(null, UPLOAD_DIR),
+  filename: (_, file, cb) => {
+    const ts = Date.now();
+    const rnd = Math.random().toString(36).slice(2, 8);
+    const ext = path.extname(file.originalname || '.webm') || '.webm';
+    cb(null, `${ts}-${rnd}${ext}`);
   },
 });
-const upload = multer({
-  storage,
-  fileFilter: (_req, file, cb) => {
-    const mt = (file.mimetype || "").toLowerCase();
-    // allow common audio or fall back to octet-stream (let OpenAI validate)
-    if (mt === "application/octet-stream" ||
-        /audio\/(webm|wav|ogg|mp3|mpeg|mp4|m4a|oga|flac)/i.test(mt)) cb(null, true);
-    else cb(null, true);
-  },
-  limits: { fileSize: 30 * 1024 * 1024 },
-});
+const upload = multer({ storage });
 
-/* ========== DB (better-sqlite3) ========== */
-const db = await open({
-  filename: path.join(process.cwd(), "data.sqlite"),
-  driver: sqlite3.Database
-db.pragma("journal_mode = WAL");
-db.exec(`
-  CREATE TABLE IF NOT EXISTS reports (
-    id TEXT PRIMARY KEY,
-    created TEXT,
-    name TEXT,
-    email TEXT,
-    blood_type TEXT,
-    emer_name TEXT,
-    emer_phone TEXT,
-    emer_email TEXT,
-    doc_name TEXT,
-    doc_phone TEXT,
-    doc_fax TEXT,
-    doc_email TEXT,
-    pharm_name TEXT,
-    pharm_phone TEXT,
-    pharm_fax TEXT,
-    pharm_address TEXT,
-    detected_lang TEXT,
-    target_lang TEXT,
-    medications TEXT,
-    allergies TEXT,
-    conditions TEXT,
-    bp TEXT,
-    weight TEXT,
-    transcript TEXT,
-    translated_transcript TEXT
-  )
-`);
-
-const stmtInsertReport = db.prepare(`
-  INSERT INTO reports (
-    id, created, name, email, blood_type,
-    emer_name, emer_phone, emer_email,
-    doc_name, doc_phone, doc_fax, doc_email,
-    pharm_name, pharm_phone, pharm_fax, pharm_address,
-    detected_lang, target_lang,
-    medications, allergies, conditions, bp, weight,
-    transcript, translated_transcript
-  )
-  VALUES (@id, @created, @name, @email, @blood_type,
-          @emer_name, @emer_phone, @emer_email,
-          @doc_name, @doc_phone, @doc_fax, @doc_email,
-          @pharm_name, @pharm_phone, @pharm_fax, @pharm_address,
-          @detected_lang, @target_lang,
-          @medications, @allergies, @conditions, @bp, @weight,
-          @transcript, @translated_transcript)
-`);
-const stmtGetReport   = db.prepare(`SELECT * FROM reports WHERE id = ?`);
-const stmtListReports = db.prepare(`SELECT id, created, name FROM reports ORDER BY created DESC LIMIT 200`);
-
-/* ========== Helpers ========== */
-function shareBaseUrl(req) {
-  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
-  const proto = req.headers["x-forwarded-proto"]?.toString() || req.protocol;
-  const host  = req.headers["x-forwarded-host"]?.toString() || req.get("host");
+// Helpers
+function absoluteBaseUrl(req) {
+  if (PUBLIC_BASE_URL && /^https?:\/\//i.test(PUBLIC_BASE_URL)) {
+    return PUBLIC_BASE_URL.replace(/\/+$/, '');
+  }
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https');
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '');
   return `${proto}://${host}`;
 }
-const uniq = a => Array.from(new Set(a)).filter(Boolean);
 
-function parseFactsFromText(text) {
-  const lower = text.toLowerCase();
+function esc(s = '') {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+function safeJSON(s, d = []) { try { return JSON.parse(s); } catch { return d; } }
+
+function parseFacts(transcript) {
   const meds = [];
-  const medMatch = text.match(/\b([A-Za-z][A-Za-z0-9\-]+)\b\s*(?:—|-)?\s*(\d+\s*(?:mg|mcg|g|ml))?/g);
-  if (medMatch) {
-    medMatch.forEach(m => {
-      const parts = m.split(/—|-/).map(s => s.trim());
-      if (parts[0] && !/^(i|and|the|at|my|weight|weigh|kidney|allergic)$/i.test(parts[0])) {
-        meds.push(parts[1] ? `${parts[0]} — ${parts[1]}` : parts[0]);
-      }
-    });
-  }
   const allergies = [];
-  if (lower.includes("allergic to")) {
-    const seg = text.split(/allergic to/i)[1] || "";
-    seg.split(/,|and/).map(s=>s.trim()).forEach(w=>{
-      if (w && w.length < 60) allergies.push(w.replace(/\.$/, ""));
-    });
-  }
   const conditions = [];
-  const condWords = ["kidney","heart","liver","diabetes","asthma","hypertension","cancer","pregnancy"];
-  condWords.forEach(w=>{
-    if (lower.includes(w)) conditions.push(w[0].toUpperCase()+w.slice(1));
-  });
-  let bp = "";
-  const bpMatch = text.match(/\b(\d{2,3})\s*(?:over|\/)\s*(\d{2,3})\b/i);
-  if (bpMatch) bp = `${bpMatch[1]}/${bpMatch[2]}`;
-  let weight = "";
-  const wMatch = text.match(/\b(\d{2,3})\s*(?:pounds?|lbs?)\b/i);
-  if (wMatch) weight = `${wMatch[1]} lb`;
+  let bp = '';
+  let weight = '';
 
-  return {
-    medications: uniq(meds).slice(0, 12),
-    allergies: uniq(allergies).slice(0, 12),
-    conditions: uniq(conditions).slice(0, 12),
-    bp, weight
-  };
-}
+  const mBP = transcript.match(/(\d{2,3})\s*over\s*(\d{2,3})/i);
+  if (mBP) bp = `${mBP[1]}/${mBP[2]}`;
 
-/* ========== OpenAI ========== */
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const mW = transcript.match(/(\d{2,3})\s*(?:kg|kilograms|lb|lbs|pounds)/i);
+  if (mW) weight = mW[1];
 
-async function transcribe(filePath) {
-  const stream = fs.createReadStream(filePath);
-  try {
-    const r = await openai.audio.transcriptions.create({
-      file: stream,
-      model: OPENAI_TRANSCRIBE_PRIMARY
-    });
-    return r.text?.trim() || "";
-  } catch {
-    const r2 = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(filePath),
-      model: OPENAI_TRANSCRIBE_FALLBACK
-    });
-    return r2.text?.trim() || "";
+  const medRegex = /\b([A-Z][a-zA-Z\-]{2,})\s+(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
+  let mm;
+  while ((mm = medRegex.exec(transcript)) !== null) {
+    meds.push(`${mm[1]} — ${mm[2]} ${mm[3]}`);
   }
+
+  const allergyHints = ['dust', 'mold', 'peanut', 'pollen', 'shellfish'];
+  for (const h of allergyHints) {
+    if (new RegExp(`\\b${h}\\b`, 'i').test(transcript)) allergies.push(h);
+  }
+
+  if (/kidney/i.test(transcript)) conditions.push('kidney condition');
+
+  return { medications: meds, allergies, conditions, bp, weight };
 }
 
-async function translateText(text, target) {
-  if (!target) return text;
-  const r = await openai.chat.completions.create({
-    model: OPENAI_TEXT_MODEL,
-    messages: [
-      { role: "system", content: `Translate into ${target} and keep medical terms precise.` },
-      { role: "user", content: text }
-    ],
-    temperature: 0.2
-  });
-  return r.choices?.[0]?.message?.content?.trim() || text;
-}
-
-/* ========== Report HTML ========== */
-function renderReportHTML(data) {
-  const {
-    created, shareUrl, qrDataUrl,
-    name, email, blood,
-    emer_name, emer_phone, emer_email,
-    doc_name, doc_phone, doc_fax, doc_email,
-    pharm_name, pharm_phone, pharm_fax, pharm_address,
-    medications, allergies, conditions, bp, weight,
-    detectedLang, targetLang, transcript, translatedTranscript
-  } = data;
-
-  const list = (arr, empty = "None mentioned") =>
-    (arr && arr.length) ? `<ul>${arr.map(x=>`<li>${x}</li>`).join("")}</ul>` : `<p>${empty}</p>`;
-
-  const transcriptBlock = targetLang ? `
-  <section class="section">
-    <h2>Transcript</h2>
-    <div class="dual-block">
-      <div class="block">
-        <h3>Original (${detectedLang || "auto"})</h3>
-        <p>${(transcript || "").replace(/\n/g,"<br>")}</p>
-      </div>
-      <div class="block">
-        <h3>Translated (${targetLang})</h3>
-        <p>${(translatedTranscript || "").replace(/\n/g,"<br>")}</p>
-      </div>
-    </div>
-  </section>` : "";
-
-  return `<!doctype html>
+function renderReportHTML(row, shareUrl) {
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <title>Hot Health — Report</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <link rel="stylesheet" href="/styles.css"/>
+<meta charset="UTF-8" />
+<title>Hot Health — Report</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --indigo:#4b0082; --aqua:#7fffd4; --blue:#0a84ff; --txt:#222; --bg:#f9fafc; }
+  body { margin:0; background:var(--bg); color:var(--txt); font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+  header { padding:16px 24px; border-bottom:3px solid var(--aqua); background:#fff; }
+  main { max-width:860px; margin:24px auto; padding:0 16px; }
+  h1 { color:var(--indigo); margin:0 0 4px; }
+  .meta { font-size:14px; color:#555; display:flex; gap:16px; flex-wrap:wrap; align-items:center; }
+  .card { background:#fff; border:2px solid var(--aqua); border-radius:12px; padding:16px; margin:16px 0; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .qr { text-align:center; }
+  .pill { display:inline-flex; align-items:center; gap:8px; padding:4px 8px; border-radius:999px; background:#f0f5ff; border:1px solid #dbe7ff; font-size:12px; color:#234; }
+  ul { margin:6px 0 0 18px; }
+  a.link { color:var(--blue); text-decoration:none; }
+  small.muted { color:#666; }
+  .dual { display:grid; gap:16px; grid-template-columns:1fr 1fr; }
+  @media (max-width:800px){ .dual { grid-template-columns:1fr; } }
+</style>
 </head>
-<body class="report-body">
-  <header>
-    <h1>Hot Health — Report</h1>
-    <p><b>Created:</b> ${created}</p>
-    <div class="share-row"><span class="hint">Scan or open the share link:</span>
-      <a class="icon-link" href="${shareUrl}" target="_blank" title="Open share link">🔗</a>
-    </div>
-    <div class="qr"><img src="${qrDataUrl}" alt="QR"></div>
-  </header>
-
-  <section class="section">
-    <h2>Patient Details</h2>
-    <div class="grid-two">
+<body>
+<header>
+  <h1>Hot Health — Report</h1>
+  <div class="meta">
+    <div><b>Created:</b> ${esc(row.created)}</div>
+    <div class="pill">Share <a class="link" href="${esc(shareUrl)}" target="_blank" rel="noopener">link</a></div>
+  </div>
+</header>
+<main>
+  <section class="card">
+    <div class="grid2">
       <div>
-        <p><b>Name:</b> ${name || "—"}</p>
-        <p><b>Email:</b> ${email ? `<a href="mailto:${email}">${email}</a>` : "—"}</p>
-        <p><b>Blood Type:</b> ${blood || "—"}</p>
+        <h2>Patient</h2>
+        <div><b>Name:</b> ${esc(row.name)}</div>
+        <div><b>Email:</b> <a class="link" href="mailto:${esc(row.email)}">${esc(row.email)}</a></div>
+        <div><b>Blood:</b> ${esc(row.blood_type || 'N/A')}</div>
+        <h3>Emergency Contact</h3>
+        <div>${esc(row.emer_name || 'N/A')}</div>
+        <div>${esc(row.emer_phone || 'N/A')}</div>
+        <div><a class="link" href="mailto:${esc(row.emer_email || '')}">${esc(row.emer_email || '')}</a></div>
       </div>
-      <div>
-        <p><b>Emergency Contact</b><br>
-        ${emer_name || "—"}<br>
-        ${emer_phone || "—"}<br>
-        ${emer_email ? `<a href="mailto:${emer_email}">${emer_email}</a>` : "—"}</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="section">
-    <h2>Care Team</h2>
-    <div class="grid-two">
-      <div>
-        <p><b>Family Doctor</b><br>
-        ${(doc_name || "N/A")}<br>
-        ${doc_phone || "N/A"}<br>
-        ${doc_fax || "N/A"}<br>
-        ${doc_email ? `<a href="mailto:${doc_email}">${doc_email}</a>` : "N/A"}</p>
-      </div>
-      <div>
-        <p><b>Pharmacy</b><br>
-        ${(pharm_name || "N/A")}<br>
-        ${pharm_address || "N/A"}<br>
-        ${pharm_phone || "N/A"}<br>
-        ${pharm_fax || "N/A"}</p>
+      <div class="qr">
+        ${row.qr_data ? `<img src="${esc(row.qr_data)}" alt="QR" />` : ''}
+        <div><small class="muted">Scan on a phone or use the share link.</small></div>
       </div>
     </div>
   </section>
 
-  <section class="section">
+  <section class="card">
     <h2>Summary</h2>
-    <div class="grid-two">
+    <div class="row">
+      <div><b>BP:</b> ${esc(row.bp || '—')}</div>
+      <div><b>Weight:</b> ${esc(row.weight || '—')}</div>
+    </div>
+    <div class="grid2">
       <div>
-        <p><b>Blood Pressure:</b> ${bp || "—"}</p>
-        <p><b>Weight:</b> ${weight || "—"}</p>
+        <h3>Medications</h3>
+        ${(() => {
+          const meds = safeJSON(row.medications, []);
+          return meds.length ? `<ul>${meds.map(m=>`<li>${esc(m)}</li>`).join('')}</ul>` : '<small class="muted">None</small>';
+        })()}
+        <h3>Allergies</h3>
+        ${(() => {
+          const a = safeJSON(row.allergies, []);
+          return a.length ? `<ul>${a.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>` : '<small class="muted">None</small>';
+        })()}
+        <h3>Conditions</h3>
+        ${(() => {
+          const c = safeJSON(row.conditions, []);
+          return c.length ? `<ul>${c.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>` : '<small class="muted">None</small>';
+        })()}
       </div>
       <div>
-        <p><b>Medications</b></p>
-        ${list(medications)}
-        <p><b>Allergies</b></p>
-        ${list(allergies)}
-        <p><b>Conditions</b></p>
-        ${list(conditions)}
+        <h3>Transcript (Original${row.detected_lang ? `: ${esc(row.detected_lang)}`:''})</h3>
+        <p>${esc(row.transcript || '')}</p>
+        ${row.target_lang ? `
+        <h3>Transcript (Translated: ${esc(row.target_lang)})</h3>
+        <p>${esc(row.translated_transcript || '')}</p>` : ''}
       </div>
     </div>
   </section>
-
-  ${transcriptBlock}
-
-  <footer class="actions">
-    <a class="btn" href="/">+ New Report</a>
-    <a class="btn" href="/reports?password=${encodeURIComponent(ADMIN_PASSWORD)}">Open Reports</a>
-    <a class="btn" href="mailto:?subject=${encodeURIComponent("Hot Health Report")}&body=${encodeURIComponent(shareUrl)}">Email (Default)</a>
-    <a class="btn" target="_blank" href="https://mail.google.com/mail/?view=cm&fs=1&to=&su=${encodeURIComponent("Hot Health Report")}&body=${encodeURIComponent(shareUrl)}">Gmail</a>
-    <a class="btn" target="_blank" href="https://outlook.live.com/mail/0/deeplink/compose?subject=${encodeURIComponent("Hot Health Report")}&body=${encodeURIComponent(shareUrl)}">Outlook</a>
-  </footer>
+</main>
 </body>
 </html>`;
 }
 
-/* ========== Reports List ========== */
-app.get("/reports", (req, res) => {
-  const rows = stmtListReports.all();
-  const items = rows.map(r => `
-    <li>
-      <span class="muted">${r.created}</span> • <b>${r.name || "Unknown patient"}</b>
-      <a class="btn" href="/reports/${r.id}">Open</a>
-    </li>
-  `).join("");
+// Dummy transcribe for sanity (replace with OpenAI call if needed)
+async function transcribe(filePath) {
+  console.log('[AI] Dummy transcription for', path.basename(filePath));
+  return {
+    text: '120 over 75. Dexilant 100 mg. Candesartan 16 mg. Allergic to dust. I weigh 200 pounds.',
+    lang: 'en',
+  };
+}
 
-  res.send(`<!doctype html><html><head>
-  <meta charset="utf-8"/><title>Reports</title>
-  <link rel="stylesheet" href="/styles.css">
-</head><body class="report-body">
-  <header><h1>All Reports</h1></header>
-  <ul class="report-list">${items || "<li>No reports yet.</li>"}</ul>
-  <footer class="actions"><a class="btn" href="/">+ New Report</a></footer>
-</body></html>`);
+// DB handle populated in start()
+let db;
+
+// Routes (that don’t require DB)
+app.get('/', (req, res) => {
+  const idx = path.join(PUBLIC_DIR, 'index.html');
+  if (!fs.existsSync(idx)) {
+    return res
+      .status(200)
+      .type('text')
+      .send('Backend is running. Place your frontend in backend/public/index.html.');
+  }
+  res.sendFile(idx);
 });
 
-/* ========== Single Report ========== */
-app.get("/reports/:id", async (req, res) => {
-  const row = stmtGetReport.get(req.params.id);
-  if (!row) return res.status(404).send("Not found");
+// Routes needing DB are attached after DB init inside start()
 
-  const base = shareBaseUrl(req);
-  const shareUrl = `${base}/reports/${row.id}`;
-  const qrDataUrl = await QRCode.toDataURL(shareUrl);
-
-  const html = renderReportHTML({
-    created: row.created,
-    shareUrl, qrDataUrl,
-    name: row.name, email: row.email, blood: row.blood_type,
-    emer_name: row.emer_name, emer_phone: row.emer_phone, emer_email: row.emer_email,
-    doc_name: row.doc_name, doc_phone: row.doc_phone, doc_fax: row.doc_fax, doc_email: row.doc_email,
-    pharm_name: row.pharm_name, pharm_phone: row.pharm_phone, pharm_fax: row.pharm_fax, pharm_address: row.pharm_address,
-    medications: JSON.parse(row.medications || "[]"),
-    allergies: JSON.parse(row.allergies || "[]"),
-    conditions: JSON.parse(row.conditions || "[]"),
-    bp: row.bp, weight: row.weight,
-    detectedLang: row.detected_lang, targetLang: row.target_lang,
-    transcript: row.transcript, translatedTranscript: row.translated_transcript
+async function start() {
+  // — DB init (no top-level await, no db.pragma)
+  db = await open({
+    filename: path.join(__dirname, 'data.sqlite'),
+    driver: sqlite3.Database,
   });
+  await db.exec('PRAGMA journal_mode = WAL;');
 
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(html);
-});
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      created TEXT,
+      name TEXT,
+      email TEXT,
+      blood_type TEXT,
+      emer_name TEXT,
+      emer_phone TEXT,
+      emer_email TEXT,
+      doc_name TEXT,
+      doc_phone TEXT,
+      doc_fax TEXT,
+      doc_email TEXT,
+      pharm_name TEXT,
+      pharm_phone TEXT,
+      pharm_fax TEXT,
+      pharm_address TEXT,
+      detected_lang TEXT,
+      target_lang TEXT,
+      medications TEXT,
+      allergies TEXT,
+      conditions TEXT,
+      bp TEXT,
+      weight TEXT,
+      transcript TEXT,
+      translated_transcript TEXT,
+      qr_data TEXT
+    )
+  `);
 
-/* ========== Upload API ========== */
-app.post("/upload", upload.single("audio"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ ok: false, error: "No file" });
-
-    const {
-      name = "",
-      email = "",
-      blood_type = "",
-      emer_name = "",
-      emer_phone = "",
-      emer_email = "",
-      doc_name = "N/A",
-      doc_phone = "N/A",
-      doc_fax = "N/A",
-      doc_email = "N/A",
-      pharm_name = "N/A",
-      pharm_phone = "N/A",
-      pharm_fax = "N/A",
-      pharm_address = "N/A",
-      lang = ""
-    } = req.body;
-
-    const transcript = (await transcribe(req.file.path)) || "";
-    const detected_lang = "";
-    const facts = parseFactsFromText(transcript);
-
-    const target_lang = lang || "";
-    const translated_transcript = target_lang ? await translateText(transcript, target_lang) : "";
-
-    const id = Math.random().toString(36).slice(2, 18);
-    const created = new Date().toISOString().replace("T"," ").slice(0,19);
-
-    stmtInsertReport.run({
+  const SQL_INSERT = `
+    INSERT INTO reports (
       id, created, name, email, blood_type,
       emer_name, emer_phone, emer_email,
       doc_name, doc_phone, doc_fax, doc_email,
       pharm_name, pharm_phone, pharm_fax, pharm_address,
       detected_lang, target_lang,
-      medications: JSON.stringify(facts.medications || []),
-      allergies: JSON.stringify(facts.allergies || []),
-      conditions: JSON.stringify(facts.conditions || []),
-      bp: facts.bp || "",
-      weight: facts.weight || "",
-      transcript,
-      translated_transcript
-    });
+      medications, allergies, conditions, bp, weight,
+      transcript, translated_transcript, qr_data
+    ) VALUES (?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?, ?,?,?,?, ?,?, ?,?)
+  `;
+  const SQL_GET  = `SELECT * FROM reports WHERE id = ?`;
+  const SQL_LIST = `SELECT id, created, name FROM reports ORDER BY created DESC LIMIT 200`;
 
-    const base = shareBaseUrl(req);
-    const shareUrl = `${base}/reports/${id}`;
-    const qrDataUrl = await QRCode.toDataURL(shareUrl);
-
-    res.json({ ok: true, id, shareUrl, qrDataUrl });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: e.message || "Server error" });
-  } finally {
-    setTimeout(() => {
-      try { if (req?.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {}
-    }, 15000);
+  function requireAdmin(req, res) {
+    const pass = req.query.password || req.headers['x-admin-password'];
+    if ((pass || '') !== ADMIN_PASSWORD) {
+      res.status(401).type('text').send('Unauthorized — add ?password= or x-admin-password header');
+      return false;
+    }
+    return true;
   }
-});
 
-/* ========== Gated Home (serves index.html) ========== */
-app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
+  app.get('/reports', async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const rows = await db.all(SQL_LIST);
+    res.json({ ok: true, reports: rows });
+  });
 
-/* ========== Start ========== */
-app.listen(PORT, () => {
-  console.log(`✅ Backend listening on ${PORT}`);
+  app.get('/reports/:id', async (req, res) => {
+    const row = await db.get(SQL_GET, req.params.id);
+    if (!row) return res.status(404).type('text').send('Not found');
+
+    const base = absoluteBaseUrl(req);
+    const shareUrl = `${base}/reports/${row.id}`;
+
+    if (!row.qr_data) {
+      try {
+        const qr = await QRCode.toDataURL(shareUrl, { margin: 1, scale: 4 });
+        await db.run('UPDATE reports SET qr_data = ? WHERE id = ?', qr, row.id);
+        row.qr_data = qr;
+      } catch (e) {
+        console.warn('[QR] Generation failed:', e.message);
+      }
+    }
+    const html = renderReportHTML(row, shareUrl);
+    res.type('html').send(html);
+  });
+
+  const uploader = upload.single('audio');
+
+  app.post('/upload', (req, res) => {
+    uploader(req, res, async (err) => {
+      try {
+        if (err) {
+          console.error('[UPLOAD] Multer error:', err);
+          return res.status(400).json({ ok: false, error: 'Upload error' });
+        }
+        if (!req.file) return res.status(400).json({ ok: false, error: 'No file' });
+
+        const name = (req.body.name || '').trim();
+        const email = (req.body.email || '').trim();
+        const blood = (req.body.blood_type || '').trim();
+        const emer_name = (req.body.emer_name || '').trim();
+        const emer_phone = (req.body.emer_phone || '').trim();
+        const emer_email = (req.body.emer_email || '').trim();
+        const targetLang = (req.body.lang || '').trim();
+
+        const t = await transcribe(req.file.path);
+        const transcript = t.text || '';
+        const detected = t.lang || 'en';
+
+        const facts = parseFacts(transcript);
+        const translatedTranscript = targetLang ? transcript : '';
+
+        const id = Math.random().toString(36).slice(2, 18);
+        const created = new Date().toISOString();
+        const base = absoluteBaseUrl(req);
+        const shareUrl = `${base}/reports/${id}`;
+        const qr = await QRCode.toDataURL(shareUrl, { margin: 1, scale: 4 });
+
+        await db.run(
+          SQL_INSERT,
+          id, created, name, email, blood,
+          emer_name, emer_phone, emer_email,
+          '', '', '', '',
+          '', '', '', '',
+          detected, targetLang,
+          JSON.stringify(facts.medications || []),
+          JSON.stringify(facts.allergies || []),
+          JSON.stringify(facts.conditions || []),
+          facts.bp || '', facts.weight || '',
+          transcript, translatedTranscript, qr
+        );
+
+        res.json({ ok: true, id, url: shareUrl });
+      } catch (e) {
+        console.error('[UPLOAD] failed:', e);
+        res.status(500).json({ ok: false, error: 'Internal Server Error' });
+      }
+    });
+  });
+
+  app.listen(PORT, () => {
+    console.log(`✅ Backend listening on ${PORT} — build ${APP_BUILD}`);
+  });
+}
+
+start().catch((e) => {
+  console.error('[FATAL] failed to start:', e);
+  process.exit(1);
 });
