@@ -1,6 +1,4 @@
-// backend/index.js
 // One-file backend (login gate, uploads, transcription+translation, QR, reports)
-
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
@@ -31,12 +29,10 @@ const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // -------------------------
-// DB layer (prefers better-sqlite3, falls back to sqlite3)
+// DB layer (better-sqlite3 preferred, sqlite3 fallback)
 // -------------------------
 let db = null;
 let useBetter = false;
@@ -79,11 +75,8 @@ async function initDB() {
     qr_data_url   TEXT
   );`;
 
-  if (useBetter) {
-    db.exec(createSql);
-  } else {
-    await db.exec(createSql);
-  }
+  if (useBetter) db.exec(createSql);
+  else await db.exec(createSql);
 }
 
 function dbRun(sql, params=[]) {
@@ -106,50 +99,51 @@ app.use(cookieParser(SESSION_SECRET));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-function setSession(res, user) {
+function setSession(res, user, req) {
+  // Use secure cookies when behind HTTPS (Render)
+  const forwardedProto = (req?.headers['x-forwarded-proto'] || '').split(',')[0];
+  const isHttps = forwardedProto === 'https';
   res.cookie('hhsess', user, {
-    httpOnly: true, signed: true, sameSite: 'lax',
-    // secure: true // uncomment if you force HTTPS everywhere
+    httpOnly: true,
+    signed: true,
+    sameSite: 'lax',
+    secure: isHttps // true on Render; false locally
   });
 }
 function clearSession(res) { res.clearCookie('hhsess'); }
 function requireAuth(req, res, next) {
   const u = req.signedCookies?.hhsess;
-  if (!u) return res.redirect('/login');
+  if (!u) {
+    // if expecting JSON (upload), return JSON 401; else redirect
+    if (req.path === '/upload' || req.headers['accept']?.includes('application/json')) {
+      return res.status(401).json({ ok:false, error:'AUTH_REQUIRED' });
+    }
+    return res.redirect('/login');
+  }
   next();
 }
-
-// -------------------------
-// Static
-// -------------------------
-app.use(express.static(PUBLIC_DIR));
 
 // -------------------------
 // Helpers
 // -------------------------
 function getBaseUrl(req) {
-  // Prefer env override (Render uses true HTTPS)
   const envUrl = process.env.PUBLIC_BASE_URL;
   if (envUrl && /^https?:\/\//i.test(envUrl)) return envUrl.replace(/\/+$/, '');
   const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0];
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   return `${proto}://${host}`;
 }
+function uid(n=22) { return crypto.randomBytes(n).toString('base64url').slice(0, n); }
 
-function uid(n=22) {
-  return crypto.randomBytes(n).toString('base64url').slice(0, n);
-}
-
-// A very simple parser; tune as needed
+// Lightweight parser
 function parseFacts(text) {
   const meds = [];
   const allergies = [];
   const conditions = [];
 
-  // medication lines like "X at 20 mg" or "X — 20 mg"
+  // medications
   const medRx = /([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:)?\s*(\d+)\s*(mg|mcg|g|ml)/gi;
-  let mm;
-  const seen = new Set();
+  let mm; const seen = new Set();
   while ((mm = medRx.exec(text)) !== null) {
     const name = mm[1];
     const dose = mm[2] + ' ' + mm[3];
@@ -168,7 +162,7 @@ function parseFacts(text) {
     }
   }
 
-  // conditions — naive; strip medication/allergy keywords
+  // conditions (strip known words)
   const condRx = /\b(I have|I’ve|I've|diagnosed with|history of)\b([^\.]+)/gi;
   let cc;
   while ((cc = condRx.exec(text)) !== null) {
@@ -204,10 +198,9 @@ const upload = multer({ storage });
 // Login / Logout
 // -------------------------
 app.get('/login', (req,res) => {
-  // serve page from public/login.html (should exist)
   const p = path.join(PUBLIC_DIR, 'login.html');
   if (fs.existsSync(p)) return res.sendFile(p);
-  // fallback minimal
+  // fallback
   res.send(`
     <html><body>
       <h3>Sign in</h3>
@@ -223,7 +216,7 @@ app.get('/login', (req,res) => {
 app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
   const { userId, password } = req.body || {};
   if (userId === USER_ID && password === USER_PASS) {
-    setSession(res, userId);
+    setSession(res, userId, req);
     return res.redirect('/');
   }
   res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
@@ -235,20 +228,25 @@ app.post('/logout', (req,res) => {
 });
 
 // -------------------------
-// Protect the app & reports
+// Protect EVERYTHING in the app (including static files)
 // -------------------------
-app.use(['/', '/upload', '/reports', '/reports/*'], requireAuth);
+app.use(['/','/upload','/reports','/reports/*'], requireAuth);
+app.use(express.static(PUBLIC_DIR)); // served after auth
 
-// Home page (frontend)
-// Ensure backend/public/index.html exists
+// Home page
 app.get('/', (req,res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
 // -------------------------
-// Upload → Transcribe (and translate) → Save → Respond with share link
+// Upload → Transcribe → (optional) Translate → Save → Respond
 // -------------------------
 app.post('/upload', upload.single('audio'), async (req,res) => {
+  // extra guard for JSON 401
+  if (!req.signedCookies?.hhsess) {
+    return res.status(401).json({ ok:false, error:'AUTH_REQUIRED' });
+  }
+
   try {
     if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
 
@@ -266,8 +264,7 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
         model: 'gpt-4o-mini-transcribe'
       });
       transcript = tr.text?.trim() || '';
-    } catch (e1) {
-      // fallback whisper-1 if needed
+    } catch {
       try {
         const stream2 = fs.createReadStream(req.file.path);
         const tr2 = await openai.audio.transcriptions.create({
@@ -275,14 +272,14 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
           model: 'whisper-1'
         });
         transcript = tr2.text?.trim() || '';
-      } catch (e2) {
+      } catch {
         return res.status(500).json({ ok:false, error:'Transcription failed' });
       }
     }
 
-    const detected_lang = 'auto'; // (we can add detect call if desired)
+    const detected_lang = 'auto';
     let translated = '';
-    let target_lang = (lang || '').trim();
+    const target_lang = (lang || '').trim();
 
     // 2) optional translate transcript
     if (target_lang) {
@@ -302,13 +299,11 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
     // 3) parse facts from original transcript
     const facts = parseFacts(transcript);
 
-    // 4) save row
+    // 4) save
     const id = uid(20);
     const created_at = new Date().toISOString();
     const baseUrl = getBaseUrl(req);
     const shareUrl = `${baseUrl}/reports/${id}`;
-
-    // build QR
     const qr_data_url = await QRCode.toDataURL(shareUrl);
 
     const insertSql = `
@@ -331,7 +326,6 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       shareUrl, qr_data_url
     ]);
 
-    // 5) respond
     res.json({ ok:true, id, url: shareUrl });
 
   } catch (err) {
@@ -341,10 +335,10 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
 });
 
 // -------------------------
-// Reports list (nicer formatting, translate menu stub)
+// Reports list
 // -------------------------
 app.get('/reports', async (req,res) => {
-  const rows = await dbAll(`SELECT id, created_at, name, email, target_lang FROM reports ORDER BY created_at DESC`);
+  const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
   const baseUrl = getBaseUrl(req);
   const escape = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -402,8 +396,6 @@ app.get('/reports/:id', async (req,res) => {
 
   const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const created = new Date(row.created_at).toLocaleString();
-
-  // Short “copy” style link
   const shareLinkIcon = `<a class="btn" href="${esc(row.share_url)}" target="_blank" rel="noopener" title="Open share link">🔗 Link</a>`;
 
   res.send(`<!doctype html>
@@ -422,7 +414,6 @@ app.get('/reports/:id', async (req,res) => {
   .qr { text-align:center; margin:8px 0; }
   .tag { display:inline-block; font-size:12px; color:#334; background:#eef4ff; border:1px solid #dbe7ff; padding:2px 6px; border-radius:12px; margin-left:6px; }
   .btnbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
-  .list { margin:6px 0; padding-left:18px; }
 </style>
 </head>
 <body>

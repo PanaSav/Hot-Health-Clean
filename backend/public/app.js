@@ -28,7 +28,23 @@ async function uploadBlob(blob) {
   for (const [k,v] of Object.entries(f)) fd.append(k, v);
 
   const r = await fetch('/upload', { method:'POST', body: fd });
-  if (!r.ok) throw new Error(`Upload failed (${r.status})`);
+  const ct = r.headers.get('content-type') || '';
+
+  // handle auth redirects or HTML errors
+  if (!r.ok) {
+    if (r.status === 401) {
+      setError('Your session expired — please sign in again.');
+      window.location.href = '/login';
+      return Promise.reject(new Error('AUTH'));
+    }
+    const text = ct.includes('application/json') ? JSON.stringify(await r.json()) : await r.text();
+    throw new Error(`Upload failed (${r.status}): ${text.slice(0,200)}`);
+  }
+
+  if (!ct.includes('application/json')) {
+    const text = await r.text();
+    throw new Error(`Unexpected response (not JSON). First bytes: ${text.slice(0,120)}`);
+  }
   return r.json();
 }
 
@@ -53,7 +69,7 @@ async function startRec() {
       if (!json.ok) throw new Error(json.error || 'Server error');
       out.innerHTML = `✅ Created. <a href="${json.url}" target="_blank" rel="noopener">Open report</a>`;
     } catch (e) {
-      setError(e.message || String(e));
+      if (e.message !== 'AUTH') setError(e.message || String(e));
     }
   };
   mediaRecorder.start();
