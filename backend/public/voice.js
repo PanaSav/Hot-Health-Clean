@@ -1,33 +1,42 @@
-// backend/public/voice.js
 (() => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return; // graceful: no SR, no field mics
+  const supports = !!SR;
+  document.querySelectorAll('.mic-btn').forEach(btn => {
+    if (!supports) { btn.disabled = true; btn.title = 'Speech recognition not supported'; return; }
+    btn.addEventListener('click', async () => {
+      const targetId = btn.getAttribute('data-target');
+      const el = document.getElementById(targetId);
+      if (!el) return;
 
-  function attachMic(btn) {
-    const inputId = btn.getAttribute("data-mic");
-    const el = document.getElementById(inputId);
-    if (!el) return;
+      const rec = new SR();
+      rec.lang = 'en-US';           // You can make this dynamic by current detected UI language
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
 
-    const rec = new SR();
-    rec.continuous = false;
-    rec.interimResults = false;
+      btn.disabled = true;
+      const originalBg = el.style.background;
+      el.style.background = '#fff7cc';
 
-    // choose language based on target select if set; else default to en
-    const sel = document.getElementById("lang");
-    const lang = sel?.value || "en";
-    rec.lang = lang;
+      rec.onresult = (e) => {
+        const text = e.results[0][0].transcript || '';
+        if (el.tagName === 'SELECT') {
+          // try to match an option by text
+          const val = [...el.options].find(o => o.textContent.toLowerCase().includes(text.toLowerCase()));
+          if (val) el.value = val.value;
+        } else {
+          el.value = text;
+        }
+      };
+      rec.onend = () => {
+        btn.disabled = false;
+        el.style.background = originalBg;
+      };
+      rec.onerror = () => {
+        btn.disabled = false;
+        el.style.background = originalBg;
+      };
 
-    btn.addEventListener("click", ()=>{
-      try { rec.start(); btn.textContent = "🎤…"; } catch {}
+      try { rec.start(); } catch { btn.disabled = false; el.style.background = originalBg; }
     });
-
-    rec.onresult = (ev)=>{
-      const text = ev.results[0][0].transcript;
-      if (el.value) el.value = `${el.value} ${text}`.trim();
-      else el.value = text;
-    };
-    rec.onend = ()=>{ btn.textContent = "🎙️"; };
-  }
-
-  document.querySelectorAll("[data-mic]").forEach(attachMic);
+  });
 })();
