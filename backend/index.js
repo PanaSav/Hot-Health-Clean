@@ -1,4 +1,5 @@
 // One-file backend (login gate, uploads, transcription+translation, QR, reports)
+
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
@@ -32,7 +33,7 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // -------------------------
-// DB layer (better-sqlite3 preferred, sqlite3 fallback)
+// DB (better-sqlite3 preferred; sqlite3 fallback)
 // -------------------------
 let db = null;
 let useBetter = false;
@@ -45,10 +46,7 @@ async function initDB() {
   } catch {
     const { default: sqlite3 } = await import('sqlite3');
     const { open } = await import('sqlite');
-    db = await open({
-      filename: path.join(__dirname, 'data.sqlite'),
-      driver: sqlite3.Database
-    });
+    db = await open({ filename: path.join(__dirname, 'data.sqlite'), driver: sqlite3.Database });
     useBetter = false;
   }
 
@@ -74,23 +72,11 @@ async function initDB() {
     share_url     TEXT,
     qr_data_url   TEXT
   );`;
-
-  if (useBetter) db.exec(createSql);
-  else await db.exec(createSql);
+  if (useBetter) db.exec(createSql); else await db.exec(createSql);
 }
-
-function dbRun(sql, params=[]) {
-  if (useBetter) { db.prepare(sql).run(params); return Promise.resolve(); }
-  return db.run(sql, params);
-}
-function dbGet(sql, params=[]) {
-  if (useBetter) return Promise.resolve(db.prepare(sql).get(params));
-  return db.get(sql, params);
-}
-function dbAll(sql, params=[]) {
-  if (useBetter) return Promise.resolve(db.prepare(sql).all(params));
-  return db.all(sql, params);
-}
+function dbRun(sql, params=[]) { if (useBetter){ db.prepare(sql).run(params); return Promise.resolve(); } return db.run(sql, params); }
+function dbGet(sql, params=[]) { return useBetter ? Promise.resolve(db.prepare(sql).get(params)) : db.get(sql, params); }
+function dbAll(sql, params=[]) { return useBetter ? Promise.resolve(db.prepare(sql).all(params)) : db.all(sql, params); }
 
 // -------------------------
 // Auth (cookie)
@@ -100,21 +86,14 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 function setSession(res, user, req) {
-  // Use secure cookies when behind HTTPS (Render)
   const forwardedProto = (req?.headers['x-forwarded-proto'] || '').split(',')[0];
   const isHttps = forwardedProto === 'https';
-  res.cookie('hhsess', user, {
-    httpOnly: true,
-    signed: true,
-    sameSite: 'lax',
-    secure: isHttps // true on Render; false locally
-  });
+  res.cookie('hhsess', user, { httpOnly: true, signed: true, sameSite: 'lax', secure: isHttps });
 }
 function clearSession(res) { res.clearCookie('hhsess'); }
 function requireAuth(req, res, next) {
   const u = req.signedCookies?.hhsess;
   if (!u) {
-    // if expecting JSON (upload), return JSON 401; else redirect
     if (req.path === '/upload' || req.headers['accept']?.includes('application/json')) {
       return res.status(401).json({ ok:false, error:'AUTH_REQUIRED' });
     }
@@ -135,23 +114,20 @@ function getBaseUrl(req) {
 }
 function uid(n=22) { return crypto.randomBytes(n).toString('base64url').slice(0, n); }
 
-// Lightweight parser
+// Parse key facts (naive; tweak freely)
 function parseFacts(text) {
   const meds = [];
   const allergies = [];
   const conditions = [];
 
-  // medications
   const medRx = /([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:)?\s*(\d+)\s*(mg|mcg|g|ml)/gi;
   let mm; const seen = new Set();
   while ((mm = medRx.exec(text)) !== null) {
-    const name = mm[1];
-    const dose = mm[2] + ' ' + mm[3];
+    const name = mm[1]; const dose = mm[2] + ' ' + mm[3];
     const key = name.toLowerCase() + '|' + dose.toLowerCase();
     if (!seen.has(key)) { meds.push(`${name} — ${dose}`); seen.add(key); }
   }
 
-  // allergies
   const aRx = /\b(allergy|allergies|allergic to)\b([^\.]+)/gi;
   let aa;
   while ((aa = aRx.exec(text)) !== null) {
@@ -162,7 +138,6 @@ function parseFacts(text) {
     }
   }
 
-  // conditions (strip known words)
   const condRx = /\b(I have|I’ve|I've|diagnosed with|history of)\b([^\.]+)/gi;
   let cc;
   while ((cc = condRx.exec(text)) !== null) {
@@ -170,13 +145,11 @@ function parseFacts(text) {
     if (s) conditions.push(s);
   }
 
-  // blood pressure
   let bp = null;
   const bpRx = /\b(\d{2,3})\s*[/over\\-]\s*(\d{2,3})\b/i;
   const bpM = text.match(bpRx);
   if (bpM) bp = `${bpM[1]}/${bpM[2]}`;
 
-  // weight
   let weight = null;
   const wRx = /\b(\d{2,3})\s*(?:lbs?|pounds?|kg)\b/i;
   const wM = text.match(wRx);
@@ -185,12 +158,23 @@ function parseFacts(text) {
   return { medications: meds, allergies, conditions, bp, weight };
 }
 
+// Compose a one-paragraph summary string from fields
+function buildSummaryString({ medications, allergies, conditions, bp, weight }) {
+  const p = [];
+  p.push(`Medications: ${medications?.length ? medications.join(', ') : 'None'}.`);
+  p.push(`Allergies: ${allergies?.length ? allergies.join(', ') : 'None'}.`);
+  p.push(`Conditions: ${conditions?.length ? conditions.join(', ') : 'None'}.`);
+  if (bp) p.push(`Blood Pressure: ${bp}.`);
+  if (weight) p.push(`Weight: ${weight}.`);
+  return p.join(' ');
+}
+
 // -------------------------
 // Multer (store webm)
 // -------------------------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-  filename: (_, file, cb) => cb(null, `${Date.now()}-${uid(8)}.webm`)
+  filename:    (_, __, cb) => cb(null, `${Date.now()}-${uid(8)}.webm`)
 });
 const upload = multer({ storage });
 
@@ -200,7 +184,6 @@ const upload = multer({ storage });
 app.get('/login', (req,res) => {
   const p = path.join(PUBLIC_DIR, 'login.html');
   if (fs.existsSync(p)) return res.sendFile(p);
-  // fallback
   res.send(`
     <html><body>
       <h3>Sign in</h3>
@@ -212,7 +195,6 @@ app.get('/login', (req,res) => {
     </body></html>
   `);
 });
-
 app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
   const { userId, password } = req.body || {};
   if (userId === USER_ID && password === USER_PASS) {
@@ -221,31 +203,20 @@ app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
   }
   res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
 });
+app.post('/logout', (_req,res) => { clearSession(res); res.redirect('/login'); });
 
-app.post('/logout', (req,res) => {
-  clearSession(res);
-  res.redirect('/login');
-});
-
-// -------------------------
-// Protect EVERYTHING in the app (including static files)
-// -------------------------
+// Protect the app (then serve static)
 app.use(['/','/upload','/reports','/reports/*'], requireAuth);
-app.use(express.static(PUBLIC_DIR)); // served after auth
+app.use(express.static(PUBLIC_DIR));
 
 // Home page
-app.get('/', (req,res) => {
-  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
-});
+app.get('/', (_req,res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
 // -------------------------
 // Upload → Transcribe → (optional) Translate → Save → Respond
 // -------------------------
 app.post('/upload', upload.single('audio'), async (req,res) => {
-  // extra guard for JSON 401
-  if (!req.signedCookies?.hhsess) {
-    return res.status(401).json({ ok:false, error:'AUTH_REQUIRED' });
-  }
+  if (!req.signedCookies?.hhsess) return res.status(401).json({ ok:false, error:'AUTH_REQUIRED' });
 
   try {
     if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
@@ -259,18 +230,12 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
     const stream = fs.createReadStream(req.file.path);
     let transcript = '';
     try {
-      const tr = await openai.audio.transcriptions.create({
-        file: stream,
-        model: 'gpt-4o-mini-transcribe'
-      });
+      const tr = await openai.audio.transcriptions.create({ file: stream, model: 'gpt-4o-mini-transcribe' });
       transcript = tr.text?.trim() || '';
     } catch {
       try {
         const stream2 = fs.createReadStream(req.file.path);
-        const tr2 = await openai.audio.transcriptions.create({
-          file: stream2,
-          model: 'whisper-1'
-        });
+        const tr2 = await openai.audio.transcriptions.create({ file: stream2, model: 'whisper-1' });
         transcript = tr2.text?.trim() || '';
       } catch {
         return res.status(500).json({ ok:false, error:'Transcription failed' });
@@ -278,26 +243,35 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
     }
 
     const detected_lang = 'auto';
-    let translated = '';
-    const target_lang = (lang || '').trim();
+    const target_lang   = (lang || '').trim();
 
-    // 2) optional translate transcript
+    // 2) parse + build original summary
+    const facts = parseFacts(transcript);
+    const summaryOriginal = buildSummaryString(facts);
+
+    // 3) translate transcript & summary (if target selected)
+    let translatedTranscript = '';
+    let summaryTranslated    = '';
     if (target_lang) {
+      const model = process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini';
       try {
-        const prompt = `Translate the following medical note to ${target_lang}. Return only the translated text.\n\n${transcript}`;
         const rsp = await openai.chat.completions.create({
-          model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-          messages: [{ role:'user', content: prompt }],
+          model,
+          messages: [{ role:'user', content: `Translate to ${target_lang}. Return only the translated text.\n\n${transcript}` }],
           temperature: 0.2
         });
-        translated = rsp.choices?.[0]?.message?.content?.trim() || '';
-      } catch {
-        translated = '';
-      }
-    }
+        translatedTranscript = rsp.choices?.[0]?.message?.content?.trim() || '';
+      } catch {}
 
-    // 3) parse facts from original transcript
-    const facts = parseFacts(transcript);
+      try {
+        const rsp2 = await openai.chat.completions.create({
+          model,
+          messages: [{ role:'user', content: `Translate to ${target_lang}. Return only the translated text.\n\n${summaryOriginal}` }],
+          temperature: 0.2
+        });
+        summaryTranslated = rsp2.choices?.[0]?.message?.content?.trim() || '';
+      } catch {}
+    }
 
     // 4) save
     const id = uid(20);
@@ -315,10 +289,9 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       )
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `;
-
     await dbRun(insertSql, [
       id, created_at, name, email, blood_type, emer_name, emer_phone, emer_email,
-      detected_lang, target_lang, transcript, translated || '',
+      detected_lang, target_lang, transcript, translatedTranscript || '',
       (facts.medications||[]).join('; '),
       (facts.allergies||[]).join('; '),
       (facts.conditions||[]).join('; '),
@@ -326,7 +299,17 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       shareUrl, qr_data_url
     ]);
 
-    res.json({ ok:true, id, url: shareUrl });
+    // 5) respond: include QR + summaries so the frontend can show them immediately
+    res.json({
+      ok: true,
+      id,
+      url: shareUrl,
+      qr: qr_data_url,
+      detected_lang,
+      target_lang,
+      summary_original: summaryOriginal,
+      summary_translated: summaryTranslated
+    });
 
   } catch (err) {
     console.error(err);
@@ -339,22 +322,14 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
 // -------------------------
 app.get('/reports', async (req,res) => {
   const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
-  const baseUrl = getBaseUrl(req);
   const escape = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-  const items = rows.map(r => {
-    const title = `Report for ${r.name || 'Unknown'}`;
-    const url = `${baseUrl}/reports/${r.id}`;
-    return `
-      <li class="report-item">
-        <div class="title">${escape(title)}</div>
-        <div class="meta">${new Date(r.created_at).toLocaleString()} • ${escape(r.email||'')}</div>
-        <div class="actions">
-          <a class="btn" href="${url}" target="_blank" rel="noopener">Open</a>
-        </div>
-      </li>
-    `;
-  }).join('');
+  const items = rows.map(r => `
+    <li class="report-item">
+      <div class="title">Report for ${escape(r.name || 'Unknown')}</div>
+      <div class="meta">${new Date(r.created_at).toLocaleString()} • ${escape(r.email||'')}</div>
+      <div class="actions"><a class="btn" href="/reports/${r.id}" target="_blank" rel="noopener">Open</a></div>
+    </li>
+  `).join('');
 
   res.send(`<!doctype html>
 <html><head>
@@ -388,7 +363,7 @@ app.get('/reports', async (req,res) => {
 });
 
 // -------------------------
-// Single report
+// Single report (with Dual Summary + Dual Transcript)
 // -------------------------
 app.get('/reports/:id', async (req,res) => {
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
@@ -396,7 +371,28 @@ app.get('/reports/:id', async (req,res) => {
 
   const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const created = new Date(row.created_at).toLocaleString();
-  const shareLinkIcon = `<a class="btn" href="${esc(row.share_url)}" target="_blank" rel="noopener" title="Open share link">🔗 Link</a>`;
+
+  // Build original summary string from stored fields
+  const summaryOriginal = buildSummaryString({
+    medications: (row.medications||'').split('; ').filter(Boolean),
+    allergies:   (row.allergies||'').split('; ').filter(Boolean),
+    conditions:  (row.conditions||'').split('; ').filter(Boolean),
+    bp:          row.bp,
+    weight:      row.weight
+  });
+
+  // Translate the summary on the fly if target_lang exists
+  let summaryTranslated = '';
+  if (row.target_lang) {
+    try {
+      const rsp = await openai.chat.completions.create({
+        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+        messages: [{ role:'user', content: `Translate to ${row.target_lang}. Return only the translated text.\n\n${summaryOriginal}` }],
+        temperature: 0.2
+      });
+      summaryTranslated = rsp.choices?.[0]?.message?.content?.trim() || '';
+    } catch {}
+  }
 
   res.send(`<!doctype html>
 <html><head>
@@ -414,16 +410,17 @@ app.get('/reports/:id', async (req,res) => {
   .qr { text-align:center; margin:8px 0; }
   .tag { display:inline-block; font-size:12px; color:#334; background:#eef4ff; border:1px solid #dbe7ff; padding:2px 6px; border-radius:12px; margin-left:6px; }
   .btnbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+  .mono { white-space:pre-wrap; }
 </style>
 </head>
 <body>
   <div class="container">
     <header>
-      <h1>Hot Health — Report 
+      <h1>Hot Health — Report
         ${row.detected_lang ? `<span class="tag">Original: ${esc(row.detected_lang)}</span>`:''}
-        ${row.target_lang ? `<span class="tag">Target: ${esc(row.target_lang)}</span>`:''}
+        ${row.target_lang   ? `<span class="tag">Target: ${esc(row.target_lang)}</span>`:''}
       </h1>
-      <div><b>Created:</b> ${esc(created)} ${shareLinkIcon}</div>
+      <div><b>Created:</b> ${esc(created)} <a class="btn" href="${esc(row.share_url)}" target="_blank" rel="noopener" title="Open share link">🔗 Link</a></div>
       <div class="qr">
         <img src="${esc(row.qr_data_url)}" alt="QR Code" style="max-width:180px;"/>
         <div style="font-size:13px;color:#555">Scan on a phone, or use the link button.</div>
@@ -431,6 +428,7 @@ app.get('/reports/:id', async (req,res) => {
       <div class="btnbar">
         <a class="btn" href="/" rel="noopener">+ New Report</a>
         <a class="btn" href="/reports" rel="noopener">All Reports</a>
+        <a class="btn" onclick="window.print()" href="javascript:void(0)">🖨️ Print</a>
       </div>
     </header>
 
@@ -444,11 +442,16 @@ app.get('/reports/:id', async (req,res) => {
 
     <section class="section">
       <h2>Summary</h2>
-      <div><b>Medications:</b> ${esc(row.medications || 'None')}</div>
-      <div><b>Allergies:</b> ${esc(row.allergies || 'None')}</div>
-      <div><b>Conditions:</b> ${esc(row.conditions || 'None')}</div>
-      <div><b>Blood Pressure:</b> ${esc(row.bp || '—')}</div>
-      <div><b>Weight:</b> ${esc(row.weight || '—')}</div>
+      <div class="dual">
+        <div class="block">
+          <h3>Original</h3>
+          <div class="mono">${esc(summaryOriginal)}</div>
+        </div>
+        <div class="block">
+          <h3>Translated</h3>
+          <div class="mono">${esc(summaryTranslated || (row.target_lang ? '(translation unavailable)' : '(no target selected)'))}</div>
+        </div>
+      </div>
     </section>
 
     <section class="section">
@@ -474,6 +477,4 @@ app.get('/reports/:id', async (req,res) => {
 // Start
 // -------------------------
 await initDB();
-app.listen(PORT, () => {
-  console.log(`✅ Backend listening on ${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Backend listening on ${PORT}`));

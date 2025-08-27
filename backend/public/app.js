@@ -21,6 +21,15 @@ function gatherForm() {
   };
 }
 
+function gmailLink(url) {
+  const u = encodeURIComponent(url);
+  return `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent('Hot Health Report')}&body=${u}`;
+}
+function outlookLink(url) {
+  const u = encodeURIComponent(url);
+  return `https://outlook.office.com/mail/deeplink/compose?subject=${encodeURIComponent('Hot Health Report')}&body=${u}`;
+}
+
 async function uploadBlob(blob) {
   const fd = new FormData();
   fd.append('audio', blob, 'recording.webm');
@@ -30,17 +39,11 @@ async function uploadBlob(blob) {
   const r = await fetch('/upload', { method:'POST', body: fd });
   const ct = r.headers.get('content-type') || '';
 
-  // handle auth redirects or HTML errors
   if (!r.ok) {
-    if (r.status === 401) {
-      setError('Your session expired — please sign in again.');
-      window.location.href = '/login';
-      return Promise.reject(new Error('AUTH'));
-    }
+    if (r.status === 401) { window.location.href = '/login'; return Promise.reject(new Error('AUTH')); }
     const text = ct.includes('application/json') ? JSON.stringify(await r.json()) : await r.text();
     throw new Error(`Upload failed (${r.status}): ${text.slice(0,200)}`);
   }
-
   if (!ct.includes('application/json')) {
     const text = await r.text();
     throw new Error(`Unexpected response (not JSON). First bytes: ${text.slice(0,120)}`);
@@ -67,7 +70,26 @@ async function startRec() {
       setMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB`);
       const json = await uploadBlob(blob);
       if (!json.ok) throw new Error(json.error || 'Server error');
-      out.innerHTML = `✅ Created. <a href="${json.url}" target="_blank" rel="noopener">Open report</a>`;
+
+      const openLink = `<a class="btn" href="${json.url}" target="_blank" rel="noopener">Open report</a>`;
+      const gmail = `<a class="btn" href="${gmailLink(json.url)}" target="_blank" rel="noopener">Gmail</a>`;
+      const outlook = `<a class="btn" href="${outlookLink(json.url)}" target="_blank" rel="noopener">Outlook</a>`;
+      const qr = json.qr ? `<div class="qr"><img src="${json.qr}" alt="QR" style="max-width:160px"/></div>` : '';
+
+      // Optional summaries on the result card
+      const sumOrig = json.summary_original ? `<div class="small"><b>Summary (orig):</b> ${json.summary_original}</div>` : '';
+      const sumTran = json.summary_translated ? `<div class="small"><b>Summary (translated):</b> ${json.summary_translated}</div>` : '';
+
+      out.innerHTML = `
+        <div class="result-card">
+          ${qr}
+          <div class="btnbar">
+            ${openLink} <a class="btn" onclick="window.print()" href="javascript:void(0)">🖨️ Print</a>
+            ${gmail} ${outlook}
+          </div>
+          ${sumOrig}${sumTran}
+        </div>
+      `;
     } catch (e) {
       if (e.message !== 'AUTH') setError(e.message || String(e));
     }
