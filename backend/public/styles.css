@@ -62,3 +62,10 @@ html,body{ margin:0; padding:0; color:var(--ink); background:var(--bg); font-fam
 .error{ color:#b00020; margin-top:8px; }
 
 .site-footer{ padding:18px 0 28px; text-align:center; color:var(--muted); }
+/* extras */
+.result-card { background:#fff; border:2px solid aquamarine; border-radius:12px; padding:12px; }
+.btnbar { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+.btn { text-decoration:none; border:1px solid #dbe7ff; padding:8px 10px; border-radius:8px; background:#f0f5ff; color:#234; font-size:14px; }
+.small { font-size:13px; color:#333; margin-top:4px; }
+.qr { text-align:center; margin:8px 0; }
+

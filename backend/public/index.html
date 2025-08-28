@@ -1,139 +1,69 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8">
   <title>Hot Health — One Port</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <link rel="stylesheet" href="/styles.css" />
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .hint-inline { color:#555; font-size:13px; }
+    .result-grid { display:grid; gap:12px; }
+    .section { background:#fff; border:2px solid aquamarine; border-radius:12px; padding:16px; }
+    .dual { display:flex; gap:12px; flex-wrap:wrap; }
+    .block { flex:1; min-width:260px; background:#f8faff; border:1px solid #dbe7ff; border-radius:8px; padding:12px; }
+    .qr { text-align:center; }
+    .btnbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  </style>
 </head>
 <body>
-  <header class="site-header">
-    <div class="wrap">
-      <h1>Hot Health — One Port</h1>
-      <nav class="top-actions">
-        <a class="btn ghost" href="/reports">Open Reports</a>
-        <form method="POST" action="/logout" class="inline">
-          <button class="btn danger" type="submit" title="Log out">Log out</button>
-        </form>
-      </nav>
-    </div>
-  </header>
+  <header><h1>Hot Health — One Port</h1></header>
 
-  <main class="wrap page-card">
-    <!-- Patient & Options -->
+  <main class="wrap">
     <section class="card">
       <h2>Patient & Options</h2>
-
-      <div class="grid g2">
-        <label class="field">
-          <span>Patient Name</span>
-          <div class="with-icon">
-            <input id="pName" placeholder="Full name" />
-            <button class="icon-btn mic-btn" type="button" data-target="pName" title="Speak name">🎤</button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Patient Email</span>
-          <div class="with-icon">
-            <input id="pEmail" placeholder="name@email.com" type="email" />
-            <button class="icon-btn mic-btn" type="button" data-target="pEmail" title="Speak email">🎤</button>
-          </div>
-        </label>
+      <div class="row">
+        <input id="pName" placeholder="Patient Name">
+        <input id="pEmail" placeholder="Patient Email">
       </div>
-
-      <div class="grid g3">
-        <label class="field">
-          <span>Emergency Contact Name</span>
-          <div class="with-icon">
-            <input id="eName" placeholder="EC full name" />
-            <button class="icon-btn mic-btn" type="button" data-target="eName" title="Speak EC name">🎤</button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Emergency Contact Phone</span>
-          <div class="with-icon">
-            <input id="ePhone" placeholder="+1-555-123-4567" />
-            <button class="icon-btn mic-btn" type="button" data-target="ePhone" title="Speak EC phone">🎤</button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Emergency Contact Email</span>
-          <div class="with-icon">
-            <input id="eEmail" placeholder="ec@email.com" type="email" />
-            <button class="icon-btn mic-btn" type="button" data-target="eEmail" title="Speak EC email">🎤</button>
-          </div>
-        </label>
+      <div class="row">
+        <input id="eName" placeholder="Emergency Contact Name">
+        <input id="ePhone" placeholder="Emergency Contact Phone">
+        <input id="eEmail" placeholder="Emergency Contact Email">
       </div>
-
-      <div class="grid g3">
-        <label class="field">
-          <span>Blood Type (optional)</span>
-          <select id="blood">
-            <option value="">— Select —</option>
-            <option>O+</option><option>O-</option>
-            <option>A+</option><option>A-</option>
-            <option>B+</option><option>B-</option>
-            <option>AB+</option><option>AB-</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>Target Language (optional)</span>
-          <select id="lang">
-            <option value="">— No translation at upload —</option>
-            <option value="en">English</option>
-            <option value="fr">Français</option>
-            <option value="es">Español</option>
-            <option value="pt">Português</option>
-            <option value="de">Deutsch</option>
-            <option value="it">Italiano</option>
-            <option value="ar">العربية</option>
-            <option value="hi">हिन्दी</option>
-            <option value="pa">ਪੰਜਾਬੀ (Punjabi)</option>
-            <option value="he">עברית (Hebrew)</option>
-            <option value="sr">Srpski (Serbian)</option>
-            <option value="zh">中文</option>
-            <option value="ja">日本語</option>
-            <option value="ko">한국어</option>
-          </select>
-        </label>
-
-        <div class="field hint">
-          <div class="muted">
-            Tip: speak your health note when recording (e.g., meds, allergies, conditions, BP, weight).
-          </div>
-        </div>
+      <div class="row">
+        <select id="blood">
+          <option value="">Blood Type (optional)</option>
+          <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
+          <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
+        </select>
+        <select id="lang">
+          <option value="">— No translation at upload —</option>
+          <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
+          <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
+          <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
+          <option value="ja">日本語</option><option value="ko">한국어</option>
+          <option value="he">עברית</option><option value="sr">Српски</option><option value="pa">ਪੰਜਾਬੀ</option>
+        </select>
       </div>
     </section>
 
-    <!-- Record -->
     <section class="card">
-      <h2>Record</h2>
-      <div class="row">
-        <button id="btnRec" class="btn primary">Record</button>
-        <div id="recHint" class="muted">Click to record a short health note (3–10s). Requires HTTPS for mic on phones.</div>
+      <h2>Record Health Status</h2>
+      <div class="actions">
+        <button id="btnRec">Record</button>
+        <div class="hint-inline">Tip: speak meds, allergies, conditions, BP, weight.</div>
       </div>
       <div id="recMeta" class="muted"></div>
       <div id="error" class="error"></div>
     </section>
 
-    <!-- Result -->
     <section class="card">
       <h2>Shareable Report</h2>
-      <div id="result" class="muted">Record and stop to generate a report + QR.</div>
+      <div id="result">Record and stop to generate a report + QR.</div>
     </section>
   </main>
 
-  <footer class="site-footer">
-    <div class="wrap">
-      <small>Hot Health © 2025</small>
-    </div>
-  </footer>
-
-  <script src="/voice.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

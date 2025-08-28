@@ -5,6 +5,7 @@ const out = $('#result');
 const errBox = $('#error');
 
 let mediaRecorder, chunks = [];
+let autoStopTimer = null;
 
 function setError(msg){ errBox.textContent = msg || ''; }
 function setMeta(msg){ meta.textContent = msg || ''; }
@@ -21,15 +22,6 @@ function gatherForm() {
   };
 }
 
-function gmailLink(url) {
-  const u = encodeURIComponent(url);
-  return `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent('Hot Health Report')}&body=${u}`;
-}
-function outlookLink(url) {
-  const u = encodeURIComponent(url);
-  return `https://outlook.office.com/mail/deeplink/compose?subject=${encodeURIComponent('Hot Health Report')}&body=${u}`;
-}
-
 async function uploadBlob(blob) {
   const fd = new FormData();
   fd.append('audio', blob, 'recording.webm');
@@ -37,18 +29,68 @@ async function uploadBlob(blob) {
   for (const [k,v] of Object.entries(f)) fd.append(k, v);
 
   const r = await fetch('/upload', { method:'POST', body: fd });
-  const ct = r.headers.get('content-type') || '';
-
   if (!r.ok) {
-    if (r.status === 401) { window.location.href = '/login'; return Promise.reject(new Error('AUTH')); }
-    const text = ct.includes('application/json') ? JSON.stringify(await r.json()) : await r.text();
-    throw new Error(`Upload failed (${r.status}): ${text.slice(0,200)}`);
-  }
-  if (!ct.includes('application/json')) {
-    const text = await r.text();
-    throw new Error(`Unexpected response (not JSON). First bytes: ${text.slice(0,120)}`);
+    const t = await r.text().catch(()=> '');
+    throw new Error(`Upload failed (${r.status}): ${t || 'Server error'}`);
   }
   return r.json();
+}
+
+function renderList(items) {
+  if (!items || !items.length) return 'None';
+  return `<ul class="list">${items.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul>`;
+}
+function escapeHtml(s=''){ return String(s).replace(/[&<>"]/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function renderResult(payload){
+  const {
+    url, qr, detectedLang, targetLangName,
+    transcript, translatedTranscript,
+    summary
+  } = payload;
+
+  const dual = `
+    <div class="section">
+      <h2>Transcript</h2>
+      <div class="dual">
+        <div class="block">
+          <h3>Original${detectedLang ? ` (${escapeHtml(detectedLang)})` : ''}</h3>
+          <p>${escapeHtml(transcript||'')}</p>
+        </div>
+        <div class="block">
+          <h3>${targetLangName ? escapeHtml(targetLangName) : 'Translated'}</h3>
+          <p>${escapeHtml(translatedTranscript || '(no translation)')}</p>
+        </div>
+      </div>
+    </div>`;
+
+  const summaryHtml = `
+    <div class="section">
+      <h2>Summary</h2>
+      <div><b>Medications:</b> ${renderList(summary?.medications)}</div>
+      <div><b>Allergies:</b> ${renderList(summary?.allergies)}</div>
+      <div><b>Conditions:</b> ${renderList(summary?.conditions)}</div>
+      <div><b>Blood Pressure:</b> ${escapeHtml(summary?.bp || '—')}</div>
+      <div><b>Weight:</b> ${escapeHtml(summary?.weight || '—')}</div>
+    </div>`;
+
+  const actions = `
+    <div class="section">
+      <h2>Share & QR</h2>
+      <div class="qr" style="margin-bottom:10px">
+        ${qr ? `<img src="${qr}" alt="QR" style="max-width:180px"/>` : ''}
+        <div style="font-size:13px;color:#555;margin-top:6px">Scan on a phone or use the buttons.</div>
+      </div>
+      <div class="btnbar">
+        <a class="btn" href="${url}" target="_blank" rel="noopener">🔗 Open report</a>
+        <a class="btn" href="mailto:?subject=Hot%20Health%20Report&body=${encodeURIComponent(url)}">✉️ Email</a>
+        <button class="btn" id="btnCopy">🔗 Get link</button>
+      </div>
+    </div>`;
+
+  out.innerHTML = `<div class="result-grid">${summaryHtml}${dual}${actions}</div>`;
+  const btnCopy = document.getElementById('btnCopy');
+  if (btnCopy) btnCopy.onclick = () => navigator.clipboard.writeText(url);
 }
 
 async function startRec() {
@@ -65,38 +107,22 @@ async function startRec() {
   mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
   mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
   mediaRecorder.onstop = async () => {
+    clearTimeout(autoStopTimer);
     try {
       const blob = new Blob(chunks, { type: 'audio/webm' });
       setMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB`);
       const json = await uploadBlob(blob);
       if (!json.ok) throw new Error(json.error || 'Server error');
-
-      const openLink = `<a class="btn" href="${json.url}" target="_blank" rel="noopener">Open report</a>`;
-      const gmail = `<a class="btn" href="${gmailLink(json.url)}" target="_blank" rel="noopener">Gmail</a>`;
-      const outlook = `<a class="btn" href="${outlookLink(json.url)}" target="_blank" rel="noopener">Outlook</a>`;
-      const qr = json.qr ? `<div class="qr"><img src="${json.qr}" alt="QR" style="max-width:160px"/></div>` : '';
-
-      // Optional summaries on the result card
-      const sumOrig = json.summary_original ? `<div class="small"><b>Summary (orig):</b> ${json.summary_original}</div>` : '';
-      const sumTran = json.summary_translated ? `<div class="small"><b>Summary (translated):</b> ${json.summary_translated}</div>` : '';
-
-      out.innerHTML = `
-        <div class="result-card">
-          ${qr}
-          <div class="btnbar">
-            ${openLink} <a class="btn" onclick="window.print()" href="javascript:void(0)">🖨️ Print</a>
-            ${gmail} ${outlook}
-          </div>
-          ${sumOrig}${sumTran}
-        </div>
-      `;
+      renderResult(json);
     } catch (e) {
-      if (e.message !== 'AUTH') setError(e.message || String(e));
+      setError(e.message || String(e));
     }
   };
   mediaRecorder.start();
   btnRec.textContent = 'Stop';
   setMeta('Recording… click Stop when done.');
+  // Auto-stop after 30s if user forgets
+  autoStopTimer = setTimeout(() => { if (mediaRecorder?.state === 'recording') stopRec(); }, 30000);
 }
 
 function stopRec() {
