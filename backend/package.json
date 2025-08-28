@@ -10,14 +10,15 @@
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {
-    "body-parser": "^1.20.3",
-    "cookie-parser": "^1.4.7",
-    "dotenv": "^16.6.1",
-    "express": "^4.21.2",
-    "multer": "^1.4.5-lts.1",
-    "openai": "^4.104.0",
-    "qrcode": "^1.5.4",
-    "sqlite3": "^5.1.7"
-  }
+"dependencies": {
+  "sqlite3": "^5.1.6",
+  "express": "^4.21.2",
+  "multer": "^1.4.5-lts.2",
+  "openai": "^4.104.0",
+  "qrcode": "^1.5.4",
+  "dotenv": "^16.6.1",
+  "body-parser": "^1.20.3",
+  "cookie-parser": "^1.4.7"
+}
+
 }
