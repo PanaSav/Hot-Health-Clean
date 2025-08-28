@@ -1,175 +1,189 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Hot Health — One Port</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <link rel="stylesheet" href="/styles.css" />
-  <style>
-    /* Lightweight layout helpers in case your styles.css is older */
-    .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
-    header { display:flex; gap:12px; align-items:center; justify-content:space-between; border-bottom:3px solid aquamarine; padding:12px 0; }
-    header h1 { margin:0; color:#4b0082; }
-    .row { display:flex; gap:8px; flex-wrap:wrap; }
-    .card { background:#fff; border:2px solid aquamarine; border-radius:12px; padding:14px; margin:14px 0; }
-    .rec-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
-    .rec { border:1px solid #dbe7ff; background:#f8faff; border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:8px; }
-    .rec .top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-    .rec .label { font-weight:600; }
-    .rec .hint { font-size:12px; color:#566; }
-    .rec .status { font-size:12px; color:#334; min-height:1.3em; }
-    .pill { display:inline-flex; align-items:center; gap:6px; border:1px solid #dbe7ff; background:#eef4ff; border-radius:999px; padding:6px 10px; cursor:pointer; user-select:none; }
-    .pill[disabled] { opacity:.6; cursor:not-allowed; }
-    .pill .dot { width:10px; height:10px; border-radius:50%; background:#999; }
-    .pill.rec-on .dot { background:#e11; box-shadow:0 0 0 3px rgba(255,0,0,.15); }
-    .danger { color:#b00; }
-    .success { color:#08660e; }
-    .btn { text-decoration:none; border:1px solid #dbe7ff; padding:9px 12px; border-radius:8px; background:#f0f5ff; color:#234; font-size:14px; display:inline-flex; align-items:center; gap:6px; }
-    .btn.primary { background:#0a84ff; color:#fff; border-color:#0a84ff; }
-    .btnbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-    .muted { color:#556; font-size:13px; }
-    input, select { padding:10px 12px; border:1px solid #cfd8ea; border-radius:8px; font-size:14px; }
-    .error { color:#b00; }
-    .ok { color:#08660e; }
-  </style>
-</head>
-<body>
-  <header class="wrap">
-    <h1>Hot Health — One Port</h1>
-    <nav class="btnbar">
-      <a class="btn" href="/reports">Open Reports</a>
-      <form method="POST" action="/logout" style="display:inline">
-        <button class="btn" type="submit">Log out</button>
-      </form>
-    </nav>
-  </header>
+// backend/index.js
+// Backend: login/auth, upload, transcription+translation, QR, reports
 
-  <main class="wrap">
-    <!-- PATIENT & OPTIONS -->
-    <section class="card">
-      <h2>Patient & Options</h2>
-      <div class="row">
-        <input id="pName" placeholder="Patient Name" />
-        <input id="pEmail" placeholder="Patient Email" />
-      </div>
-      <div class="row">
-        <input id="eName" placeholder="Emergency Contact Name" />
-        <input id="ePhone" placeholder="Emergency Contact Phone" />
-        <input id="eEmail" placeholder="Emergency Contact Email" />
-      </div>
-      <div class="row">
-        <select id="blood">
-          <option value="">Blood Type (optional)</option>
-          <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
-          <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
-        </select>
-        <select id="lang">
-          <option value="">— Target language (optional) —</option>
-          <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
-          <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
-          <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="pa">ਪੰਜਾਬੀ</option>
-          <option value="sr">Srpski</option><option value="he">עברית</option><option value="zh">中文</option>
-          <option value="ja">日本語</option><option value="ko">한국어</option>
-        </select>
-      </div>
-    </section>
+import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import express from 'express';
+import bodyParser from 'body-parser';
+import multer from 'multer';
+import cookieParser from 'cookie-parser';
+import QRCode from 'qrcode';
+import OpenAI from 'openai';
+import { fileURLToPath } from 'url';
 
-    <!-- SIX MINI RECORDERS -->
-    <section class="card">
-      <h2>Record Health Status</h2>
-      <div class="muted" style="margin-bottom:8px;">
-        Tip: speak your health note (e.g., meds, allergies, conditions, BP, weight). Each recorder auto-stops.
-      </div>
+// -------------------------
+// Setup
+// -------------------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
-      <div class="rec-grid">
+const app = express();
+const PORT = Number(process.env.PORT || 10000);
 
-        <div class="rec" data-id="bp" data-max="30">
-          <div class="top">
-            <div class="label">Blood Pressure</div>
-            <button class="pill mic">
-              <span class="dot"></span>
-              <span class="txt">Record (max 30s)</span>
-            </button>
-          </div>
-          <div class="hint">Say e.g. “120 over 75”.</div>
-          <div class="status" aria-live="polite"></div>
-        </div>
+const USER_ID   = process.env.APP_USER_ID   || 'Pana123$';
+const USER_PASS = process.env.APP_USER_PASS || 'GoGoPana$';
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(16).toString('hex');
 
-        <div class="rec" data-id="meds" data-max="60">
-          <div class="top">
-            <div class="label">Medications & Dose</div>
-            <button class="pill mic">
-              <span class="dot"></span>
-              <span class="txt">Record (max 60s)</span>
-            </button>
-          </div>
-          <div class="hint">List meds like “Lisinopril 10 mg, Metformin 500 mg”.</div>
-          <div class="status" aria-live="polite"></div>
-        </div>
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-        <div class="rec" data-id="allergies" data-max="45">
-          <div class="top">
-            <div class="label">Allergies</div>
-            <button class="pill mic">
-              <span class="dot"></span>
-              <span class="txt">Record (max 45s)</span>
-            </button>
-          </div>
-          <div class="hint">e.g., “allergic to penicillin, peanuts, dust”.</div>
-          <div class="status" aria-live="polite"></div>
-        </div>
+// OpenAI
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-        <div class="rec" data-id="weight" data-max="30">
-          <div class="top">
-            <div class="label">Weight</div>
-            <button class="pill mic">
-              <span class="dot"></span>
-              <span class="txt">Record (max 30s)</span>
-            </button>
-          </div>
-          <div class="hint">e.g., “I weigh 215 pounds”.</div>
-          <div class="status" aria-live="polite"></div>
-        </div>
+// -------------------------
+// Database (sqlite3 only, simpler)
+// -------------------------
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 
-        <div class="rec" data-id="conditions" data-max="60">
-          <div class="top">
-            <div class="label">Conditions</div>
-            <button class="pill mic">
-              <span class="dot"></span>
-              <span class="txt">Record (max 60s)</span>
-            </button>
-          </div>
-          <div class="hint">e.g., “I have a kidney condition”.</div>
-          <div class="status" aria-live="polite"></div>
-        </div>
+const db = await open({
+  filename: path.join(__dirname, 'data.sqlite'),
+  driver: sqlite3.Database
+});
 
-        <div class="rec" data-id="note" data-max="60">
-          <div class="top">
-            <div class="label">General Health Note</div>
-            <button class="pill mic">
-              <span class="dot"></span>
-              <span class="txt">Record (max 60s)</span>
-            </button>
-          </div>
-          <div class="hint">Any other details your clinician should know.</div>
-          <div class="status" aria-live="polite"></div>
-        </div>
+await db.exec(`
+CREATE TABLE IF NOT EXISTS reports (
+  id TEXT PRIMARY KEY,
+  created_at TEXT,
+  name TEXT,
+  email TEXT,
+  blood_type TEXT,
+  emer_name TEXT,
+  emer_phone TEXT,
+  emer_email TEXT,
+  detected_lang TEXT,
+  target_lang TEXT,
+  transcript TEXT,
+  translated_transcript TEXT,
+  medications TEXT,
+  allergies TEXT,
+  conditions TEXT,
+  bp TEXT,
+  weight TEXT,
+  share_url TEXT,
+  qr_data_url TEXT
+)`);
 
-      </div>
-    </section>
+// -------------------------
+// Middleware
+// -------------------------
+app.use(cookieParser(SESSION_SECRET));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.static(PUBLIC_DIR));
 
-    <!-- ACTIONS -->
-    <section class="card">
-      <h2>Shareable Report</h2>
-      <div class="btnbar">
-        <button id="btnGen" class="btn primary">Generate Report</button>
-        <a class="btn" href="/reports">Open Reports</a>
-      </div>
-      <div id="result" class="muted" style="margin-top:8px;">Record in any tiles above, then click Generate Report.</div>
-      <div id="error" class="error" style="margin-top:6px;"></div>
-    </section>
-  </main>
+function setSession(res, user) {
+  res.cookie('hhsess', user, { httpOnly: true, signed: true, sameSite: 'lax' });
+}
+function requireAuth(req,res,next) {
+  if (!req.signedCookies?.hhsess) return res.redirect('/login');
+  next();
+}
 
-  <script src="/app.js"></script>
-</body>
-</html>
+// -------------------------
+// Helpers
+// -------------------------
+function getBaseUrl(req) {
+  const envUrl = process.env.PUBLIC_BASE_URL;
+  if (envUrl && /^https?:\/\//i.test(envUrl)) return envUrl.replace(/\/+$/,'');
+  const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0];
+  const host  = req.headers['x-forwarded-host'] || req.headers.host;
+  return `${proto}://${host}`;
+}
+function uid(n=22) { return crypto.randomBytes(n).toString('base64url').slice(0,n); }
+
+// -------------------------
+// Multer
+// -------------------------
+const storage = multer.diskStorage({
+  destination: (_,__,cb)=>cb(null,UPLOAD_DIR),
+  filename: (_,file,cb)=>cb(null,`${Date.now()}-${uid(6)}.webm`)
+});
+const upload = multer({ storage });
+
+// -------------------------
+// Login
+// -------------------------
+app.get('/login',(req,res)=>res.sendFile(path.join(PUBLIC_DIR,'login.html')));
+app.post('/login',bodyParser.urlencoded({extended:true}),(req,res)=>{
+  const { userId,password } = req.body||{};
+  if (userId===USER_ID && password===USER_PASS){ setSession(res,userId); return res.redirect('/'); }
+  res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
+});
+app.post('/logout',(req,res)=>{ res.clearCookie('hhsess'); res.redirect('/login'); });
+
+// -------------------------
+// Routes
+// -------------------------
+app.use(['/', '/upload', '/reports', '/reports/*'], requireAuth);
+
+// Home
+app.get('/',(req,res)=>res.sendFile(path.join(PUBLIC_DIR,'index.html')));
+
+// Upload → Transcribe → Save
+app.post('/upload',upload.single('audio'),async(req,res)=>{
+  try {
+    if (!req.file) return res.status(400).json({ok:false,error:'No file'});
+    const { name='', email='', emer_name='', emer_phone='', emer_email='', blood_type='', lang='' } = req.body||{};
+
+    // Transcribe
+    const stream = fs.createReadStream(req.file.path);
+    let transcript='';
+    try {
+      const tr = await openai.audio.transcriptions.create({ file:stream, model:'gpt-4o-mini-transcribe' });
+      transcript = tr.text?.trim() || '';
+    } catch(e) { transcript=''; }
+
+    const detected_lang='EN';
+    let translated='', target_lang=(lang||'').trim();
+    if(target_lang){
+      const rsp=await openai.chat.completions.create({
+        model:'gpt-4o-mini',
+        messages:[{role:'user',content:`Translate this to ${target_lang}: ${transcript}`}]
+      });
+      translated=rsp.choices?.[0]?.message?.content?.trim()||'';
+    }
+
+    const id=uid(18), created_at=new Date().toISOString();
+    const baseUrl=getBaseUrl(req), shareUrl=`${baseUrl}/reports/${id}`;
+    const qr=await QRCode.toDataURL(shareUrl);
+
+    await db.run(`
+      INSERT INTO reports (id,created_at,name,email,blood_type,emer_name,emer_phone,emer_email,
+        detected_lang,target_lang,transcript,translated_transcript,medications,allergies,conditions,bp,weight,share_url,qr_data_url)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id,created_at,name,email,blood_type,emer_name,emer_phone,emer_email,
+      detected_lang,target_lang,transcript,translated,'','','','','',shareUrl,qr]);
+
+    res.json({ok:true,url:shareUrl});
+  } catch(err){ console.error(err); res.status(500).json({ok:false,error:'Server error'}); }
+});
+
+// Reports list
+app.get('/reports',async(req,res)=>{
+  const rows=await db.all(`SELECT id,created_at,name,email FROM reports ORDER BY created_at DESC`);
+  const baseUrl=getBaseUrl(req);
+  res.send(`<html><body><h1>Reports</h1><ul>${
+    rows.map(r=>`<li>${r.name||'Unknown'} — <a href="${baseUrl}/reports/${r.id}" target="_blank">Open</a></li>`).join('')
+  }</ul><a href="/">+ New Report</a></body></html>`);
+});
+
+// Single report
+app.get('/reports/:id',async(req,res)=>{
+  const row=await db.get(`SELECT * FROM reports WHERE id=?`,[req.params.id]);
+  if(!row) return res.status(404).send('Not found');
+  res.send(`<html><body><h1>Report for ${row.name||'Unknown'}</h1>
+    <p><b>Email:</b> ${row.email||''}</p>
+    <p><b>Transcript:</b> ${row.transcript||''}</p>
+    <p><b>${row.target_lang||'Translated'}:</b> ${row.translated_transcript||''}</p>
+    <div><img src="${row.qr_data_url}" width="120"/></div>
+    <a href="/">New</a> | <a href="/reports">All</a></body></html>`);
+});
+
+// -------------------------
+// Start
+// -------------------------
+app.listen(PORT,()=>console.log(`✅ Backend listening on ${PORT}`));
