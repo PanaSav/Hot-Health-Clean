@@ -1,139 +1,191 @@
-const $ = sel => document.querySelector(sel);
-const btnRec = $('#btnRec');
-const meta = $('#recMeta');
-const out = $('#result');
+/* backend/public/app.js
+   Six mini recorders + Generate Report
+   - Auto-stop timers per category
+   - Tries to upload combined WebM; if 400/format error, falls back to largest part
+*/
+
+// ---- Small helpers ----
+const $  = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
 const errBox = $('#error');
+const okBox  = $('#result');
 
-let mediaRecorder, chunks = [];
-let autoStopTimer = null;
-
-function setError(msg){ errBox.textContent = msg || ''; }
-function setMeta(msg){ meta.textContent = msg || ''; }
+function setErr(msg) { errBox.textContent = msg || ''; }
+function setOK(msg)  { okBox.innerHTML = msg || ''; }
 
 function gatherForm() {
   return {
-    name: $('#pName').value.trim(),
-    email: $('#pEmail').value.trim(),
-    emer_name: $('#eName').value.trim(),
-    emer_phone: $('#ePhone').value.trim(),
-    emer_email: $('#eEmail').value.trim(),
-    blood_type: $('#blood').value.trim(),
-    lang: $('#lang').value.trim()
+    name:       $('#pName')?.value.trim()  || '',
+    email:      $('#pEmail')?.value.trim() || '',
+    blood_type: $('#blood')?.value.trim()  || '',
+    emer_name:  $('#eName')?.value.trim()  || '',
+    emer_phone: $('#ePhone')?.value.trim() || '',
+    emer_email: $('#eEmail')?.value.trim() || '',
+    // optional target language select (add one if you want on the page)
+    lang:       $('#lang')?.value.trim()   || ''
   };
 }
 
+// ---- Categories & limits (ms) ----
+const CATS = [
+  { key:'bp',         label:'Blood Pressure',       limitMs: 20_000 },
+  { key:'meds',       label:'Medications & Dose',   limitMs:180_000 },
+  { key:'allergies',  label:'Allergies',            limitMs: 60_000 },
+  { key:'weight',     label:'Weight',               limitMs: 60_000 },
+  { key:'conditions', label:'Conditions',           limitMs:180_000 },
+  { key:'general',    label:'General Health Note',  limitMs:180_000 },
+];
+
+// Track state per category
+const recorders = new Map(); // key -> { stream, mr, chunks[], timerId, btn }
+const blobs     = new Map(); // key -> Blob
+
+// Wire up the six recorder buttons that exist in index.html (.rec-btn with data-cat)
+function initRecorders() {
+  $$('.rec-btn').forEach((btn) => {
+    const key = btn.getAttribute('data-cat');
+    const spec = CATS.find(c => c.key === key);
+    if (!spec) return;
+
+    btn.addEventListener('click', async () => {
+      const state = recorders.get(key);
+      // If already recording, stop it
+      if (state && state.mr && state.mr.state !== 'inactive') {
+        stopOne(key, 'Stopped.');
+        return;
+      }
+      // Otherwise, start a new recording
+      await startOne(key, spec.limitMs, btn);
+    });
+  });
+}
+
+// Start a recorder for one category
+async function startOne(key, limitMs, btn) {
+  setErr('');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    const mr = new MediaRecorder(stream, { mimeType:'audio/webm' });
+    const chunks = [];
+
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = () => {
+      try {
+        const blob = new Blob(chunks, { type:'audio/webm' });
+        blobs.set(key, blob);
+        btn.textContent = `🎤 ${labelFor(key)} (recorded ${(blob.size/1024).toFixed(1)} KB) — tap to re-record`;
+      } catch (e) {
+        setErr('Failed to finalize recording for ' + labelFor(key));
+      } finally {
+        // cleanup stream tracks
+        stream.getTracks().forEach(t => t.stop());
+      }
+    };
+
+    mr.start();
+    btn.textContent = `⏺️ Stop ${labelFor(key)} (auto-stops in ${(limitMs/1000)|0}s)`;
+
+    const timerId = setTimeout(() => {
+      if (mr.state !== 'inactive') mr.stop();
+    }, limitMs);
+
+    recorders.set(key, { stream, mr, chunks, timerId, btn });
+  } catch (e) {
+    setErr('Mic permission denied or not available for ' + labelFor(key));
+  }
+}
+
+// Stop a specific recorder
+function stopOne(key, note='') {
+  const rec = recorders.get(key);
+  if (!rec) return;
+  if (rec.timerId) clearTimeout(rec.timerId);
+  if (rec.mr && rec.mr.state !== 'inactive') {
+    rec.mr.stop();
+  }
+  rec.btn.textContent = `🎤 ${labelFor(key)} ${note ? '('+note+')' : ''}`;
+}
+
+// Utility: get category label
+function labelFor(key) {
+  const c = CATS.find(x => x.key === key);
+  return c ? c.label : key;
+}
+
+// Try to create a single combined WebM (simple concatenation of blobs).
+// NOTE: This works in many browsers when all parts share the same codec.
+// If the API rejects it, we will fall back to the largest single part.
+function makeCombinedBlob(parts) {
+  if (!parts.length) return null;
+  return new Blob(parts, { type:'audio/webm' });
+}
+
+// Upload FormData -> /upload
 async function uploadBlob(blob) {
   const fd = new FormData();
   fd.append('audio', blob, 'recording.webm');
-  const f = gatherForm();
-  for (const [k,v] of Object.entries(f)) fd.append(k, v);
+  const form = gatherForm();
+  Object.entries(form).forEach(([k,v]) => fd.append(k, v));
 
   const r = await fetch('/upload', { method:'POST', body: fd });
+  // If server returns HTML error page, throw a cleaner message
+  const ct = r.headers.get('content-type') || '';
   if (!r.ok) {
-    const t = await r.text().catch(()=> '');
-    throw new Error(`Upload failed (${r.status}): ${t || 'Server error'}`);
+    let text = await r.text();
+    if (ct.includes('text/html')) text = 'Server error';
+    throw new Error(`Upload failed (${r.status}): ${text}`);
   }
   return r.json();
 }
 
-function renderList(items) {
-  if (!items || !items.length) return 'None';
-  return `<ul class="list">${items.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul>`;
-}
-function escapeHtml(s=''){ return String(s).replace(/[&<>"]/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// Generate report: bundle parts -> upload
+async function onGenerate() {
+  setErr('');
+  setOK('');
 
-function renderResult(payload){
-  const {
-    url, qr, detectedLang, targetLangName,
-    transcript, translatedTranscript,
-    summary
-  } = payload;
+  // Gather available blobs in UI order
+  const available = CATS
+    .map(c => ({ key:c.key, blob: blobs.get(c.key) }))
+    .filter(x => x.blob && x.blob.size > 0);
 
-  const dual = `
-    <div class="section">
-      <h2>Transcript</h2>
-      <div class="dual">
-        <div class="block">
-          <h3>Original${detectedLang ? ` (${escapeHtml(detectedLang)})` : ''}</h3>
-          <p>${escapeHtml(transcript||'')}</p>
-        </div>
-        <div class="block">
-          <h3>${targetLangName ? escapeHtml(targetLangName) : 'Translated'}</h3>
-          <p>${escapeHtml(translatedTranscript || '(no translation)')}</p>
-        </div>
-      </div>
-    </div>`;
-
-  const summaryHtml = `
-    <div class="section">
-      <h2>Summary</h2>
-      <div><b>Medications:</b> ${renderList(summary?.medications)}</div>
-      <div><b>Allergies:</b> ${renderList(summary?.allergies)}</div>
-      <div><b>Conditions:</b> ${renderList(summary?.conditions)}</div>
-      <div><b>Blood Pressure:</b> ${escapeHtml(summary?.bp || '—')}</div>
-      <div><b>Weight:</b> ${escapeHtml(summary?.weight || '—')}</div>
-    </div>`;
-
-  const actions = `
-    <div class="section">
-      <h2>Share & QR</h2>
-      <div class="qr" style="margin-bottom:10px">
-        ${qr ? `<img src="${qr}" alt="QR" style="max-width:180px"/>` : ''}
-        <div style="font-size:13px;color:#555;margin-top:6px">Scan on a phone or use the buttons.</div>
-      </div>
-      <div class="btnbar">
-        <a class="btn" href="${url}" target="_blank" rel="noopener">🔗 Open report</a>
-        <a class="btn" href="mailto:?subject=Hot%20Health%20Report&body=${encodeURIComponent(url)}">✉️ Email</a>
-        <button class="btn" id="btnCopy">🔗 Get link</button>
-      </div>
-    </div>`;
-
-  out.innerHTML = `<div class="result-grid">${summaryHtml}${dual}${actions}</div>`;
-  const btnCopy = document.getElementById('btnCopy');
-  if (btnCopy) btnCopy.onclick = () => navigator.clipboard.writeText(url);
-}
-
-async function startRec() {
-  setError('');
-  setMeta('');
-  chunks = [];
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    setError('Microphone blocked. Allow mic permission and try again.');
+  if (!available.length) {
+    setErr('No audio recorded. Please record at least one section.');
     return;
   }
-  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-  mediaRecorder.onstop = async () => {
-    clearTimeout(autoStopTimer);
-    try {
-      const blob = new Blob(chunks, { type: 'audio/webm' });
-      setMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB`);
-      const json = await uploadBlob(blob);
-      if (!json.ok) throw new Error(json.error || 'Server error');
-      renderResult(json);
-    } catch (e) {
-      setError(e.message || String(e));
-    }
-  };
-  mediaRecorder.start();
-  btnRec.textContent = 'Stop';
-  setMeta('Recording… click Stop when done.');
-  // Auto-stop after 30s if user forgets
-  autoStopTimer = setTimeout(() => { if (mediaRecorder?.state === 'recording') stopRec(); }, 30000);
-}
 
-function stopRec() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-    mediaRecorder.stream.getTracks().forEach(t => t.stop());
-    btnRec.textContent = 'Record';
+  // 1) Try combined
+  try {
+    const combined = makeCombinedBlob(available.map(x => x.blob));
+    if (!combined || combined.size === 0) throw new Error('empty');
+    const res = await uploadBlob(combined);
+    if (!res.ok) throw new Error(res.error || 'Server error');
+    setOK(`✅ Report created. <a href="${res.url}" target="_blank" rel="noopener">Open report</a>`);
+    return;
+  } catch (e) {
+    // fall through to largest single-part upload
+  }
+
+  // 2) Fallback: pick the largest single part
+  try {
+    const largest = available.reduce((a,b)=> (a.blob.size > b.blob.size ? a : b));
+    const res = await uploadBlob(largest.blob);
+    if (!res.ok) throw new Error(res.error || 'Server error');
+    setOK(`✅ Report created (fallback from one section: ${labelFor(largest.key)}). <a href="${res.url}" target="_blank" rel="noopener">Open report</a>`);
+  } catch (e2) {
+    setErr(e2.message || String(e2));
   }
 }
 
-btnRec.addEventListener('click', () => {
-  if (btnRec.textContent === 'Record') startRec();
-  else stopRec();
+// Hook up Generate Report
+function initGenerate() {
+  const genBtn = $('#genBtn');
+  if (!genBtn) return;
+  genBtn.addEventListener('click', onGenerate);
+}
+
+// Initialize on load
+window.addEventListener('DOMContentLoaded', () => {
+  initRecorders();
+  initGenerate();
 });
