@@ -1,14 +1,13 @@
-// One-file backend (login gate, uploads, transcription+translation, dual summary+transcript, QR, reports)
-// SQLITE: single-driver (sqlite3) to avoid recurring package issues.
+// Hot Health backend — Auth gate, uploads, multi-part audio, transcription + dual summary & transcript,
+// QR + share/email/print, reports list and single report.
+// Uses sqlite3 ONLY to avoid dependency churn. No cookie-parser/body-parser needed.
 
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import express from 'express';
-import bodyParser from 'body-parser';
 import multer from 'multer';
-import cookieParser from 'cookie-parser';
 import QRCode from 'qrcode';
 import OpenAI from 'openai';
 import sqlite3pkg from 'sqlite3';
@@ -33,13 +32,35 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.use(cookieParser(SESSION_SECRET));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// Built-in parsers
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 app.use(express.static(PUBLIC_DIR));
 
 // -------------------------
-// DB: sqlite3 only (promisified helpers)
+// Tiny cookie helpers (no cookie-parser)
+// -------------------------
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+  const out = {};
+  header.split(';').forEach(p => {
+    const i = p.indexOf('=');
+    if (i > -1) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1));
+  });
+  return out;
+}
+function setCookie(res, name, value, opts = {}) {
+  const parts = [`${name}=${encodeURIComponent(value)}`];
+  if (opts.httpOnly) parts.push('HttpOnly');
+  if (opts.sameSite) parts.push(`SameSite=${opts.sameSite}`);
+  if (opts.maxAge) parts.push(`Max-Age=${opts.maxAge}`);
+  if (opts.secure) parts.push('Secure');
+  parts.push('Path=/');
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+
+// -------------------------
+// DB: sqlite3 only (promisified)
 // -------------------------
 const sqlite3 = sqlite3pkg.verbose();
 const dbFile = path.join(__dirname, 'data.sqlite');
@@ -47,10 +68,7 @@ const db = new sqlite3.Database(dbFile);
 
 function pRun(sql, params = []) {
   return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) return reject(err);
-      resolve(this);
-    });
+    db.run(sql, params, function (err) { if (err) reject(err); else resolve(this); });
   });
 }
 function pGet(sql, params = []) {
@@ -102,17 +120,15 @@ async function initDB() {
   );`;
   await pExec(createSql);
 
-  // add missing columns safely (older DBs)
+  // Add missing columns safely over time
   const existing = await getColumns('reports');
   const want = [
     ['doctor_name','TEXT'],['doctor_phone','TEXT'],['doctor_email','TEXT'],['doctor_fax','TEXT'],
     ['pharmacy_name','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],['pharmacy_address','TEXT'],
     ['summary_original','TEXT'],['summary_translated','TEXT']
   ];
-  for (const [col,def] of want) {
-    if (!existing.includes(col)) {
-      try { await pRun(`ALTER TABLE reports ADD COLUMN ${col} ${def}`); } catch {}
-    }
+  for (const [col, def] of want) {
+    if (!existing.includes(col)) { try { await pRun(`ALTER TABLE reports ADD COLUMN ${col} ${def}`); } catch {} }
   }
 }
 async function getColumns(table) {
@@ -123,13 +139,9 @@ async function getColumns(table) {
 // -------------------------
 // Auth
 // -------------------------
-function setSession(res, user) {
-  res.cookie('hhsess', user, { httpOnly:true, signed:true, sameSite:'lax' });
-}
-function clearSession(res) { res.clearCookie('hhsess'); }
 function requireAuth(req,res,next){
-  const u = req.signedCookies?.hhsess;
-  if (!u) return res.redirect('/login');
+  const cookies = parseCookies(req);
+  if (cookies.hhsess !== SESSION_SECRET) return res.redirect('/login');
   next();
 }
 
@@ -147,14 +159,25 @@ app.get('/login', (req,res) => {
     </body></html>
   `);
 });
+
 app.post('/login', (req,res) => {
   const { userId, password } = req.body || {};
-  if (userId === USER_ID && password === USER_PASS) { setSession(res, userId); return res.redirect('/'); }
+  if (userId === USER_ID && password === USER_PASS) {
+    setCookie(res, 'hhsess', SESSION_SECRET, { httpOnly:true, sameSite:'Lax' });
+    return res.redirect('/');
+  }
   res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
 });
-app.post('/logout', (req,res) => { clearSession(res); res.redirect('/login'); });
 
+app.post('/logout', (req,res) => {
+  setCookie(res, 'hhsess', '', { httpOnly:true, sameSite:'Lax', maxAge: 0 });
+  res.redirect('/login');
+});
+
+// Protect app & reports
 app.use(['/', '/upload', '/reports', '/reports/*'], requireAuth);
+
+// Home
 app.get('/', (req,res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
 // -------------------------
@@ -169,6 +192,15 @@ function getBaseUrl(req) {
 }
 function uid(n=22){ return crypto.randomBytes(n).toString('base64url').slice(0,n); }
 
+function langName(code='') {
+  const map = {
+    en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
+    ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ'
+  };
+  return map[code] || code || 'Translated';
+}
+
+// Naive parser
 function parseFacts(text) {
   const meds=[], allergies=[], conditions=[];
   const medRx=/([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:)?\s*(\d+)\s*(mg|mcg|g|ml)/gi;
@@ -190,7 +222,7 @@ function parseFacts(text) {
 }
 
 // -------------------------
-// Multer
+// Multer — accept any() to allow future multi-part audio
 // -------------------------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
@@ -199,11 +231,12 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // -------------------------
-// Upload → Transcribe → Summarize → (optional) Translate → Save
+// Upload: supports one or many audio blobs (fields don't matter)
 // -------------------------
-app.post('/upload', upload.single('audio'), async (req,res) => {
+app.post('/upload', upload.any(), async (req,res) => {
   try {
-    if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
+    const files = (req.files || []).filter(f => (f.mimetype || '').startsWith('audio/'));
+    if (!files.length) return res.status(400).json({ ok:false, error:'No audio files' });
 
     const {
       name='', email='', blood_type='',
@@ -213,64 +246,57 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       lang=''
     } = req.body || {};
 
-    // 1) transcribe
-    const stream = fs.createReadStream(req.file.path);
-    let transcript='';
-    try {
-      const tr = await openai.audio.transcriptions.create({ file:stream, model:'gpt-4o-mini-transcribe' });
-      transcript = tr.text?.trim() || '';
-    } catch {
-      const stream2 = fs.createReadStream(req.file.path);
-      const tr2 = await openai.audio.transcriptions.create({ file:stream2, model:'whisper-1' });
-      transcript = tr2.text?.trim() || '';
+    // 1) transcribe all parts → concatenate
+    const parts = [];
+    for (const f of files) {
+      const stream = fs.createReadStream(f.path);
+      let partText = '';
+      try {
+        const tr = await openai.audio.transcriptions.create({ file:stream, model:'gpt-4o-mini-transcribe' });
+        partText = tr.text?.trim() || '';
+      } catch {
+        const stream2 = fs.createReadStream(f.path);
+        const tr2 = await openai.audio.transcriptions.create({ file:stream2, model:'whisper-1' });
+        partText = tr2.text?.trim() || '';
+      }
+      if (partText) parts.push(partText);
     }
+    const transcript = parts.join('\n').trim();
 
-    // 2) summarize (original language)
+    // 2) summarize (original)
     let summary_original = '';
     try {
-      const prompt = `Summarize this clinical self-report into a concise, clear paragraph (one or two sentences). Avoid inventing facts. Text:\n\n${transcript}`;
+      const prompt = `Summarize this clinical self-report into a concise paragraph. Avoid inventing facts.\n\n${transcript}`;
       const rsp = await openai.chat.completions.create({
         model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
         messages: [{ role:'user', content: prompt }],
         temperature: 0.2
       });
       summary_original = rsp.choices?.[0]?.message?.content?.trim() || '';
-    } catch { summary_original = ''; }
+    } catch {}
 
-    // 3) optional translate both transcript & summary
+    // 3) optional translate transcript & summary
     const target_lang = (lang||'').trim();
     const detected_lang = 'auto';
     let translated_transcript = '';
     let summary_translated = '';
     if (target_lang) {
-      const tPrompt = `Translate the following medical note to ${target_lang}. Return only the translated text.\n\n${transcript}`;
-      const sPrompt = `Translate the following summary to ${target_lang}. Return only the translated text.\n\n${summary_original}`;
-
+      const tPrompt = `Translate to ${target_lang}. Return only translated text:\n\n${transcript}`;
+      const sPrompt = `Translate to ${target_lang}. Return only translated text:\n\n${summary_original}`;
       try {
         const [trA, trB] = await Promise.all([
-          openai.chat.completions.create({
-            model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-            messages: [{ role:'user', content: tPrompt }],
-            temperature: 0.2
-          }),
-          openai.chat.completions.create({
-            model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-            messages: [{ role:'user', content: sPrompt }],
-            temperature: 0.2
-          })
+          openai.chat.completions.create({ model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini', messages:[{role:'user',content:tPrompt}], temperature:0.2 }),
+          openai.chat.completions.create({ model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini', messages:[{role:'user',content:sPrompt}], temperature:0.2 })
         ]);
         translated_transcript = trA.choices?.[0]?.message?.content?.trim() || '';
         summary_translated    = trB.choices?.[0]?.message?.content?.trim() || '';
-      } catch {
-        translated_transcript = '';
-        summary_translated    = '';
-      }
+      } catch {}
     }
 
     // 4) parse facts
     const facts = parseFacts(transcript);
 
-    // 5) assemble row
+    // 5) save
     const id = uid(20);
     const created_at = new Date().toISOString();
     const baseUrl = getBaseUrl(req);
@@ -293,21 +319,19 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       share_url, qr_data_url
     };
 
-    // 6) dynamic insert (never mismatched)
     const cols = await getColumns('reports');
-    const insertCols = Object.keys(row).filter(k => cols.includes(k));
-    const placeholders = insertCols.map(()=>'?').join(',');
-    const values = insertCols.map(k => row[k]);
-    const sql = `INSERT INTO reports (${insertCols.join(',')}) VALUES (${placeholders})`;
-    await pRun(sql, values);
+    const keys = Object.keys(row).filter(k => cols.includes(k));
+    const placeholders = keys.map(()=>'?').join(',');
+    await pRun(`INSERT INTO reports (${keys.join(',')}) VALUES (${placeholders})`, keys.map(k => row[k]));
 
-    // 7) respond (include summary + QR so front page can show immediately)
+    // Respond with immediate data for front page
     res.json({
-      ok: true,
+      ok:true,
       id,
       url: share_url,
       qr: qr_data_url,
       target_lang,
+      target_lang_name: langName(target_lang),
       summary_original,
       summary_translated
     });
@@ -325,19 +349,15 @@ app.get('/reports', async (req,res) => {
   const baseUrl = getBaseUrl(req);
   const escape = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-  const items = rows.map(r => {
-    const title = `Report for ${r.name || 'Unknown'}`;
-    const url = `${baseUrl}/reports/${r.id}`;
-    return `
-      <li class="report-item">
-        <div class="title">${escape(title)}</div>
-        <div class="meta">${new Date(r.created_at).toLocaleString()} • ${escape(r.email||'')}</div>
-        <div class="actions">
-          <a class="btn" href="${url}" target="_blank" rel="noopener">Open</a>
-        </div>
-      </li>
-    `;
-  }).join('');
+  const items = rows.map(r => `
+    <li class="report-item">
+      <div class="title">Report for ${escape(r.name || 'Unknown')}</div>
+      <div class="meta">${new Date(r.created_at).toLocaleString()} • ${escape(r.email||'')}</div>
+      <div class="actions">
+        <a class="btn" href="${baseUrl}/reports/${r.id}" target="_blank" rel="noopener">Open</a>
+      </div>
+    </li>
+  `).join('');
 
   res.send(`<!doctype html>
 <html><head>
@@ -371,7 +391,7 @@ app.get('/reports', async (req,res) => {
 });
 
 // -------------------------
-// Single report (dual summary + dual transcript + share/email/copy)
+// Single report (dual summary & transcript + share/email/print)
 // -------------------------
 app.get('/reports/:id', async (req,res) => {
   const r = await pGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
@@ -380,7 +400,8 @@ app.get('/reports/:id', async (req,res) => {
   const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const created = new Date(r.created_at).toLocaleString();
   const mailSubject = encodeURIComponent('Hot Health Report');
-  const mailBody    = encodeURIComponent(`Link: ${r.share_url}\n\nSummary:\nMedications: ${r.medications}\nAllergies: ${r.allergies}\nConditions: ${r.conditions}`);
+  const mailBodyG   = encodeURIComponent(`${r.share_url}\n\n(Generated by Hot Health)`);
+  const mailBodyO   = encodeURIComponent(`${r.share_url}`);
 
   res.send(`<!doctype html>
 <html><head>
@@ -399,7 +420,16 @@ app.get('/reports/:id', async (req,res) => {
   .btn{ text-decoration:none; border:1px solid #dbe7ff; padding:8px 10px; border-radius:8px; background:#f0f5ff; color:#234; font-size:14px; }
   .hint{ font-size:13px; color:#666; }
   .qr { text-align:center; margin:8px 0; }
+  @media print {
+    .btnbar { display:none !important; }
+    header { border:0; }
+    .section { page-break-inside: avoid; }
+  }
 </style>
+<script>
+  function copyLink(){ navigator.clipboard.writeText(${JSON.stringify(r.share_url)}); }
+  function printPage(){ window.print(); }
+</script>
 </head>
 <body>
   <div class="wrap">
@@ -413,15 +443,13 @@ app.get('/reports/:id', async (req,res) => {
 
     <section class="section">
       <div class="btnbar">
-        <a class="btn" href="${esc(r.share_url)}" target="_blank" rel="noopener">🔗 Open Share Link</a>
-        <a class="btn" href="mailto:?subject=${mailSubject}&body=${mailBody}">✉️ Email</a>
-        <button class="btn" onclick="navigator.clipboard.writeText('${esc(r.share_url)}')">📋 Copy Link</button>
-        <a class="btn" href="/" rel="noopener">+ New Report</a>
+        <a class="btn" href="${esc(r.share_url)}" target="_blank" rel="noopener">🔗 Open</a>
+        <button class="btn" onclick="copyLink()">📋 Copy Link</button>
+        <a class="btn" target="_blank" href="https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent('Hot Health Report')}&body=${mailBodyG}">Gmail</a>
+        <a class="btn" target="_blank" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=${encodeURIComponent('Hot Health Report')}&body=${mailBodyO}">Outlook</a>
+        <button class="btn" onclick="printPage()">🖨️ Print</button>
+        <a class="btn" href="/" rel="noopener">+ New</a>
         <a class="btn" href="/reports" rel="noopener">All Reports</a>
-      </div>
-      <div class="qr">
-        <img src="${esc(r.qr_data_url)}" alt="QR Code" style="max-width:180px;"/>
-        <div class="hint">Scan on a phone or use the link.</div>
       </div>
     </section>
 
@@ -440,11 +468,11 @@ app.get('/reports/:id', async (req,res) => {
     <section class="section"><h2>Summary</h2>
       <div class="dual">
         <div class="block">
-          <h3>Original${r.detected_lang?` (${esc(r.detected_lang)})`:''}</h3>
+          <h3>Original</h3>
           <p>${esc(r.summary_original || '(none)')}</p>
         </div>
         <div class="block">
-          <h3>${r.target_lang?`Summary (${esc(r.target_lang)})`:'Summary (translated)'}</h3>
+          <h3>${esc(r.target_lang ? 'Summary ('+ (r.target_lang) +')' : 'Summary (translated)')}</h3>
           <p>${esc(r.summary_translated || '(no translation)')}</p>
         </div>
       </div>
@@ -461,13 +489,17 @@ app.get('/reports/:id', async (req,res) => {
     <section class="section"><h2>Transcript</h2>
       <div class="dual">
         <div class="block">
-          <h3>Original${r.detected_lang?` (${esc(r.detected_lang)})`:''}</h3>
+          <h3>Original</h3>
           <p>${esc(r.transcript || '')}</p>
         </div>
         <div class="block">
-          <h3>${r.target_lang?`Translated (${esc(r.target_lang)})`:'Translated'}</h3>
+          <h3>${esc(langName(r.target_lang))}</h3>
           <p>${esc(r.translated_transcript || '(no translation)')}</p>
         </div>
+      </div>
+      <div class="qr">
+        <img src="${esc(r.qr_data_url)}" alt="QR Code" style="max-width:180px;"/>
+        <div class="hint">Scan the QR on a phone, or use the Open/Email/Copy actions above.</div>
       </div>
     </section>
   </div>
