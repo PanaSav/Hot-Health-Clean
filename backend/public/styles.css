@@ -1,161 +1,89 @@
-/* Base reset */
-body {
-  font-family: Arial, sans-serif;
-  margin: 0;
-  padding: 0;
-  background: #fdfdfd;
-  color: #222;
+/* public/styles.css — aquamarine / purple theme with clean layout & dual blocks */
+
+:root{
+  --ink:#222;
+  --muted:#566;
+  --bg:#f6f8ff;
+  --card:#ffffff;
+  --line:#dbe7ff;
+  --accent:aquamarine;
+  --primary:#0a84ff;
+  --purple:#4b0082;
 }
 
-/* Container */
-.container {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 20px;
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+
+.wrap{max-width:1000px;margin:0 auto;padding:16px}
+.topbar{background:#fff;border-bottom:3px solid var(--accent)}
+.topbar .wrap{display:flex;align-items:center;gap:12px;justify-content:space-between}
+h1{color:var(--purple);margin:0}
+
+nav .btn{margin-left:8px}
+
+.card{
+  background:var(--card);
+  border:2px solid var(--accent);
+  border-radius:12px;
+  padding:16px;
+  margin:16px 0;
 }
 
-/* Headings */
-h1, h2, h3 {
-  color: #4b0082; /* Indigo accent */
-  margin-top: 0;
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+
+label{display:flex;flex-direction:column;gap:6px;font-size:14px;color:#334}
+input,select{
+  padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:15px;background:#fff;color:var(--ink)
 }
 
-/* Header */
-header {
-  border-bottom: 3px solid aquamarine;
-  padding-bottom: 12px;
-  margin-bottom: 20px;
-}
-header h1 {
-  margin: 0;
-}
+.tip{color:var(--muted);font-size:13px;margin-bottom:8px}
 
-/* Sections / Cards */
-.section {
-  background: #fff;
-  border: 2px solid aquamarine;
-  border-radius: 12px;
-  padding: 16px;
-  margin: 16px 0;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+.btn{
+  border:1px solid var(--line);
+  background:#f0f5ff;
+  color:#234;
+  padding:8px 12px;
+  border-radius:8px;
+  text-decoration:none;
+  cursor:pointer;
 }
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn:hover{filter:brightness(.97)}
 
-/* Dual block layout */
-.dual {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.block {
-  flex: 1;
-  min-width: 280px;
-  background: #f8faff;
-  border: 1px solid #dbe7ff;
-  border-radius: 8px;
-  padding: 12px;
-}
-.block h3 {
-  margin-top: 0;
-  font-size: 1.1em;
-  color: #333;
-}
+.error{color:#b00020}
+.muted{color:var(--muted)}
 
-/* Report List items */
-.report-item {
-  background: #fff;
-  border: 1px solid #dbe7ff;
-  border-radius: 10px;
-  padding: 12px;
-  margin: 10px 0;
-  display: grid;
-  gap: 6px;
+.mini-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+  gap:12px;
 }
-.report-item .title {
-  font-weight: 600;
+.mini{
+  border:1px solid var(--line);
+  background:#f9fbff;
+  border-radius:10px;
+  padding:12px;
 }
-.report-item .meta {
-  font-size: 13px;
-  color: #555;
+.mini-head{font-weight:600;margin-bottom:6px}
+.mini-controls{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.icon-btn{
+  font-size:20px;line-height:1;border:1px solid var(--line);background:#fff;padding:6px 10px;border-radius:8px;cursor:pointer
 }
+.icon-btn:active{transform:scale(.98)}
+.timer{font-family:ui-monospace,Consolas,monospace;color:#345}
+.mini-text{width:100%}
 
-/* Buttons */
-.btn, button {
-  text-decoration: none;
-  display: inline-block;
-  border: 1px solid #dbe7ff;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: #f0f5ff;
-  color: #234;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.btn:hover, button:hover {
-  background: #e0ebff;
-}
+pre{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px}
 
-/* Icon buttons (mic, stop) */
-.mic-btn {
-  border: none;
-  background: #f8faff;
-  cursor: pointer;
-  font-size: 18px;
-  padding: 6px 8px;
-  border-radius: 50%;
-  transition: background 0.2s;
-}
-.mic-btn:hover {
-  background: #dbe7ff;
-}
-.mic-btn.recording {
-  color: red;
-}
+/* Report list (also inlined on page but safe here) */
+.report-item{}
 
-/* Recorder grid */
-.recorder-grid {
-  display: grid;
-  gap: 14px;
-}
-.recorder-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.recorder-item label {
-  flex: 0 0 160px;
-  font-weight: bold;
-}
-.recorder-item input, .recorder-item textarea, .recorder-item select {
-  flex: 1;
-  padding: 8px;
-  border: 1px solid #cfd8ea;
-  border-radius: 6px;
-  font-size: 14px;
-}
-
-/* QR block */
-.qr {
-  text-align: center;
-  margin: 12px 0;
-}
-.qr img {
-  max-width: 180px;
-}
-
-/* Button bar */
-.btnbar {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 12px;
-  align-items: center;
-}
-
-/* Footer */
-footer {
-  margin-top: 20px;
-  font-size: 0.9em;
-  color: #555;
-  text-align: center;
+/* Print tweaks */
+@media print {
+  .topbar, nav, .btn, .tip { display:none !important; }
+  body { background:#fff; }
+  .card { page-break-inside: avoid; }
 }

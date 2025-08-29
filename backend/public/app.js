@@ -1,160 +1,161 @@
-// frontend app logic: six mini recorders + inputs, upload as audios[] + typed_notes
+// public/app.js
+// Six mini recorders + typed inputs. Auto-stop timers. Uploads all blobs + fields to /upload.
 
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => Array.from(document.querySelectorAll(s));
+const $  = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
 
 const errBox = $('#error');
-const outBox = $('#result');
+const out    = $('#result');
+const genBtn = $('#btnGen');
 
-// state for recorders
-const state = {
-  recs: {},   // key -> { mediaRecorder, chunks, timer, running }
-  blobs: {}   // key -> Blob
+function setError(msg=''){ errBox.textContent = msg; }
+function setResult(html=''){ out.innerHTML = html; }
+
+function gatherProfile() {
+  return {
+    name: $('#pName')?.value?.trim() || '',
+    email: $('#pEmail')?.value?.trim() || '',
+    phone: $('#pPhone')?.value?.trim() || '',
+    blood_type: $('#blood')?.value?.trim() || '',
+    emer_name: $('#eName')?.value?.trim() || '',
+    emer_phone: $('#ePhone')?.value?.trim() || '',
+    emer_email: $('#eEmail')?.value?.trim() || '',
+    doctor_name: $('#dName')?.value?.trim() || 'N/A',
+    doctor_phone: $('#dPhone')?.value?.trim() || '',
+    doctor_email: $('#dEmail')?.value?.trim() || '',
+    doctor_fax: $('#dFax')?.value?.trim() || '',
+    pharmacy_name: $('#phName')?.value?.trim() || '',
+    pharmacy_phone: $('#phPhone')?.value?.trim() || '',
+    pharmacy_fax: $('#phFax')?.value?.trim() || '',
+    pharmacy_address: $('#phAddr')?.value?.trim() || '',
+    lang: $('#lang')?.value?.trim() || ''
+  };
+}
+
+function gatherTypedNotes() {
+  return {
+    bp_note: $('#txt-bp')?.value?.trim() || '',
+    meds_note: $('#txt-meds')?.value?.trim() || '',
+    allergies_note: $('#txt-allergies')?.value?.trim() || '',
+    weight_note: $('#txt-weight')?.value?.trim() || '',
+    conditions_note: $('#txt-conditions')?.value?.trim() || '',
+    general_note: $('#txt-general')?.value?.trim() || ''
+  };
+}
+
+// Recorder controller for each mini block
+class MiniRecorder {
+  constructor(key, maxSeconds = 30) {
+    this.key = key;
+    this.max = maxSeconds;
+    this.btn = document.querySelector(`.rec[data-key="${key}"]`);
+    this.timerEl = document.querySelector(`#tm-${key}`);
+    this.mediaRecorder = null;
+    this.chunks = [];
+    this.elapsed = 0;
+    this.tid = null;
+    if (this.btn) this.btn.addEventListener('click', () => this.toggle());
+  }
+
+  async start() {
+    setError('');
+    this.chunks = [];
+    this.elapsed = 0;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('This browser cannot record audio. Use Chrome/Edge or iOS Safari 14+.');
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setError('Microphone blocked. Allow mic permission and try again.');
+      return;
+    }
+    this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+    this.mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
+    this.mediaRecorder.onstop = () => { stream.getTracks().forEach(t => t.stop()); };
+    this.mediaRecorder.start();
+    this.btn.textContent = '⏹️';
+    this.tick();
+  }
+
+  stop() {
+    if (!this.mediaRecorder) return;
+    if (this.tid) { clearInterval(this.tid); this.tid = null; }
+    this.mediaRecorder.stop();
+    this.btn.textContent = '🎙️';
+  }
+
+  toggle() {
+    if (!this.mediaRecorder || this.mediaRecorder.state === 'inactive') this.start();
+    else this.stop();
+  }
+
+  tick() {
+    this.tid = setInterval(() => {
+      this.elapsed++;
+      const mm = String(Math.floor(this.elapsed / 60)).padStart(2,'0');
+      const ss = String(this.elapsed % 60).padStart(2,'0');
+      if (this.timerEl) this.timerEl.textContent = `${mm}:${ss}`;
+      if (this.elapsed >= this.max) this.stop();
+    }, 1000);
+  }
+
+  blob() {
+    if (!this.chunks.length) return null;
+    return new Blob(this.chunks, { type: 'audio/webm' });
+  }
+}
+
+// Init recorders
+const recs = {
+  bp:         new MiniRecorder('bp', 30),
+  meds:       new MiniRecorder('meds', 180),
+  allergies:  new MiniRecorder('allergies', 60),
+  weight:     new MiniRecorder('weight', 60),
+  conditions: new MiniRecorder('conditions', 180),
+  general:    new MiniRecorder('general', 180)
 };
 
-function setError(msg){ errBox.textContent = msg || ''; }
-function setResult(html){ outBox.innerHTML = html || ''; }
+async function uploadAll() {
+  const fd = new FormData();
 
-function gatherPatient() {
-  return {
-    name: $('#pName').value.trim(),
-    email: $('#pEmail').value.trim(),
-    emer_name: $('#eName').value.trim(),
-    emer_phone: $('#ePhone').value.trim(),
-    emer_email: $('#eEmail').value.trim(),
-    blood_type: $('#blood').value.trim(),
-    lang: $('#lang').value.trim(),
-    doctor_name: $('#dName').value.trim(),
-    doctor_phone: $('#dPhone').value.trim(),
-    doctor_email: $('#dEmail').value.trim(),
-    doctor_fax: $('#dFax').value.trim(),
-    pharmacy_name: $('#phName').value.trim(),
-    pharmacy_phone: $('#phPhone').value.trim(),
-    pharmacy_fax: $('#phFax').value.trim(),
-    pharmacy_address: $('#phAddr').value.trim()
-  };
-}
+  // Profile fields
+  const prof = gatherProfile();
+  Object.entries(prof).forEach(([k,v]) => fd.append(k, v));
 
-function typedNotesBundle() {
-  const bp = $('#bpText').value.trim();
-  const meds = $('#medsText').value.trim();
-  const allergies = $('#allergiesText').value.trim();
-  const weight = $('#weightText').value.trim();
-  const cond = $('#conditionsText').value.trim();
-  const general = $('#generalText').value.trim();
+  // Typed notes
+  const notes = gatherTypedNotes();
+  Object.entries(notes).forEach(([k,v]) => fd.append(k, v));
 
-  const pieces = [];
-  if (bp) pieces.push(`Blood pressure: ${bp}`);
-  if (meds) pieces.push(`Medications: ${meds}`);
-  if (allergies) pieces.push(`Allergies: ${allergies}`);
-  if (weight) pieces.push(`Weight: ${weight}`);
-  if (cond) pieces.push(`Conditions: ${cond}`);
-  if (general) pieces.push(`General: ${general}`);
-
-  return pieces.join('\n');
-}
-
-async function startMic(btn, key, limitSec) {
-  setError('');
-  if (!navigator.mediaDevices || !window.MediaRecorder) {
-    setError('This browser does not support audio recording.');
-    return;
-  }
-  if (state.recs[key]?.running) return; // already running
-
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch {
-    setError('Microphone blocked. Allow mic permission and try again.');
-    return;
+  // Audio blobs (append multiple fields all as 'audio')
+  let count = 0;
+  for (const key of Object.keys(recs)) {
+    const b = recs[key].blob();
+    if (b) { fd.append('audio', b, `${key}.webm`); count++; }
   }
 
-  const rec = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-  state.recs[key] = { mediaRecorder: rec, chunks: [], timer: null, running: true };
-  btn.textContent = '⏹️';
-  btn.classList.add('recording');
-
-  rec.ondataavailable = (e) => {
-    if (e.data && e.data.size) state.recs[key].chunks.push(e.data);
-  };
-
-  rec.onstop = () => {
-    // build blob
-    try {
-      const blob = new Blob(state.recs[key].chunks, { type: 'audio/webm' });
-      state.blobs[key] = blob;
-    } catch {}
-    // cleanup
-    stream.getTracks().forEach(t => t.stop());
-    clearTimeout(state.recs[key].timer);
-    state.recs[key].running = false;
-    btn.textContent = '🎙️';
-    btn.classList.remove('recording');
-  };
-
-  // auto-stop timer
-  state.recs[key].timer = setTimeout(() => {
-    if (rec.state !== 'inactive') rec.stop();
-  }, limitSec * 1000);
-
-  rec.start();
-}
-
-function stopMic(key) {
-  const r = state.recs[key];
-  if (r && r.mediaRecorder && r.mediaRecorder.state !== 'inactive') {
-    r.mediaRecorder.stop();
+  if (!count) {
+    setError('Please record at least one section (or type notes).');
   }
+
+  const r = await fetch('/upload', { method: 'POST', body: fd });
+  if (!r.ok) {
+    // May return HTML error page; avoid JSON.parse crash
+    const text = await r.text().catch(()=> '');
+    throw new Error(text || `Upload failed (${r.status})`);
+  }
+  return r.json();
 }
 
-$$('.mic').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const key = btn.getAttribute('data-key');
-    const limit = Number(btn.getAttribute('data-limit') || '30');
-    const r = state.recs[key];
-    if (!r || !r.running) startMic(btn, key, limit);
-    else stopMic(key);
-  });
-});
-
-$('#btnGenerate').addEventListener('click', async () => {
+genBtn?.addEventListener('click', async () => {
   try {
     setError('');
-    setResult('Uploading…');
-
-    const fd = new FormData();
-    // append blobs
-    for (const [key, blob] of Object.entries(state.blobs)) {
-      if (blob && blob.size) {
-        fd.append('audios[]', blob, `${key}.webm`);
-      }
-    }
-
-    // append typed notes (merged server-side)
-    const typed = typedNotesBundle();
-    if (typed) fd.append('typed_notes', typed);
-
-    // patient fields
-    const p = gatherPatient();
-    for (const [k,v] of Object.entries(p)) fd.append(k, v);
-
-    const r = await fetch('/upload', { method: 'POST', body: fd });
-    if (!r.ok) {
-      // Try to read JSON; if HTML error, throw text
-      const text = await r.text();
-      try {
-        const j = JSON.parse(text);
-        throw new Error(j.error || ('Upload failed: ' + r.status));
-      } catch {
-        throw new Error(text);
-      }
-    }
-    const json = await r.json();
+    setResult('Uploading & generating…');
+    const json = await uploadAll();
     if (!json.ok) throw new Error(json.error || 'Server error');
-
     setResult(`✅ Created. <a href="${json.url}" target="_blank" rel="noopener">Open report</a>`);
-
   } catch (e) {
     setError(e.message || String(e));
     setResult('');
