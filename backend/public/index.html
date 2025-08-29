@@ -5,38 +5,15 @@
   <title>Hot Health — One Port</title>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <link rel="stylesheet" href="/styles.css"/>
-  <style>
-    body { background:#f7f9ff; color:#223; }
-    header { padding:16px 0; border-bottom:3px solid aquamarine; }
-    h1 { color:#4b0082; margin:0; }
-    .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px 24px; }
-    .card { background:#fff; border:2px solid aquamarine; border-radius:12px; padding:16px; margin:16px 0; }
-    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-    input, select { padding:10px 12px; border:1px solid #cfd8ea; border-radius:8px; font-size:15px; flex:1; min-width:180px;}
-    button { padding:10px 14px; border-radius:8px; border:0; background:#0a84ff; color:#fff; font-size:15px; cursor:pointer; }
-    button:hover { filter:brightness(0.96); }
-    .muted { color:#666; font-size:13px; }
-    .error { color:#b00020; margin-top:6px; }
-    .btnbar { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
-    .btn-secondary { background:#f0f5ff; color:#234; border:1px solid #dbe7ff; }
-    .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-    .mic-btn { background:#f0f5ff; color:#234; border:1px solid #dbe7ff; }
-    .field { position:relative; flex:1; min-width:220px; }
-    .field .mic-btn { position:absolute; right:6px; top:6px; padding:6px 8px; }
-    #result .pill { display:inline-block; margin-right:6px; margin-top:6px; padding:4px 8px; border:1px solid #dbe7ff; border-radius:999px; background:#f0f5ff; }
-    @media (max-width:720px){ .two { grid-template-columns:1fr; } }
-  </style>
 </head>
 <body>
   <div class="wrap">
-    <header>
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h1>Hot Health — One Port</h1>
-        <nav class="btnbar">
-          <a class="btn-secondary" href="/reports">Open All Reports</a>
-          <form method="POST" action="/logout"><button class="btn-secondary" type="submit">Log out</button></form>
-        </nav>
-      </div>
+    <header class="header">
+      <h1>Hot Health — One Port</h1>
+      <nav class="btnbar">
+        <a class="btn secondary" href="/reports">Open All Reports</a>
+        <form method="POST" action="/logout"><button class="btn secondary" type="submit">Log out</button></form>
+      </nav>
     </header>
 
     <main>
@@ -51,64 +28,34 @@
             <input id="pEmail" placeholder="Patient Email">
             <button class="mic-btn" data-target="pEmail">🎤</button>
           </div>
-          <select id="blood" style="min-width:160px">
+          <select id="blood" class="select">
             <option value="">Blood Type</option>
             <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
             <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
           </select>
         </div>
         <div class="row">
-          <div class="field">
-            <input id="eName"  placeholder="Emergency Contact Name">
-            <button class="mic-btn" data-target="eName">🎤</button>
-          </div>
-          <div class="field">
-            <input id="ePhone" placeholder="Emergency Contact Phone">
-            <button class="mic-btn" data-target="ePhone">🎤</button>
-          </div>
-          <div class="field">
-            <input id="eEmail" placeholder="Emergency Contact Email">
-            <button class="mic-btn" data-target="eEmail">🎤</button>
-          </div>
+          <div class="field"><input id="eName"  placeholder="Emergency Contact Name"><button class="mic-btn" data-target="eName">🎤</button></div>
+          <div class="field"><input id="ePhone" placeholder="Emergency Contact Phone"><button class="mic-btn" data-target="ePhone">🎤</button></div>
+          <div class="field"><input id="eEmail" placeholder="Emergency Contact Email"><button class="mic-btn" data-target="eEmail">🎤</button></div>
         </div>
         <div class="row">
-          <div class="field">
-            <input id="dName"  placeholder="Doctor Name">
-            <button class="mic-btn" data-target="dName">🎤</button>
-          </div>
-          <div class="field">
-            <input id="dPhone" placeholder="Doctor Phone / Fax">
-            <button class="mic-btn" data-target="dPhone">🎤</button>
-          </div>
-          <div class="field">
-            <input id="dEmail" placeholder="Doctor Email">
-            <button class="mic-btn" data-target="dEmail">🎤</button>
-          </div>
+          <div class="field"><input id="dName"  placeholder="Doctor Name"><button class="mic-btn" data-target="dName">🎤</button></div>
+          <div class="field"><input id="dPhone" placeholder="Doctor Phone / Fax"><button class="mic-btn" data-target="dPhone">🎤</button></div>
+          <div class="field"><input id="dEmail" placeholder="Doctor Email"><button class="mic-btn" data-target="dEmail">🎤</button></div>
         </div>
         <div class="row">
-          <div class="field">
-            <input id="phName"    placeholder="Pharmacy Name">
-            <button class="mic-btn" data-target="phName">🎤</button>
-          </div>
-          <div class="field">
-            <input id="phPhone"   placeholder="Pharmacy Phone">
-            <button class="mic-btn" data-target="phPhone">🎤</button>
-          </div>
-          <div class="field">
-            <input id="phFax"     placeholder="Pharmacy Fax">
-            <button class="mic-btn" data-target="phFax">🎤</button>
-          </div>
-          <div class="field">
-            <input id="phAddress" placeholder="Pharmacy Address">
-            <button class="mic-btn" data-target="phAddress">🎤</button>
-          </div>
+          <div class="field"><input id="phName"    placeholder="Pharmacy Name"><button class="mic-btn" data-target="phName">🎤</button></div>
+          <div class="field"><input id="phPhone"   placeholder="Pharmacy Phone"><button class="mic-btn" data-target="phPhone">🎤</button></div>
+          <div class="field"><input id="phFax"     placeholder="Pharmacy Fax"><button class="mic-btn" data-target="phFax">🎤</button></div>
+          <div class="field"><input id="phAddress" placeholder="Pharmacy Address"><button class="mic-btn" data-target="phAddress">🎤</button></div>
         </div>
       </section>
 
       <section class="card">
         <h2>Record Health Status</h2>
-        <div class="row">
-          <select id="lang" style="min-width:220px">
+        <div class="row" style="align-items:center; gap:12px;">
+          <select id="lang" class="select">
             <option value="">— No translation at upload —</option>
             <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
             <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
@@ -116,22 +63,87 @@
             <option value="ja">日本語</option><option value="ko">한국어</option>
             <option value="he">עברית</option><option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option>
           </select>
-          <button id="btnRec">Record</button>
-          <div id="recHint" class="muted">Tip: speak meds, allergies, conditions, BP, weight…</div>
+          <div class="muted">Tip: speak meds, allergies, conditions, BP, weight…</div>
         </div>
-        <div id="recMeta" class="muted"></div>
-        <div id="error" class="error"></div>
+
+        <!-- Six mini recorders with adjacent input fields -->
+        <div class="mini-grid">
+          <div class="mini">
+            <label>Blood Pressure</label>
+            <div class="mini-row">
+              <input id="bpText" placeholder="e.g., 120 over 75"/>
+              <button class="mic-btn" data-target="bpText">🎤</button>
+              <button class="rec-btn" id="recBP" data-ms="20000">Record</button>
+              <span class="muted" id="metaBP"></span>
+            </div>
+          </div>
+
+          <div class="mini">
+            <label>Medications & Dose</label>
+            <div class="mini-row">
+              <input id="medsText" placeholder="e.g., Lisinopril 10 mg; Metformin 500 mg"/>
+              <button class="mic-btn" data-target="medsText">🎤</button>
+              <button class="rec-btn" id="recMeds" data-ms="180000">Record</button>
+              <span class="muted" id="metaMeds"></span>
+            </div>
+          </div>
+
+          <div class="mini">
+            <label>Allergies</label>
+            <div class="mini-row">
+              <input id="allergiesText" placeholder="e.g., mold, dust, penicillin"/>
+              <button class="mic-btn" data-target="allergiesText">🎤</button>
+              <button class="rec-btn" id="recAllergies" data-ms="60000">Record</button>
+              <span class="muted" id="metaAllergies"></span>
+            </div>
+          </div>
+
+          <div class="mini">
+            <label>Weight</label>
+            <div class="mini-row">
+              <input id="weightText" placeholder="e.g., 200 pounds / 90 kg"/>
+              <button class="mic-btn" data-target="weightText">🎤</button>
+              <button class="rec-btn" id="recWeight" data-ms="60000">Record</button>
+              <span class="muted" id="metaWeight"></span>
+            </div>
+          </div>
+
+          <div class="mini">
+            <label>Conditions</label>
+            <div class="mini-row">
+              <input id="conditionsText" placeholder="e.g., kidney disease; asthma"/>
+              <button class="mic-btn" data-target="conditionsText">🎤</button>
+              <button class="rec-btn" id="recConditions" data-ms="180000">Record</button>
+              <span class="muted" id="metaConditions"></span>
+            </div>
+          </div>
+
+          <div class="mini">
+            <label>General Health Note</label>
+            <div class="mini-row">
+              <input id="generalText" placeholder="Any other notes…"/>
+              <button class="mic-btn" data-target="generalText">🎤</button>
+              <button class="rec-btn" id="recGeneral" data-ms="180000">Record</button>
+              <span class="muted" id="metaGeneral"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:12px;">
+          <button id="btnGenerate">Generate Report</button>
+          <div id="error" class="error"></div>
+        </div>
       </section>
 
       <section class="card">
         <h2>Shareable Report</h2>
-        <div id="result" class="muted">Record and stop to generate a report + QR.</div>
+        <div id="result" class="muted">Use the mini recorders above and click Generate Report.</div>
         <div class="btnbar" id="shareBtns" style="display:none">
-          <a id="openLink" class="btn-secondary" target="_blank" rel="noopener">🔗 Open</a>
-          <button id="copyLink" class="btn-secondary">📋 Copy</button>
-          <a id="gmailLink" class="btn-secondary" target="_blank">Gmail</a>
-          <a id="outlookLink" class="btn-secondary" target="_blank">Outlook</a>
-          <button id="printBtn" class="btn-secondary" onclick="window.print()">🖨️ Print</button>
+          <a id="openLink" class="btn secondary" target="_blank" rel="noopener">🔗 Open</a>
+          <button id="copyLink" class="btn secondary">📋 Copy</button>
+          <a id="gmailLink" class="btn secondary" target="_blank">Gmail</a>
+          <a id="outlookLink" class="btn secondary" target="_blank">Outlook</a>
+          <button id="printBtn" class="btn secondary" onclick="window.print()">🖨️ Print</button>
         </div>
       </section>
 
@@ -149,6 +161,6 @@
   </div>
 
   <script src="/voice.js"></script>
-  <script src="/app.js"></script>
+  <script src="/app-six.js"></script>
 </body>
 </html>

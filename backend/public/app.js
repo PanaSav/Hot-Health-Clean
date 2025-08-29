@@ -1,30 +1,25 @@
-const $ = sel => document.querySelector(sel);
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
 
-const btnRec = $('#btnRec');
-const meta   = $('#recMeta');
-const out    = $('#result');
-const errBox = $('#error');
+const errBox   = $('#error');
+const resultEl = $('#result');
+const shareBar = $('#shareBtns');
+const openLink = $('#openLink');
+const copyLink = $('#copyLink');
+const gmailLink= $('#gmailLink');
+const outlook  = $('#outlookLink');
 
-const openLink   = $('#openLink');
-const copyLink   = $('#copyLink');
-const gmailLink  = $('#gmailLink');
-const outlookLink= $('#outlookLink');
-const shareBar   = $('#shareBtns');
-
-const dualSumm = $('#dualSumm');
+const sumWrap  = $('#dualSumm');
 const sumOrig  = $('#sumOrig');
 const sumTrans = $('#sumTrans');
 const sumLang  = $('#sumLang');
 
-let mediaRecorder, chunks = [];
-let autoStopTimer = null;
+function setError(m){ errBox.textContent = m || ''; }
 
-function setError(msg){ errBox.textContent = msg || ''; }
-function setMeta(msg){ meta.textContent = msg || ''; }
-
-function gatherForm() {
+// ----- gather patient/contacts -----
+function gatherCommon() {
   return {
-    name: $('#pName').value.trim(),
+    name:  $('#pName').value.trim(),
     email: $('#pEmail').value.trim(),
     blood_type: $('#blood').value.trim(),
 
@@ -46,85 +41,130 @@ function gatherForm() {
   };
 }
 
-async function uploadBlob(blob) {
-  const fd = new FormData();
-  // One audio part for now; backend supports many
-  fd.append('audio', blob, 'recording.webm');
-  const f = gatherForm();
-  for (const [k,v] of Object.entries(f)) fd.append(k, v);
+// ----- Six mini recorders -----
+function makeRecorder({btnId, metaId, maxMs}) {
+  const btn  = document.getElementById(btnId);
+  const meta = document.getElementById(metaId);
+  let mr = null, chunks = [], timer = null;
 
-  const r = await fetch('/upload', { method:'POST', body: fd });
-  if (!r.ok) throw new Error(`Server error`);
-  return r.json();
-}
-
-function startAutoStop(ms) {
-  clearTimeout(autoStopTimer);
-  autoStopTimer = setTimeout(() => { if (btnRec.textContent === 'Stop') stopRec(); }, ms);
-}
-
-async function startRec() {
-  setError('');
-  setMeta('');
-  chunks = [];
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    setError('Microphone blocked. Allow mic permission and try again.');
-    return;
+  function stop() {
+    if (mr && mr.state !== 'inactive') {
+      mr.stop();
+      mr.stream.getTracks().forEach(t=>t.stop());
+    }
+    clearTimeout(timer);
+    btn.textContent = 'Record';
   }
-  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-  mediaRecorder.onstop = async () => {
-    try {
-      clearTimeout(autoStopTimer);
-      const blob = new Blob(chunks, { type: 'audio/webm' });
-      setMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB`);
-      const json = await uploadBlob(blob);
-      if (!json.ok) throw new Error(json.error || 'Server error');
 
-      // Result + QR
-      out.innerHTML = `
-        <div><b>Report:</b> <a href="${json.url}" target="_blank" rel="noopener">${json.url}</a></div>
-        ${json.qr ? `<div style="margin-top:8px"><img src="${json.qr}" alt="QR" style="max-width:160px"/></div>` : ''}
-      `;
+  btn.addEventListener('click', async () => {
+    setError('');
+    if (btn.textContent === 'Stop') return stop();
 
-      // Share buttons
-      openLink.href = json.url;
-      copyLink.onclick = () => navigator.clipboard.writeText(json.url);
-      gmailLink.href   = `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent('Hot Health Report')}&body=${encodeURIComponent(json.url)}`;
-      outlookLink.href = `https://outlook.live.com/owa/?path=/mail/action/compose&subject=${encodeURIComponent('Hot Health Report')}&body=${encodeURIComponent(json.url)}`;
-      shareBar.style.display = 'flex';
+    // start
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio:true }); }
+    catch { setError('Mic blocked. Allow microphone and try again.'); return; }
 
-      // Dual summary (original + translated)
-      if (json.summary_original || json.summary_translated) {
-        sumOrig.textContent = json.summary_original || '(none)';
-        sumTrans.textContent = json.summary_translated || '(no translation)';
-        sumLang.textContent = json.target_lang_name || json.target_lang || 'Translated';
-        dualSumm.style.display = 'grid';
-      } else {
-        dualSumm.style.display = 'none';
-      }
-    } catch (e) {
-      setError(e.message || String(e));
+    chunks = [];
+    mr = new MediaRecorder(stream, { mimeType:'audio/webm' });
+    mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = () => {
+      clearTimeout(timer);
+      const blob = new Blob(chunks, { type:'audio/webm' });
+      meta.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB`;
+      btn.dataset.blobUrl = URL.createObjectURL(blob);  // save for collection
+    };
+    mr.start();
+    btn.textContent = 'Stop';
+    meta.textContent = `Recording… (auto-stops in ${Math.round(maxMs/1000)}s)`;
+    timer = setTimeout(stop, maxMs);
+  });
+
+  return {
+    collectBlob() {
+      const url = btn.dataset.blobUrl;
+      if (!url) return null;
+      return { blobUrl:url, metaEl:meta };
+    },
+    clear() {
+      if (btn.dataset.blobUrl) URL.revokeObjectURL(btn.dataset.blobUrl);
+      delete btn.dataset.blobUrl;
+      meta.textContent = '';
     }
   };
-  mediaRecorder.start();
-  btnRec.textContent = 'Stop';
-  setMeta('Recording… click Stop when done (auto-stops in 30s).');
-  startAutoStop(30_000);
 }
 
-function stopRec() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-    mediaRecorder.stream.getTracks().forEach(t => t.stop());
-    btnRec.textContent = 'Record';
+const recBP         = makeRecorder({ btnId:'recBP',         metaId:'metaBP',         maxMs:20000  });
+const recMeds       = makeRecorder({ btnId:'recMeds',       metaId:'metaMeds',       maxMs:180000 });
+const recAllergies  = makeRecorder({ btnId:'recAllergies',  metaId:'metaAllergies',  maxMs:60000  });
+const recWeight     = makeRecorder({ btnId:'recWeight',     metaId:'metaWeight',     maxMs:60000  });
+const recConditions = makeRecorder({ btnId:'recConditions', metaId:'metaConditions', maxMs:180000 });
+const recGeneral    = makeRecorder({ btnId:'recGeneral',    metaId:'metaGeneral',    maxMs:180000 });
+
+const allRecorders = [recBP, recMeds, recAllergies, recWeight, recConditions, recGeneral];
+
+// ----- Generate Report -----
+$('#btnGenerate').addEventListener('click', async () => {
+  try {
+    setError('');
+    resultEl.textContent = 'Uploading…';
+    shareBar.style.display = 'none';
+    sumWrap.style.display = 'none';
+
+    // Build FormData
+    const fd = new FormData();
+
+    // Add audio blobs (if any)
+    for (const r of allRecorders) {
+      const found = r.collectBlob();
+      if (!found) continue;
+      const blob = await (await fetch(found.blobUrl)).blob();
+      fd.append('audio', blob, 'part.webm'); // backend accepts multiple 'audio'
+    }
+
+    // Merge typed inputs into one note (backend appends to transcript)
+    const typed = [
+      $('#bpText').value.trim()         ? `Blood Pressure: ${$('#bpText').value.trim()}` : '',
+      $('#medsText').value.trim()       ? `Medications: ${$('#medsText').value.trim()}`  : '',
+      $('#allergiesText').value.trim()  ? `Allergies: ${$('#allergiesText').value.trim()}`: '',
+      $('#weightText').value.trim()     ? `Weight: ${$('#weightText').value.trim()}`     : '',
+      $('#conditionsText').value.trim() ? `Conditions: ${$('#conditionsText').value.trim()}`: '',
+      $('#generalText').value.trim()    ? `General Note: ${$('#generalText').value.trim()}`: ''
+    ].filter(Boolean).join('\n');
+    if (typed) fd.append('typed_notes', typed);
+
+    // Add common fields
+    const common = gatherCommon();
+    for (const [k,v] of Object.entries(common)) fd.append(k, v);
+
+    // POST
+    const resp = await fetch('/upload', { method:'POST', body: fd });
+    if (!resp.ok) throw new Error('Server error');
+    const json = await resp.json();
+    if (!json.ok) throw new Error(json.error || 'Upload failed');
+
+    // Show result & share controls
+    resultEl.innerHTML = `
+      <div><b>Report:</b> <a href="${json.url}" target="_blank" rel="noopener">${json.url}</a></div>
+      ${json.qr ? `<div style="margin-top:8px"><img src="${json.qr}" alt="QR" style="max-width:160px"/></div>` : ''}
+    `;
+    openLink.href = json.url;
+    copyLink.onclick = () => navigator.clipboard.writeText(json.url);
+    gmailLink.href  = `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent('Hot Health Report')}&body=${encodeURIComponent(json.url)}`;
+    outlook.href    = `https://outlook.live.com/owa/?path=/mail/action/compose&subject=${encodeURIComponent('Hot Health Report')}&body=${encodeURIComponent(json.url)}`;
+    shareBar.style.display = 'flex';
+
+    if (json.summary_original || json.summary_translated) {
+      sumOrig.textContent  = json.summary_original || '(none)';
+      sumTrans.textContent = json.summary_translated || '(no translation)';
+      sumLang.textContent  = json.target_lang_name || json.target_lang || 'Translated';
+      sumWrap.style.display = 'grid';
+    }
+
+    // clear recorder metadata
+    allRecorders.forEach(r => r.clear());
+  } catch (e) {
+    setError(e.message || String(e));
+    resultEl.textContent = '—';
   }
-}
-
-btnRec.addEventListener('click', () => {
-  if (btnRec.textContent === 'Record') startRec();
-  else stopRec();
 });

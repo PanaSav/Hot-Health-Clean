@@ -1,6 +1,6 @@
 // Hot Health backend — Auth gate, uploads, multi-part audio, transcription + dual summary & transcript,
 // QR + share/email/print, reports list and single report.
-// Uses sqlite3 ONLY to avoid dependency churn. No cookie-parser/body-parser needed.
+// Uses sqlite3 ONLY to avoid dependency churn.
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -16,9 +16,6 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// -------------------------
-// Config
-// -------------------------
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
 
@@ -32,14 +29,11 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Built-in parsers
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 app.use(express.static(PUBLIC_DIR));
 
-// -------------------------
-// Tiny cookie helpers (no cookie-parser)
-// -------------------------
+// tiny cookies (no cookie-parser)
 function parseCookies(req) {
   const header = req.headers.cookie || '';
   const out = {};
@@ -59,31 +53,15 @@ function setCookie(res, name, value, opts = {}) {
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
-// -------------------------
-// DB: sqlite3 only (promisified)
-// -------------------------
+// sqlite3 (promisified)
 const sqlite3 = sqlite3pkg.verbose();
 const dbFile = path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(dbFile);
 
-function pRun(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) { if (err) reject(err); else resolve(this); });
-  });
-}
-function pGet(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-  });
-}
-function pAll(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
-  });
-}
-function pExec(sql) {
-  return new Promise((resolve, reject) => db.exec(sql, err => (err ? reject(err) : resolve())));
-}
+const pRun = (sql, params=[]) => new Promise((resolve,reject)=>db.run(sql,params,function(err){err?reject(err):resolve(this)}));
+const pGet = (sql, params=[]) => new Promise((resolve,reject)=>db.get(sql,params,(e,r)=>e?reject(e):resolve(r)));
+const pAll = (sql, params=[]) => new Promise((resolve,reject)=>db.all(sql,params,(e,r)=>e?reject(e):resolve(r)));
+const pExec= (sql) => new Promise((resolve,reject)=>db.exec(sql,(e)=>e?reject(e):resolve()));
 
 async function initDB() {
   const createSql = `
@@ -119,47 +97,26 @@ async function initDB() {
     qr_data_url   TEXT
   );`;
   await pExec(createSql);
-
-  // Add missing columns safely over time
   const existing = await getColumns('reports');
   const want = [
     ['doctor_name','TEXT'],['doctor_phone','TEXT'],['doctor_email','TEXT'],['doctor_fax','TEXT'],
     ['pharmacy_name','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],['pharmacy_address','TEXT'],
     ['summary_original','TEXT'],['summary_translated','TEXT']
   ];
-  for (const [col, def] of want) {
-    if (!existing.includes(col)) { try { await pRun(`ALTER TABLE reports ADD COLUMN ${col} ${def}`); } catch {} }
-  }
+  for (const [col,def] of want) { if (!existing.includes(col)) { try{ await pRun(`ALTER TABLE reports ADD COLUMN ${col} ${def}`);}catch{} } }
 }
 async function getColumns(table) {
   const rows = await pAll(`PRAGMA table_info(${table})`);
-  return rows.map(r => r.name);
+  return rows.map(r=>r.name);
 }
 
-// -------------------------
-// Auth
-// -------------------------
 function requireAuth(req,res,next){
   const cookies = parseCookies(req);
   if (cookies.hhsess !== SESSION_SECRET) return res.redirect('/login');
   next();
 }
 
-app.get('/login', (req,res) => {
-  const p = path.join(PUBLIC_DIR, 'login.html');
-  if (fs.existsSync(p)) return res.sendFile(p);
-  res.send(`
-    <html><body>
-      <h3>Sign in</h3>
-      <form method="POST" action="/login">
-        <input name="userId" placeholder="User ID"><br/>
-        <input name="password" type="password" placeholder="Password"><br/>
-        <button type="submit">Sign in</button>
-      </form>
-    </body></html>
-  `);
-});
-
+app.get('/login', (req,res) => res.sendFile(path.join(PUBLIC_DIR,'login.html')));
 app.post('/login', (req,res) => {
   const { userId, password } = req.body || {};
   if (userId === USER_ID && password === USER_PASS) {
@@ -168,85 +125,65 @@ app.post('/login', (req,res) => {
   }
   res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
 });
+app.post('/logout', (req,res)=>{ setCookie(res,'hhsess','',{httpOnly:true,sameSite:'Lax',maxAge:0}); res.redirect('/login'); });
 
-app.post('/logout', (req,res) => {
-  setCookie(res, 'hhsess', '', { httpOnly:true, sameSite:'Lax', maxAge: 0 });
-  res.redirect('/login');
-});
-
-// Protect app & reports
 app.use(['/', '/upload', '/reports', '/reports/*'], requireAuth);
+app.get('/', (req,res)=>res.sendFile(path.join(PUBLIC_DIR,'index.html')));
 
-// Home
-app.get('/', (req,res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
-
-// -------------------------
-// Helpers
-// -------------------------
 function getBaseUrl(req) {
   const envUrl = process.env.PUBLIC_BASE_URL;
-  if (envUrl && /^https?:\/\//i.test(envUrl)) return envUrl.replace(/\/+$/, '');
+  if (envUrl && /^https?:\/\//i.test(envUrl)) return envUrl.replace(/\/+$/,'');
   const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0];
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   return `${proto}://${host}`;
 }
 function uid(n=22){ return crypto.randomBytes(n).toString('base64url').slice(0,n); }
-
-function langName(code='') {
-  const map = {
-    en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
-    ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ'
-  };
-  return map[code] || code || 'Translated';
+function langName(code=''){
+  const map={en:'English',fr:'Français',es:'Español',pt:'Português',de:'Deutsch',it:'Italiano',ar:'العربية',hi:'हिन्दी',zh:'中文',ja:'日本語',ko:'한국어',he:'עברית',sr:'Srpski',pa:'ਪੰਜਾਬੀ'};
+  return map[code]||code||'Translated';
 }
 
-// Naive parser
+// naive facts
 function parseFacts(text) {
   const meds=[], allergies=[], conditions=[];
   const medRx=/([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:)?\s*(\d+)\s*(mg|mcg|g|ml)/gi;
-  let m; const seen=new Set();
-  while((m=medRx.exec(text))){ const name=m[1], dose = m[2]+' '+m[3]; const k=(name+'|'+dose).toLowerCase(); if(!seen.has(k)){ meds.push(`${name} — ${dose}`); seen.add(k);} }
+  let m, seen=new Set();
+  while((m=medRx.exec(text))){ const name=m[1], dose=m[2]+' '+m[3]; const k=(name+'|'+dose).toLowerCase(); if(!seen.has(k)){ meds.push(`${name} — ${dose}`); seen.add(k);} }
   const aRx=/\b(allergy|allergies|allergic to)\b([^\.]+)/gi; let a;
   while((a=aRx.exec(text))){ a[2].split(/[,;]|and/).map(s=>s.trim()).filter(Boolean).forEach(x=>{ const c=x.replace(/^(to|of)\s+/i,'').trim(); if(c && !allergies.includes(c)) allergies.push(c);}); }
   const cRx=/\b(I have|I’ve|I've|diagnosed with|history of)\b([^\.]+)/gi; let c;
   while((c=cRx.exec(text))){ const s=c[2].replace(/\b(allergy|allergies|medications?|pills?)\b/ig,'').trim(); if(s) conditions.push(s); }
   const bpM = text.match(/\b(\d{2,3})\s*[/over\\-]\s*(\d{2,3})\b/i);
   const wM  = text.match(/\b(\d{2,3})\s*(?:lbs?|pounds?|kg)\b/i);
-  return {
-    medications: meds,
-    allergies,
-    conditions,
-    bp: bpM ? `${bpM[1]}/${bpM[2]}` : '',
-    weight: wM ? (wM[1] + (wM[0].toLowerCase().includes('kg') ? ' kg' : ' lbs')) : ''
-  };
+  return { medications:meds, allergies, conditions, bp: bpM?`${bpM[1]}/${bpM[2]}`:'', weight: wM?(wM[1]+(wM[0].toLowerCase().includes('kg')?' kg':' lbs')):'' };
 }
 
-// -------------------------
-// Multer — accept any() to allow future multi-part audio
-// -------------------------
+// multer: accept many audio parts
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
   filename:    (_, __, cb) => cb(null, `${Date.now()}-${uid(8)}.webm`)
 });
 const upload = multer({ storage });
 
-// -------------------------
-// Upload: supports one or many audio blobs (fields don't matter)
-// -------------------------
+// Upload: supports multiple audio blobs + typed notes
 app.post('/upload', upload.any(), async (req,res) => {
   try {
     const files = (req.files || []).filter(f => (f.mimetype || '').startsWith('audio/'));
-    if (!files.length) return res.status(400).json({ ok:false, error:'No audio files' });
 
     const {
       name='', email='', blood_type='',
       emer_name='', emer_phone='', emer_email='',
       doctor_name='', doctor_phone='', doctor_email='', doctor_fax='',
       pharmacy_name='', pharmacy_phone='', pharmacy_fax='', pharmacy_address='',
-      lang=''
+      lang='',
+      typed_notes='' // NEW: merged text from the six input fields
     } = req.body || {};
 
-    // 1) transcribe all parts → concatenate
+    if (!files.length && !typed_notes.trim()) {
+      return res.status(400).json({ ok:false, error:'No audio files or notes' });
+    }
+
+    // 1) transcribe each audio; concatenate
     const parts = [];
     for (const f of files) {
       const stream = fs.createReadStream(f.path);
@@ -261,9 +198,11 @@ app.post('/upload', upload.any(), async (req,res) => {
       }
       if (partText) parts.push(partText);
     }
-    const transcript = parts.join('\n').trim();
 
-    // 2) summarize (original)
+    // merge with typed notes
+    const transcript = [parts.join('\n').trim(), typed_notes.trim()].filter(Boolean).join('\n').trim();
+
+    // 2) summarize original
     let summary_original = '';
     try {
       const prompt = `Summarize this clinical self-report into a concise paragraph. Avoid inventing facts.\n\n${transcript}`;
@@ -324,7 +263,6 @@ app.post('/upload', upload.any(), async (req,res) => {
     const placeholders = keys.map(()=>'?').join(',');
     await pRun(`INSERT INTO reports (${keys.join(',')}) VALUES (${placeholders})`, keys.map(k => row[k]));
 
-    // Respond with immediate data for front page
     res.json({
       ok:true,
       id,
@@ -341,9 +279,7 @@ app.post('/upload', upload.any(), async (req,res) => {
   }
 });
 
-// -------------------------
-// Reports list
-// -------------------------
+// Reports list (unchanged styling)
 app.get('/reports', async (req,res) => {
   const rows = await pAll(`SELECT id, created_at, name, email, target_lang FROM reports ORDER BY created_at DESC`);
   const baseUrl = getBaseUrl(req);
@@ -390,16 +326,13 @@ app.get('/reports', async (req,res) => {
 </body></html>`);
 });
 
-// -------------------------
-// Single report (dual summary & transcript + share/email/print)
-// -------------------------
+// Single report page (unchanged from prior message — already with dual blocks + actions)
 app.get('/reports/:id', async (req,res) => {
   const r = await pGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!r) return res.status(404).send('Not found');
 
   const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const created = new Date(r.created_at).toLocaleString();
-  const mailSubject = encodeURIComponent('Hot Health Report');
   const mailBodyG   = encodeURIComponent(`${r.share_url}\n\n(Generated by Hot Health)`);
   const mailBodyO   = encodeURIComponent(`${r.share_url}`);
 
@@ -420,11 +353,7 @@ app.get('/reports/:id', async (req,res) => {
   .btn{ text-decoration:none; border:1px solid #dbe7ff; padding:8px 10px; border-radius:8px; background:#f0f5ff; color:#234; font-size:14px; }
   .hint{ font-size:13px; color:#666; }
   .qr { text-align:center; margin:8px 0; }
-  @media print {
-    .btnbar { display:none !important; }
-    header { border:0; }
-    .section { page-break-inside: avoid; }
-  }
+  @media print { .btnbar { display:none !important; } header { border:0; } .section { page-break-inside: avoid; } }
 </style>
 <script>
   function copyLink(){ navigator.clipboard.writeText(${JSON.stringify(r.share_url)}); }
@@ -467,14 +396,8 @@ app.get('/reports/:id', async (req,res) => {
 
     <section class="section"><h2>Summary</h2>
       <div class="dual">
-        <div class="block">
-          <h3>Original</h3>
-          <p>${esc(r.summary_original || '(none)')}</p>
-        </div>
-        <div class="block">
-          <h3>${esc(r.target_lang ? 'Summary ('+ (r.target_lang) +')' : 'Summary (translated)')}</h3>
-          <p>${esc(r.summary_translated || '(no translation)')}</p>
-        </div>
+        <div class="block"><h3>Original</h3><p>${esc(r.summary_original || '(none)')}</p></div>
+        <div class="block"><h3>${esc(r.target_lang ? 'Summary ('+ r.target_lang +')' : 'Summary (translated)')}</h3><p>${esc(r.summary_translated || '(no translation)')}</p></div>
       </div>
     </section>
 
@@ -488,14 +411,8 @@ app.get('/reports/:id', async (req,res) => {
 
     <section class="section"><h2>Transcript</h2>
       <div class="dual">
-        <div class="block">
-          <h3>Original</h3>
-          <p>${esc(r.transcript || '')}</p>
-        </div>
-        <div class="block">
-          <h3>${esc(langName(r.target_lang))}</h3>
-          <p>${esc(r.translated_transcript || '(no translation)')}</p>
-        </div>
+        <div class="block"><h3>Original</h3><p>${esc(r.transcript || '')}</p></div>
+        <div class="block"><h3>${esc(langName(r.target_lang))}</h3><p>${esc(r.translated_transcript || '(no translation)')}</p></div>
       </div>
       <div class="qr">
         <img src="${esc(r.qr_data_url)}" alt="QR Code" style="max-width:180px;"/>
@@ -506,10 +423,5 @@ app.get('/reports/:id', async (req,res) => {
 </body></html>`);
 });
 
-// -------------------------
-// Start
-// -------------------------
 await initDB();
-app.listen(PORT, () => {
-  console.log(`✅ Backend listening on ${PORT}`);
-});
+app.listen(PORT, ()=>console.log(`✅ Backend listening on ${PORT}`));
