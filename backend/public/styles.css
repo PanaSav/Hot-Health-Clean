@@ -1,52 +1,271 @@
-/* Base */
-* { box-sizing: border-box; }
-:root {
-  --ink: #223;
-  --muted: #566;
-  --brand: #4b0082;
-  --accent: aquamarine;
-  --panel: #fff;
-  --soft: #f0f5ff;
-  --line: #dbe7ff;
+/* =========================================================
+   Hot Health — Global Styles
+   Palette: Indigo (#4b0082), Aquamarine, Soft Whites/Blues
+   ========================================================= */
+
+:root{
+  --brand: #4b0082;         /* Indigo */
+  --mint: aquamarine;       /* Aqua border accent */
+  --ink: #1c2233;           /* Dark text */
+  --muted: #56617a;         /* Muted text */
+  --paper: #f7faff;         /* App background */
+  --card: #ffffff;          /* Cards */
+  --line: #dbe7ff;          /* Soft borders */
+  --btn: #0a84ff;           /* Primary */
+  --btn-ink: #fff;
+  --btn-soft-bg: #eef4ff;   /* Soft button bg */
+  --btn-soft-ink: #223;     /* Soft button text */
+  --danger: #d22;
+  --ok: #078f4a;
+  --shadow: 0 8px 22px rgba(0,0,0,.06);
 }
-html, body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color:var(--ink); background:#f7f9ff; }
-a { color:#0a84ff; text-decoration:none; }
-a:hover { text-decoration:underline; }
 
-.wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px 24px; }
-.header { display:flex; justify-content:space-between; align-items:center; padding:16px 0; border-bottom:4px solid var(--accent); }
-.header h1 { color:var(--brand); margin:0; }
+* { box-sizing: border-box; }
+html,body{ height:100%; }
+body{
+  margin:0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  color: var(--ink);
+  background: var(--paper);
+}
 
-/* Cards & layout */
-.card { background:var(--panel); border:2px solid var(--accent); border-radius:12px; padding:16px; margin:16px 0; }
-.row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-.two { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-@media (max-width: 800px){ .two { grid-template-columns:1fr; } }
+/* =========================================================
+   Top Bar / Header
+   ========================================================= */
+header.appbar{
+  border-bottom: 3px solid var(--mint);
+  background: #fff;
+  position: sticky; top:0; z-index: 10;
+  box-shadow: 0 2px 8px rgba(0,0,0,.03);
+}
+.appbar .wrap{
+  max-width: 1060px; margin: 0 auto; padding: 12px 16px;
+  display:flex; align-items:center; justify-content:space-between;
+  gap: 12px;
+}
+.brand{
+  margin:0; color: var(--brand); font-size: clamp(20px, 2.2vw, 28px);
+}
+.appbar nav{ display:flex; gap:8px; flex-wrap: wrap; }
 
-/* Inputs */
-.field { position:relative; flex:1; min-width:220px; }
-input, .select { padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:15px; width:100%; background:#fff; }
-.select { min-width:200px; }
+/* =========================================================
+   Layout / Cards
+   ========================================================= */
+.wrap{
+  max-width: 1060px; margin: 14px auto 32px; padding: 0 16px;
+}
+.grid{
+  display:grid; gap:14px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.card{
+  background: var(--card);
+  border: 2px solid var(--mint);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+.card h2{
+  margin: 0 0 10px;
+  color: var(--brand);
+  font-size: clamp(18px, 2vw, 22px);
+}
+.subtle{
+  color: var(--muted);
+  font-size: 13px;
+}
 
-/* Buttons */
-.btn { padding:10px 14px; border-radius:8px; border:0; background:#0a84ff; color:#fff; font-size:15px; cursor:pointer; }
-.btn:hover { filter:brightness(0.96); }
-.btn.secondary { background:var(--soft); color:#234; border:1px solid var(--line); }
-.btnbar { display:flex; gap:8px; flex-wrap:wrap; }
+/* =========================================================
+   Forms / Inputs
+   ========================================================= */
+.row{ display:flex; flex-wrap:wrap; gap:10px; }
+input, select, textarea{
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+}
+input.w-50, select.w-50{ width: calc(50% - 5px); min-width: 220px; }
+textarea{ min-height: 84px; resize: vertical; }
 
-.mic-btn { position:absolute; right:6px; top:6px; padding:6px 8px; background:var(--soft); color:#234; border:1px solid var(--line); border-radius:6px; cursor:pointer; }
-.mic-btn:disabled { opacity:.5; cursor:not-allowed; }
-.rec-btn { padding:8px 10px; border-radius:8px; border:0; background:#0a84ff; color:#fff; cursor:pointer; }
-.rec-btn:hover { filter:brightness(0.96); }
+/* mic buttons next to inputs */
+.mic-group{ display:flex; gap:8px; align-items:center; }
+.mic-btn{
+  border: 1px solid var(--line);
+  background: var(--btn-soft-bg);
+  color: var(--btn-soft-ink);
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.mic-btn[disabled]{ opacity:.5; cursor:not-allowed; }
+.mic-btn.recording{
+  border-color: #ffb0b0;
+  background: #ffecec;
+  color: #a00;
+}
 
-/* Mini recorders */
-.mini-grid { display:grid; grid-template-columns:1fr; gap:12px; }
-.mini { border:1px solid var(--line); border-radius:10px; padding:12px; background:#fff; }
-.mini label { display:block; font-weight:600; margin-bottom:6px; color:#2b2b44; }
-.mini-row { display:flex; gap:8px; align-items:center; }
-.mini-row input { flex:1; }
-.muted { color:var(--muted); font-size:13px; }
-.error { color:#b00020; margin-left:8px; }
+/* =========================================================
+   Buttons
+   ========================================================= */
+.btn, button{
+  display:inline-flex; align-items:center; justify-content:center;
+  gap:8px; text-decoration:none; cursor:pointer;
+  border: 1px solid var(--line);
+  background: var(--btn-soft-bg);
+  color: var(--btn-soft-ink);
+  padding: 10px 14px;
+  border-radius: 10px;
+  font: inherit;
+}
+.btn:hover, button:hover{ filter: brightness(.98); }
+.btn.primary{
+  background: var(--btn);
+  color: var(--btn-ink);
+  border-color: transparent;
+}
+.btn.danger{ color:#fff; background: var(--danger); border-color: transparent; }
+.btnbar{ display:flex; gap:8px; flex-wrap:wrap; }
 
-/* Dual section look (reports or summary) */
-.block { background:#f8faff; border:1px solid var(--line); border-radius:8px; padding:12px; }
+/* icon-sized */
+.icon{
+  width: 18px; height: 18px; display:inline-block;
+}
+
+/* =========================================================
+   Alerts / Meta
+   ========================================================= */
+.error{
+  color: #a00; background: #ffecec; border:1px solid #ffb0b0;
+  padding: 8px 10px; border-radius: 8px; font-size: 14px;
+}
+.meta{ color: var(--muted); font-size: 13px; }
+
+/* =========================================================
+   Dual Blocks (Transcript & Summary)
+   ========================================================= */
+.dual{
+  display:flex; gap:12px; flex-wrap:wrap;
+}
+.block{
+  flex:1; min-width: 280px;
+  background: #f8faff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+.block h3{
+  margin:0 0 6px;
+  color:#334;
+}
+.block .list{
+  margin: 6px 0; padding-left: 18px;
+}
+.badge{
+  display:inline-block;
+  font-size: 12px; color:#334;
+  background:#eef4ff;
+  border:1px solid var(--line);
+  padding: 2px 6px; border-radius: 12px;
+}
+
+/* list icons for meds/allergies/conditions */
+.li-icon{ list-style:none; padding-left:0; margin: 4px 0 0; }
+.li-icon li{
+  display:flex; align-items:flex-start; gap:8px; margin: 4px 0;
+}
+.li-icon li .dot{
+  width: 9px; height: 9px; border-radius:50%;
+  background: var(--mint); margin-top: 6px;
+}
+
+/* =========================================================
+   Report Page Specific
+   ========================================================= */
+.report-head{
+  border-bottom: 3px solid var(--mint);
+  margin-bottom: 12px; padding-bottom: 10px;
+}
+.report-head .tags{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+.qr{
+  text-align:center; margin: 8px 0 2px;
+}
+.tip{
+  text-align:center; color: var(--muted); font-size: 13px;
+}
+
+/* Actions bar in report */
+.actions{
+  display:flex; gap:8px; flex-wrap:wrap; margin-top: 10px;
+}
+
+/* Share link icon text wraps nicely inside button */
+.btn.linkish{
+  padding: 8px 10px;
+}
+
+/* =========================================================
+   Reports List
+   ========================================================= */
+.reports{
+  list-style: none; padding:0; margin: 16px 0;
+}
+.report-item{
+  background:#fff; border:1px solid var(--line);
+  border-radius: 12px; padding: 12px; margin: 10px 0;
+  display:grid; gap:6px;
+}
+.report-item .title{ font-weight: 600; }
+.report-item .meta{ color: var(--muted); font-size: 13px; }
+.report-item .actions{ display:flex; gap:8px; flex-wrap:wrap; }
+
+/* =========================================================
+   Recorder Sections (Home)
+   ========================================================= */
+.rec-grid{
+  display:grid; gap:12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.rec{
+  border:1px dashed var(--line);
+  border-radius: 12px; padding: 10px;
+  background:#fff;
+}
+.rec .head{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+}
+.rec .head h3{ margin:0; font-size: 15px; color:#334; }
+.rec .controls{ display:flex; gap:8px; align-items:center; margin-top: 8px; }
+.rec .hint{ color: var(--muted); font-size: 12px; }
+
+/* Record/Stop pill */
+.pill{
+  display:inline-flex; align-items:center; gap:8px;
+  padding: 8px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background:#fff; cursor: pointer;
+}
+.pill.recording{
+  border-color: #ffb0b0; background:#ffecec; color:#a00;
+}
+.pill .dot{
+  width: 10px; height:10px; border-radius:50%; background:#bbb;
+}
+.pill.recording .dot{ background:#d22; }
+
+/* =========================================================
+   Footer
+   ========================================================= */
+footer.app{
+  text-align:center; color:#667; font-size: 13px; padding: 18px 0 28px;
+}
+
+/* =========================================================
+   Print tweaks
+   ========================================================= */
+@media print{
+  header.appbar, .btnbar, .actions, .error { display:none !important; }
+  body{ background:#fff; }
+  .card{ border-color:#ccc; box-shadow:none; }
+}
