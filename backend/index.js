@@ -1,6 +1,6 @@
 // backend/index.js
-// Hot Health — sqlite3-only backend with auth gate, six-part capture, parsing,
-// optional translation + translated summaries, QR share, reports list+view.
+// Hot Health — sqlite3 backend with login gate, six-part capture, parsing,
+// optional translation, QR share, reports list+view, robust error messages.
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -18,30 +18,29 @@ import sqlite3pkg from 'sqlite3';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
+// ----------------- config -----------------
 const app  = express();
 const PORT = Number(process.env.PORT || 10000);
 
-// -------- Auth config --------
 const USER_ID   = process.env.APP_USER_ID   || 'Pana123$';
 const USER_PASS = process.env.APP_USER_PASS || 'GoGoPana$';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(16).toString('hex');
 
-// -------- Paths --------
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// -------- OpenAI --------
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const hasOpenAI = !!process.env.OPENAI_API_KEY;
+const openai = hasOpenAI ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini';
 
-// -------- DB: sqlite3 only --------
+// ----------------- db: sqlite3 -----------------
 const sqlite3 = sqlite3pkg.verbose();
 const DB_FILE = path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(DB_FILE);
-const dbRun = (sql, params = []) => new Promise((res, rej) => db.run(sql, params, function (e){ e?rej(e):res(this); }));
-const dbGet = (sql, params = []) => new Promise((res, rej) => db.get(sql, params, (e,row)=> e?rej(e):res(row)));
-const dbAll = (sql, params = []) => new Promise((res, rej) => db.all(sql, params, (e,rows)=> e?rej(e):res(rows)));
+const dbRun = (sql, params=[]) => new Promise((res, rej)=> db.run(sql, params, function(e){e?rej(e):res(this)}));
+const dbGet = (sql, params=[]) => new Promise((res, rej)=> db.get(sql, params, (e,row)=> e?rej(e):res(row)));
+const dbAll = (sql, params=[]) => new Promise((res, rej)=> db.all(sql, params, (e,rows)=> e?rej(e):res(rows)));
 
 async function initDB(){
   await dbRun(`PRAGMA journal_mode = WAL;`).catch(()=>{});
@@ -79,7 +78,7 @@ async function initDB(){
     )
   `);
 
-  // Defensive add columns (idempotent)
+  // add any missing columns (idempotent)
   const need = [
     'doctor_name','doctor_phone','doctor_fax','doctor_email',
     'pharmacy_name','pharmacy_phone','pharmacy_fax','pharmacy_address',
@@ -90,7 +89,7 @@ async function initDB(){
   for (const c of need) if (!have.has(c)) await dbRun(`ALTER TABLE reports ADD COLUMN ${c} TEXT`).catch(()=>{});
 }
 
-// -------- Utils --------
+// ----------------- utils -----------------
 const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const uid = (n=22) => crypto.randomBytes(n).toString('base64url').slice(0,n);
 
@@ -106,7 +105,7 @@ function parseFacts(text){
   const meds=[], allergies=[], conditions=[];
   const seen = new Set();
 
-  // meds
+  // meds with dose
   const medRx=/([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:|\s)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
   let m; while ((m=medRx.exec(text))){ const key=`${m[1].toLowerCase()}|${m[2]} ${m[3]}`; if(!seen.has(key)){ meds.push(`${m[1]} — ${m[2]} ${m[3]}`); seen.add(key);} }
 
@@ -114,7 +113,7 @@ function parseFacts(text){
   const aRx=/(?:allerg(?:y|ies)|allergic to)\b([^\.]+)/gi; let a;
   while ((a=aRx.exec(text))){ const list=(a[1]||'').replace(/^\s*to\s*/i,'').split(/,|;| and /i).map(s=>s.trim()).filter(Boolean); for(const it of list) if(!allergies.includes(it)) allergies.push(it); }
 
-  // conditions
+  // conditions (naive)
   const cRx=/\b(I have|I've|I’ve|diagnosed with|history of)\b([^\.]+)/gi; let c;
   while ((c=cRx.exec(text))){ const s=c[2].replace(/\b(allerg(?:y|ies)|allergic|medications?|pills?)\b/ig,'').trim(); if(s) conditions.push(s); }
 
@@ -131,7 +130,7 @@ function parseFacts(text){
 }
 
 async function translateBlock(sOrArr, lang){
-  if (!lang) return '';
+  if (!lang || !hasOpenAI) return '';
   const src = Array.isArray(sOrArr) ? sOrArr.join('\n') : String(sOrArr||'');
   if (!src.trim()) return '';
   const rsp = await openai.chat.completions.create({
@@ -142,12 +141,12 @@ async function translateBlock(sOrArr, lang){
   return rsp.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// -------- Middleware order (fixes auth bypass) --------
+// ----------------- middleware (auth BEFORE static) -----------------
 app.use(cookieParser(SESSION_SECRET));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Public login routes (no auth)
+// login (public)
 app.get('/login', (req,res)=>{
   const p = path.join(PUBLIC_DIR,'login.html');
   if (fs.existsSync(p)) return res.sendFile(p);
@@ -160,22 +159,25 @@ app.get('/login', (req,res)=>{
 });
 app.post('/login', bodyParser.urlencoded({extended:true}), (req,res)=>{
   const { userId, password } = req.body||{};
-  if (userId===USER_ID && password===USER_PASS){ res.cookie('hhsess', userId, { httpOnly:true, signed:true, sameSite:'lax', maxAge:7*24*3600e3 }); return res.redirect('/'); }
+  if (userId===USER_ID && password===USER_PASS){
+    res.cookie('hhsess', userId, { httpOnly:true, signed:true, sameSite:'lax', maxAge:7*24*3600e3 });
+    return res.redirect('/');
+  }
   res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
 });
 app.post('/logout', (req,res)=>{ res.clearCookie('hhsess'); res.redirect('/login'); });
 
-// Auth gate — apply BEFORE serving the app
+// auth gate
 function requireAuth(req,res,next){ if(!req.signedCookies?.hhsess) return res.redirect('/login'); next(); }
 app.use(['/','/upload','/reports','/reports/*','/static/*'], requireAuth);
 
-// Serve app HTML explicitly
+// serve app explicitly
 app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR,'index.html')));
 
-// Serve static under /static so '/' can’t be satisfied by static dir index
+// static under /static
 app.use('/static', express.static(PUBLIC_DIR, { index:false }));
 
-// -------- Upload (single audio + optional `parts` text) --------
+// ----------------- upload -----------------
 const storage = multer.diskStorage({
   destination: (_, __, cb)=> cb(null, UPLOAD_DIR),
   filename: (_, file, cb)=> cb(null, `${Date.now()}-${crypto.randomUUID().slice(0,8)}.webm`)
@@ -194,28 +196,41 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       lang='', parts=''
     } = req.body||{};
 
-    // 1) transcribe uploaded audio
-    let transcript='';
-    try{
-      const tr = await openai.audio.transcriptions.create({ file: fs.createReadStream(req.file.path), model:'gpt-4o-mini-transcribe' });
-      transcript = tr.text?.trim() || '';
-    }catch{
-      const tr2 = await openai.audio.transcriptions.create({ file: fs.createReadStream(req.file.path), model:'whisper-1' });
-      transcript = tr2.text?.trim() || '';
+    // transcribe
+    let transcript = '';
+    if (hasOpenAI){
+      try{
+        const tr = await openai.audio.transcriptions.create({
+          file: fs.createReadStream(req.file.path), model:'gpt-4o-mini-transcribe'
+        });
+        transcript = tr.text?.trim() || '';
+      }catch(e1){
+        try{
+          const tr2 = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(req.file.path), model:'whisper-1'
+          });
+          transcript = tr2.text?.trim() || '';
+        }catch(e2){
+          console.error('Transcription failed:', e1?.message, e2?.message);
+          return res.status(502).json({ ok:false, error:'Transcription failed (OpenAI)' });
+        }
+      }
+    }else{
+      // dev fallback
+      transcript = '(no API key) ' + (parts || '');
     }
 
-    // Merge any text parts from the six mini recorders
     const merged = [transcript, String(parts||'').trim()].filter(Boolean).join('\n');
 
-    // 2) optional translation of transcript
     const target_lang = (lang||'').trim();
+    const detected_lang = 'auto';
+
     let translated_transcript = '';
     if (target_lang) translated_transcript = await translateBlock(merged, target_lang);
 
-    // 3) parse facts from original
     const facts = parseFacts(merged);
 
-    // 4) translated summaries
+    // translated summaries
     let medications_t='', allergies_t='', conditions_t='', bp_t='', weight_t='', general_note_t='';
     if (target_lang){
       medications_t = await translateBlock(facts.medications, target_lang);
@@ -226,7 +241,6 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       general_note_t= await translateBlock(facts.general_note||'', target_lang);
     }
 
-    // 5) store
     const id = uid(20);
     const created_at = new Date().toISOString();
     const baseUrl = getBaseUrl(req);
@@ -252,7 +266,7 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       emer_name, emer_phone, emer_email,
       doctor_name, doctor_phone, doctor_fax, doctor_email,
       pharmacy_name, pharmacy_phone, pharmacy_fax, pharmacy_address,
-      'auto', target_lang,
+      detected_lang, target_lang,
       merged, translated_transcript,
       (facts.medications||[]).join('; '),
       (facts.allergies||[]).join('; '),
@@ -265,12 +279,12 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
     res.json({ ok:true, id, url: shareUrl });
 
   }catch(err){
-    console.error(err);
-    res.status(500).json({ ok:false, error:'Server error' });
+    console.error('UPLOAD ERROR:', err);
+    res.status(500).json({ ok:false, error: err?.message || 'Server error' });
   }
 });
 
-// -------- Reports list --------
+// ----------------- reports list -----------------
 app.get('/reports', async (req,res)=>{
   const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
   const items = rows.map(r=>`
@@ -314,7 +328,7 @@ app.get('/reports', async (req,res)=>{
 </body></html>`);
 });
 
-// -------- Single report (unchanged from last good build) --------
+// ----------------- single report (with Share & Email block) -----------------
 app.get('/reports/:id', async (req,res)=>{
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!row) return res.status(404).send('Not found');
@@ -433,6 +447,6 @@ BP: ${row.bp||'—'}   Weight: ${row.weight||'—'}`);
 </body></html>`);
 });
 
-// -------- Start --------
+// ----------------- start -----------------
 await initDB();
 app.listen(PORT, ()=> console.log(`✅ Backend listening on ${PORT}`));
