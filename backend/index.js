@@ -1,6 +1,4 @@
-// backend/index.js
-// Hot Health — sqlite3 backend with login gate, six-part capture, parsing,
-// optional translation, QR share, reports list+view, robust error messages.
+// One-file backend (login gate, uploads, transcription+translation, summary dual blocks, QR, reports)
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -13,297 +11,345 @@ import cookieParser from 'cookie-parser';
 import QRCode from 'qrcode';
 import OpenAI from 'openai';
 import { fileURLToPath } from 'url';
-import sqlite3pkg from 'sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ----------------- config -----------------
-const app  = express();
+// -------------------------
+// Config
+// -------------------------
+const app = express();
 const PORT = Number(process.env.PORT || 10000);
 
-const USER_ID   = process.env.APP_USER_ID   || 'Pana123$';
-const USER_PASS = process.env.APP_USER_PASS || 'GoGoPana$';
+const USER_ID    = process.env.APP_USER_ID   || 'Pana123$';
+const USER_PASS  = process.env.APP_USER_PASS || 'GoGoPana$';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(16).toString('hex');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const hasOpenAI = !!process.env.OPENAI_API_KEY;
-const openai = hasOpenAI ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
-const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini';
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ----------------- db: sqlite3 -----------------
-const sqlite3 = sqlite3pkg.verbose();
-const DB_FILE = path.join(__dirname, 'data.sqlite');
-const db = new sqlite3.Database(DB_FILE);
-const dbRun = (sql, params=[]) => new Promise((res, rej)=> db.run(sql, params, function(e){e?rej(e):res(this)}));
-const dbGet = (sql, params=[]) => new Promise((res, rej)=> db.get(sql, params, (e,row)=> e?rej(e):res(row)));
-const dbAll = (sql, params=[]) => new Promise((res, rej)=> db.all(sql, params, (e,rows)=> e?rej(e):res(rows)));
+app.use(cookieParser(SESSION_SECRET));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.static(PUBLIC_DIR));
 
-async function initDB(){
-  await dbRun(`PRAGMA journal_mode = WAL;`).catch(()=>{});
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS reports (
-      id TEXT PRIMARY KEY,
-      created_at TEXT,
+// -------------------------
+// DB: prefer better-sqlite3; fallback to sqlite3+sqlite
+// -------------------------
+let db = null;
+let useBetter = false;
 
-      -- Patient
-      name TEXT, email TEXT, blood_type TEXT,
+async function initDB() {
+  try {
+    const { default: BetterSqlite3 } = await import('better-sqlite3');
+    db = new BetterSqlite3(path.join(__dirname, 'data.sqlite'));
+    useBetter = true;
+  } catch {
+    const { default: sqlite3 } = await import('sqlite3');
+    const { open } = await import('sqlite');
+    db = await open({
+      filename: path.join(__dirname, 'data.sqlite'),
+      driver: sqlite3.Database
+    });
+    useBetter = false;
+  }
 
-      -- Emergency
-      emer_name TEXT, emer_phone TEXT, emer_email TEXT,
+  const createSql = `
+  CREATE TABLE IF NOT EXISTS reports (
+    id            TEXT PRIMARY KEY,
+    created_at    TEXT,
+    name          TEXT,
+    email         TEXT,
+    blood_type    TEXT,
+    emer_name     TEXT,
+    emer_phone    TEXT,
+    emer_email    TEXT,
+    doctor_name   TEXT,
+    doctor_phone  TEXT,
+    doctor_email  TEXT,
+    doctor_fax    TEXT,
+    pharmacy_name TEXT,
+    pharmacy_phone TEXT,
+    pharmacy_fax  TEXT,
+    pharmacy_address TEXT,
+    detected_lang TEXT,
+    target_lang   TEXT,
+    transcript    TEXT,
+    translated_transcript TEXT,
+    summary_original TEXT,
+    summary_translated TEXT,
+    medications   TEXT,
+    allergies     TEXT,
+    conditions    TEXT,
+    bp            TEXT,
+    weight        TEXT,
+    share_url     TEXT,
+    qr_data_url   TEXT
+  );`;
 
-      -- Doctor
-      doctor_name TEXT, doctor_phone TEXT, doctor_fax TEXT, doctor_email TEXT,
+  if (useBetter) db.exec(createSql); else await db.exec(createSql);
 
-      -- Pharmacy
-      pharmacy_name TEXT, pharmacy_phone TEXT, pharmacy_fax TEXT, pharmacy_address TEXT,
-
-      -- Langs
-      detected_lang TEXT, target_lang TEXT,
-
-      -- Text
-      transcript TEXT, translated_transcript TEXT,
-
-      -- Parsed (original)
-      medications TEXT, allergies TEXT, conditions TEXT, bp TEXT, weight TEXT, general_note TEXT,
-
-      -- Parsed (translated)
-      medications_t TEXT, allergies_t TEXT, conditions_t TEXT, bp_t TEXT, weight_t TEXT, general_note_t TEXT,
-
-      -- Share
-      share_url TEXT, qr_data_url TEXT
-    )
-  `);
-
-  // add any missing columns (idempotent)
-  const need = [
-    'doctor_name','doctor_phone','doctor_fax','doctor_email',
-    'pharmacy_name','pharmacy_phone','pharmacy_fax','pharmacy_address',
-    'general_note','medications_t','allergies_t','conditions_t','bp_t','weight_t','general_note_t'
+  // Add any missing columns safely (older DBs)
+  const wantCols = [
+    ['doctor_name','TEXT'],['doctor_phone','TEXT'],['doctor_email','TEXT'],['doctor_fax','TEXT'],
+    ['pharmacy_name','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],['pharmacy_address','TEXT'],
+    ['summary_original','TEXT'],['summary_translated','TEXT']
   ];
-  const cols = await dbAll(`PRAGMA table_info(reports)`);
-  const have = new Set(cols.map(c=>c.name));
-  for (const c of need) if (!have.has(c)) await dbRun(`ALTER TABLE reports ADD COLUMN ${c} TEXT`).catch(()=>{});
+  const existing = await getColumns('reports');
+  for (const [name,def] of wantCols) {
+    if (!existing.includes(name)) {
+      const sql = `ALTER TABLE reports ADD COLUMN ${name} ${def}`;
+      if (useBetter) { try { db.exec(sql); } catch {} } else { try { await db.exec(sql); } catch {} }
+    }
+  }
 }
 
-// ----------------- utils -----------------
-const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const uid = (n=22) => crypto.randomBytes(n).toString('base64url').slice(0,n);
+function dbRun(sql, params=[]) {
+  if (useBetter) { db.prepare(sql).run(params); return Promise.resolve(); }
+  return db.run(sql, params);
+}
+function dbGet(sql, params=[]) {
+  if (useBetter) return Promise.resolve(db.prepare(sql).get(params));
+  return db.get(sql, params);
+}
+function dbAll(sql, params=[]) {
+  if (useBetter) return Promise.resolve(db.prepare(sql).all(params));
+  return db.all(sql, params);
+}
+async function getColumns(table) {
+  if (useBetter) {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+    return rows.map(r => r.name);
+  } else {
+    const rows = await db.all(`PRAGMA table_info(${table})`);
+    return rows.map(r => r.name);
+  }
+}
 
-function getBaseUrl(req){
-  const u = process.env.PUBLIC_BASE_URL;
-  if (u && /^https?:\/\//i.test(u)) return u.replace(/\/+$/,'');
+// -------------------------
+// Auth
+// -------------------------
+function setSession(res, user) {
+  res.cookie('hhsess', user, { httpOnly:true, signed:true, sameSite:'lax' });
+}
+function clearSession(res) { res.clearCookie('hhsess'); }
+function requireAuth(req,res,next){
+  const u = req.signedCookies?.hhsess;
+  if (!u) return res.redirect('/login');
+  next();
+}
+
+app.get('/login', (req,res) => {
+  const p = path.join(PUBLIC_DIR, 'login.html');
+  if (fs.existsSync(p)) return res.sendFile(p);
+  res.send(`
+    <html><body>
+      <h3>Sign in</h3>
+      <form method="POST" action="/login">
+        <input name="userId" placeholder="User ID"><br/>
+        <input name="password" type="password" placeholder="Password"><br/>
+        <button type="submit">Sign in</button>
+      </form>
+    </body></html>
+  `);
+});
+app.post('/login', (req,res) => {
+  const { userId, password } = req.body || {};
+  if (userId === USER_ID && password === USER_PASS) { setSession(res, userId); return res.redirect('/'); }
+  res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
+});
+app.post('/logout', (req,res) => { clearSession(res); res.redirect('/login'); });
+
+// Protect app & reports
+app.use(['/', '/upload', '/reports', '/reports/*'], requireAuth);
+
+// Home (frontend)
+app.get('/', (req,res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+
+// -------------------------
+// Helpers
+// -------------------------
+function getBaseUrl(req) {
+  const envUrl = process.env.PUBLIC_BASE_URL;
+  if (envUrl && /^https?:\/\//i.test(envUrl)) return envUrl.replace(/\/+$/, '');
   const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0];
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   return `${proto}://${host}`;
 }
+function uid(n=22){ return crypto.randomBytes(n).toString('base64url').slice(0,n); }
 
-function parseFacts(text){
+// Basic facts parser (tune as needed)
+function parseFacts(text) {
   const meds=[], allergies=[], conditions=[];
-  const seen = new Set();
-
-  // meds with dose
-  const medRx=/([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:|\s)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
-  let m; while ((m=medRx.exec(text))){ const key=`${m[1].toLowerCase()}|${m[2]} ${m[3]}`; if(!seen.has(key)){ meds.push(`${m[1]} — ${m[2]} ${m[3]}`); seen.add(key);} }
-
-  // allergies
-  const aRx=/(?:allerg(?:y|ies)|allergic to)\b([^\.]+)/gi; let a;
-  while ((a=aRx.exec(text))){ const list=(a[1]||'').replace(/^\s*to\s*/i,'').split(/,|;| and /i).map(s=>s.trim()).filter(Boolean); for(const it of list) if(!allergies.includes(it)) allergies.push(it); }
-
-  // conditions (naive)
-  const cRx=/\b(I have|I've|I’ve|diagnosed with|history of)\b([^\.]+)/gi; let c;
-  while ((c=cRx.exec(text))){ const s=c[2].replace(/\b(allerg(?:y|ies)|allergic|medications?|pills?)\b/ig,'').trim(); if(s) conditions.push(s); }
-
-  // BP
-  const bpM = text.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/); const bp = bpM?`${bpM[1]}/${bpM[2]}`: '';
-
-  // Weight
-  const wM = text.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i); const weight = wM?`${wM[1]} ${/kg/i.test(wM[2])?'kg':'lbs'}`:'';
-
-  // General note
-  const gM = text.match(/\b(note|overall|summary):?\s*([^\.]+)\.?/i); const general = gM? (gM[2]||'').trim() : '';
-
-  return { medications:meds, allergies, conditions, bp, weight, general_note: general };
+  const medRx=/([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:)?\s*(\d+)\s*(mg|mcg|g|ml)/gi;
+  let m; const seen=new Set();
+  while((m=medRx.exec(text))){ const name=m[1], dose = m[2]+' '+m[3]; const k=(name+'|'+dose).toLowerCase(); if(!seen.has(k)){ meds.push(`${name} — ${dose}`); seen.add(k);} }
+  const aRx=/\b(allergy|allergies|allergic to)\b([^\.]+)/gi; let a;
+  while((a=aRx.exec(text))){ a[2].split(/[,;]|and/).map(s=>s.trim()).filter(Boolean).forEach(x=>{ const c=x.replace(/^(to|of)\s+/i,'').trim(); if(c && !allergies.includes(c)) allergies.push(c);}); }
+  const cRx=/\b(I have|I’ve|I've|diagnosed with|history of)\b([^\.]+)/gi; let c;
+  while((c=cRx.exec(text))){ const s=c[2].replace(/\b(allergy|allergies|medications?|pills?)\b/ig,'').trim(); if(s) conditions.push(s); }
+  const bpM = text.match(/\b(\d{2,3})\s*[/over\\-]\s*(\d{2,3})\b/i);
+  const wM  = text.match(/\b(\d{2,3})\s*(?:lbs?|pounds?|kg)\b/i);
+  return {
+    medications: meds,
+    allergies,
+    conditions,
+    bp: bpM ? `${bpM[1]}/${bpM[2]}` : '',
+    weight: wM ? (wM[1] + (wM[0].toLowerCase().includes('kg') ? ' kg' : ' lbs')) : ''
+  };
 }
 
-async function translateBlock(sOrArr, lang){
-  if (!lang || !hasOpenAI) return '';
-  const src = Array.isArray(sOrArr) ? sOrArr.join('\n') : String(sOrArr||'');
-  if (!src.trim()) return '';
-  const rsp = await openai.chat.completions.create({
-    model: TEXT_MODEL,
-    messages: [{ role:'user', content:`Translate to ${lang}. Preserve lines/bullets.\n\n${src}` }],
-    temperature: 0.2
-  });
-  return rsp.choices?.[0]?.message?.content?.trim() || '';
-}
-
-// ----------------- middleware (auth BEFORE static) -----------------
-app.use(cookieParser(SESSION_SECRET));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-// login (public)
-app.get('/login', (req,res)=>{
-  const p = path.join(PUBLIC_DIR,'login.html');
-  if (fs.existsSync(p)) return res.sendFile(p);
-  res.send(`<!doctype html><html><body><h3>Sign in</h3>
-    <form method="POST" action="/login">
-      <input name="userId" placeholder="User ID"/><br/>
-      <input name="password" type="password" placeholder="Password"/><br/>
-      <button>Sign in</button>
-    </form></body></html>`);
-});
-app.post('/login', bodyParser.urlencoded({extended:true}), (req,res)=>{
-  const { userId, password } = req.body||{};
-  if (userId===USER_ID && password===USER_PASS){
-    res.cookie('hhsess', userId, { httpOnly:true, signed:true, sameSite:'lax', maxAge:7*24*3600e3 });
-    return res.redirect('/');
-  }
-  res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
-});
-app.post('/logout', (req,res)=>{ res.clearCookie('hhsess'); res.redirect('/login'); });
-
-// auth gate
-function requireAuth(req,res,next){ if(!req.signedCookies?.hhsess) return res.redirect('/login'); next(); }
-app.use(['/','/upload','/reports','/reports/*','/static/*'], requireAuth);
-
-// serve app explicitly
-app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR,'index.html')));
-
-// static under /static
-app.use('/static', express.static(PUBLIC_DIR, { index:false }));
-
-// ----------------- upload -----------------
+// -------------------------
+// Multer (store webm)
+// -------------------------
 const storage = multer.diskStorage({
-  destination: (_, __, cb)=> cb(null, UPLOAD_DIR),
-  filename: (_, file, cb)=> cb(null, `${Date.now()}-${crypto.randomUUID().slice(0,8)}.webm`)
+  destination: (_, __, cb) => cb(null, UPLOAD_DIR),
+  filename:    (_, __, cb) => cb(null, `${Date.now()}-${uid(8)}.webm`)
 });
 const upload = multer({ storage });
 
-app.post('/upload', upload.single('audio'), async (req,res)=>{
-  try{
+// -------------------------
+// Upload → Transcribe → Summarize → (optional) Translate → Save
+// -------------------------
+app.post('/upload', upload.single('audio'), async (req,res) => {
+  try {
     if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
 
     const {
       name='', email='', blood_type='',
       emer_name='', emer_phone='', emer_email='',
-      doctor_name='N/A', doctor_phone='N/A', doctor_fax='N/A', doctor_email='N/A',
-      pharmacy_name='N/A', pharmacy_phone='N/A', pharmacy_fax='N/A', pharmacy_address='N/A',
-      lang='', parts=''
-    } = req.body||{};
+      doctor_name='', doctor_phone='', doctor_email='', doctor_fax='',
+      pharmacy_name='', pharmacy_phone='', pharmacy_fax='', pharmacy_address='',
+      lang=''
+    } = req.body || {};
 
-    // transcribe
-    let transcript = '';
-    if (hasOpenAI){
-      try{
-        const tr = await openai.audio.transcriptions.create({
-          file: fs.createReadStream(req.file.path), model:'gpt-4o-mini-transcribe'
-        });
-        transcript = tr.text?.trim() || '';
-      }catch(e1){
-        try{
-          const tr2 = await openai.audio.transcriptions.create({
-            file: fs.createReadStream(req.file.path), model:'whisper-1'
-          });
-          transcript = tr2.text?.trim() || '';
-        }catch(e2){
-          console.error('Transcription failed:', e1?.message, e2?.message);
-          return res.status(502).json({ ok:false, error:'Transcription failed (OpenAI)' });
-        }
-      }
-    }else{
-      // dev fallback
-      transcript = '(no API key) ' + (parts || '');
+    // 1) transcribe
+    const stream = fs.createReadStream(req.file.path);
+    let transcript='';
+    try {
+      const tr = await openai.audio.transcriptions.create({ file:stream, model:'gpt-4o-mini-transcribe' });
+      transcript = tr.text?.trim() || '';
+    } catch {
+      const stream2 = fs.createReadStream(req.file.path);
+      const tr2 = await openai.audio.transcriptions.create({ file:stream2, model:'whisper-1' });
+      transcript = tr2.text?.trim() || '';
     }
 
-    const merged = [transcript, String(parts||'').trim()].filter(Boolean).join('\n');
+    // 2) summarize (original language)
+    let summary_original = '';
+    try {
+      const prompt = `Summarize this clinical self-report into a concise, clear paragraph (one or two sentences). Avoid inventing facts. Text:\n\n${transcript}`;
+      const rsp = await openai.chat.completions.create({
+        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+        messages: [{ role:'user', content: prompt }],
+        temperature: 0.2
+      });
+      summary_original = rsp.choices?.[0]?.message?.content?.trim() || '';
+    } catch { summary_original = ''; }
 
+    // 3) optional translate both transcript & summary
     const target_lang = (lang||'').trim();
     const detected_lang = 'auto';
-
     let translated_transcript = '';
-    if (target_lang) translated_transcript = await translateBlock(merged, target_lang);
+    let summary_translated = '';
+    if (target_lang) {
+      const tPrompt = `Translate the following medical note to ${target_lang}. Return only the translated text.\n\n${transcript}`;
+      const sPrompt = `Translate the following summary to ${target_lang}. Return only the translated text.\n\n${summary_original}`;
 
-    const facts = parseFacts(merged);
-
-    // translated summaries
-    let medications_t='', allergies_t='', conditions_t='', bp_t='', weight_t='', general_note_t='';
-    if (target_lang){
-      medications_t = await translateBlock(facts.medications, target_lang);
-      allergies_t   = await translateBlock(facts.allergies,   target_lang);
-      conditions_t  = await translateBlock(facts.conditions,  target_lang);
-      bp_t          = await translateBlock(facts.bp||'',      target_lang);
-      weight_t      = await translateBlock(facts.weight||'',  target_lang);
-      general_note_t= await translateBlock(facts.general_note||'', target_lang);
+      try {
+        const [trA, trB] = await Promise.all([
+          openai.chat.completions.create({
+            model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+            messages: [{ role:'user', content: tPrompt }],
+            temperature: 0.2
+          }),
+          openai.chat.completions.create({
+            model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+            messages: [{ role:'user', content: sPrompt }],
+            temperature: 0.2
+          })
+        ]);
+        translated_transcript = trA.choices?.[0]?.message?.content?.trim() || '';
+        summary_translated    = trB.choices?.[0]?.message?.content?.trim() || '';
+      } catch {
+        translated_transcript = '';
+        summary_translated    = '';
+      }
     }
 
+    // 4) parse facts
+    const facts = parseFacts(transcript);
+
+    // 5) assemble row
     const id = uid(20);
     const created_at = new Date().toISOString();
     const baseUrl = getBaseUrl(req);
-    const shareUrl = `${baseUrl}/reports/${id}`;
-    const qr_data_url = await QRCode.toDataURL(shareUrl);
+    const share_url = `${baseUrl}/reports/${id}`;
+    const qr_data_url = await QRCode.toDataURL(share_url);
 
-    await dbRun(`
-      INSERT INTO reports (
-        id, created_at,
-        name, email, blood_type,
-        emer_name, emer_phone, emer_email,
-        doctor_name, doctor_phone, doctor_fax, doctor_email,
-        pharmacy_name, pharmacy_phone, pharmacy_fax, pharmacy_address,
-        detected_lang, target_lang,
-        transcript, translated_transcript,
-        medications, allergies, conditions, bp, weight, general_note,
-        medications_t, allergies_t, conditions_t, bp_t, weight_t, general_note_t,
-        share_url, qr_data_url
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `, [
+    const row = {
       id, created_at,
       name, email, blood_type,
       emer_name, emer_phone, emer_email,
-      doctor_name, doctor_phone, doctor_fax, doctor_email,
+      doctor_name, doctor_phone, doctor_email, doctor_fax,
       pharmacy_name, pharmacy_phone, pharmacy_fax, pharmacy_address,
       detected_lang, target_lang,
-      merged, translated_transcript,
-      (facts.medications||[]).join('; '),
-      (facts.allergies||[]).join('; '),
-      (facts.conditions||[]).join('; '),
-      facts.bp||'', facts.weight||'', facts.general_note||'',
-      medications_t, allergies_t, conditions_t, bp_t, weight_t, general_note_t,
-      shareUrl, qr_data_url
-    ]);
+      transcript, translated_transcript,
+      summary_original, summary_translated,
+      medications: (facts.medications||[]).join('; '),
+      allergies:   (facts.allergies||[]).join('; '),
+      conditions:  (facts.conditions||[]).join('; '),
+      bp: facts.bp || '', weight: facts.weight || '',
+      share_url, qr_data_url
+    };
 
-    res.json({ ok:true, id, url: shareUrl });
+    // 6) dynamic insert = never mismatched
+    const cols = await getColumns('reports');
+    const insertCols = Object.keys(row).filter(k => cols.includes(k));
+    const placeholders = insertCols.map(()=>'?').join(',');
+    const values = insertCols.map(k => row[k]);
+    const sql = `INSERT INTO reports (${insertCols.join(',')}) VALUES (${placeholders})`;
+    await dbRun(sql, values);
 
-  }catch(err){
-    console.error('UPLOAD ERROR:', err);
-    res.status(500).json({ ok:false, error: err?.message || 'Server error' });
+    res.json({ ok:true, id, url: share_url });
+  } catch (e) {
+    console.error('UPLOAD ERROR:', e);
+    res.status(500).json({ ok:false, error: e.message || 'Server error' });
   }
 });
 
-// ----------------- reports list -----------------
-app.get('/reports', async (req,res)=>{
-  const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
-  const items = rows.map(r=>`
-    <li class="report-item">
-      <div class="title">Report for ${esc(r.name||'Unknown')}</div>
-      <div class="meta">${new Date(r.created_at).toLocaleString()} • ${esc(r.email||'')}</div>
-      <div class="actions">
-        <a class="btn" href="/reports/${r.id}" target="_blank" rel="noopener">Open</a>
-      </div>
-    </li>
-  `).join('');
+// -------------------------
+// Reports list
+// -------------------------
+app.get('/reports', async (req,res) => {
+  const rows = await dbAll(`SELECT id, created_at, name, email, target_lang FROM reports ORDER BY created_at DESC`);
+  const baseUrl = getBaseUrl(req);
+  const escape = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  const items = rows.map(r => {
+    const title = `Report for ${r.name || 'Unknown'}`;
+    const url = `${baseUrl}/reports/${r.id}`;
+    return `
+      <li class="report-item">
+        <div class="title">${escape(title)}</div>
+        <div class="meta">${new Date(r.created_at).toLocaleString()} • ${escape(r.email||'')}</div>
+        <div class="actions">
+          <a class="btn" href="${url}" target="_blank" rel="noopener">Open</a>
+        </div>
+      </li>
+    `;
+  }).join('');
 
   res.send(`<!doctype html>
 <html><head>
 <meta charset="utf-8"/>
 <title>Reports</title>
-<link rel="stylesheet" href="/static/styles.css"/>
+<link rel="stylesheet" href="/styles.css"/>
 <style>
-  .container { max-width: 980px; margin: 0 auto; padding: 16px; }
+  .container { max-width: 900px; margin: 0 auto; padding: 16px; }
   header { display:flex; justify-content:space-between; align-items:center; border-bottom:3px solid aquamarine; padding:12px 0; }
   h1 { color:#4b0082; margin:0; }
   ul { list-style:none; padding:0; margin:16px 0; }
@@ -328,125 +374,115 @@ app.get('/reports', async (req,res)=>{
 </body></html>`);
 });
 
-// ----------------- single report (with Share & Email block) -----------------
-app.get('/reports/:id', async (req,res)=>{
-  const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
-  if (!row) return res.status(404).send('Not found');
+// -------------------------
+// Single report with dual Summary + dual Transcript
+// -------------------------
+app.get('/reports/:id', async (req,res) => {
+  const r = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
+  if (!r) return res.status(404).send('Not found');
 
-  const created = new Date(row.created_at).toLocaleString();
-  const subj = encodeURIComponent(`Hot Health Report for ${row.name||''}`);
-  const body = encodeURIComponent(
-`Link: ${row.share_url}
-
-Medications: ${row.medications||'None'}
-Allergies: ${row.allergies||'None'}
-Conditions: ${row.conditions||'None'}
-BP: ${row.bp||'—'}   Weight: ${row.weight||'—'}`);
-
-  const mailto  = `mailto:${encodeURIComponent(row.email||'')}?subject=${subj}&body=${body}`;
-  const gmail   = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(row.email||'')}&su=${subj}&body=${body}`;
-  const outlook = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(row.email||'')}&subject=${subj}&body=${body}`;
+  const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const created = new Date(r.created_at).toLocaleString();
+  const mailSubject = encodeURIComponent('Hot Health Report');
+  const mailBody    = encodeURIComponent(`Link: ${r.share_url}\n\nSummary:\nMedications: ${r.medications}\nAllergies: ${r.allergies}\nConditions: ${r.conditions}`);
 
   res.send(`<!doctype html>
 <html><head>
 <meta charset="utf-8"/>
-<title>Hot Health — Report</title>
+<title>Hot Health Report</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<link rel="stylesheet" href="/static/styles.css"/>
+<link rel="stylesheet" href="/styles.css"/>
 <style>
-  .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
-  header { border-bottom:3px solid aquamarine; margin-bottom:12px; padding:14px 0; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 16px; }
+  header { border-bottom:3px solid aquamarine; margin-bottom:12px; padding:12px 0; }
   h1 { color:#4b0082; margin:0 0 6px; }
   .section { background:#fff; border:2px solid aquamarine; border-radius:12px; padding:16px; margin:16px 0; }
-  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
   .dual { display:flex; gap:12px; flex-wrap:wrap; }
-  .block { flex:1; min-width:280px; background:#f8faff; border:1px solid #dbe7ff; border-radius:8px; padding:12px; }
+  .block { flex:1; min-width:260px; background:#f8faff; border:1px solid #dbe7ff; border-radius:8px; padding:12px; }
+  .btnbar{ display:flex; gap:8px; flex-wrap:wrap; }
+  .btn{ text-decoration:none; border:1px solid #dbe7ff; padding:8px 10px; border-radius:8px; background:#f0f5ff; color:#234; font-size:14px; }
+  .hint{ font-size:13px; color:#666; }
   .qr { text-align:center; margin:8px 0; }
-  .btn { text-decoration:none; border:1px solid #dbe7ff; padding:8px 12px; border-radius:8px; background:#f0f5ff; color:#234; font-size:14px; }
-  .tag { display:inline-block; font-size:12px; color:#334; background:#eef4ff; border:1px solid #dbe7ff; padding:2px 6px; border-radius:12px; margin-left:6px; }
+  .list { margin:6px 0; padding-left:18px; }
 </style>
 </head>
 <body>
   <div class="wrap">
     <header>
       <h1>Hot Health — Report
-        ${row.detected_lang ? `<span class="tag">Original: ${esc(row.detected_lang)}</span>`:''}
-        ${row.target_lang   ? `<span class="tag">Target: ${esc(row.target_lang)}</span>`:''}
+        ${r.detected_lang ? `<span style="font-size:12px; border:1px solid #dbe7ff; border-radius:12px; padding:2px 6px; margin-left:6px;">Original: ${esc(r.detected_lang)}</span>`:''}
+        ${r.target_lang ? `<span style="font-size:12px; border:1px solid #dbe7ff; border-radius:12px; padding:2px 6px; margin-left:6px;">Target: ${esc(r.target_lang)}</span>`:''}
       </h1>
       <div><b>Created:</b> ${esc(created)}</div>
     </header>
 
     <section class="section">
-      <h2>Share & Email</h2>
-      <div class="row">
-        <a class="btn" href="${esc(row.share_url)}" target="_blank" rel="noopener" title="Open share link">🔗 Open Link</a>
-        <a class="btn" href="${mailto}">✉️ Email (default)</a>
-        <a class="btn" href="${gmail}" target="_blank" rel="noopener">Gmail</a>
-        <a class="btn" href="${outlook}" target="_blank" rel="noopener">Outlook</a>
-      </div>
-      <div class="qr">
-        <img src="${esc(row.qr_data_url)}" alt="QR" style="max-width:180px;"/>
-        <div style="font-size:13px;color:#555">Scan on a phone or use the link.</div>
-      </div>
-      <div class="row">
+      <div class="btnbar">
+        <a class="btn" href="${esc(r.share_url)}" target="_blank" rel="noopener">🔗 Open Share Link</a>
+        <a class="btn" href="mailto:?subject=${mailSubject}&body=${mailBody}">✉️ Email</a>
+        <button class="btn" onclick="navigator.clipboard.writeText('${esc(r.share_url)}')">📋 Copy Link</button>
         <a class="btn" href="/" rel="noopener">+ New Report</a>
         <a class="btn" href="/reports" rel="noopener">All Reports</a>
       </div>
-    </section>
-
-    <section class="section">
-      <h2>Patient Details</h2>
-      <div><b>Name:</b> ${esc(row.name||'')}</div>
-      <div><b>Email:</b> ${row.email ? `<a href="mailto:${esc(row.email)}">${esc(row.email)}</a>` : '—'}</div>
-      <div><b>Blood Type:</b> ${esc(row.blood_type||'—')}</div>
-      <div><b>Emergency Contact:</b> ${esc(row.emer_name||'')}
-        ${row.emer_phone?` (${esc(row.emer_phone)})`:''}
-        ${row.emer_email?` <a href="mailto:${esc(row.emer_email)}">${esc(row.emer_email)}</a>`:''}
+      <div class="qr">
+        <img src="${esc(r.qr_data_url)}" alt="QR Code" style="max-width:180px;"/>
+        <div class="hint">Scan on a phone or use the link.</div>
       </div>
-      <div style="margin-top:8px"><b>Doctor:</b> ${esc(row.doctor_name||'N/A')}, Tel: ${esc(row.doctor_phone||'N/A')}, Fax: ${esc(row.doctor_fax||'N/A')}, ${row.doctor_email?`<a href="mailto:${esc(row.doctor_email)}">${esc(row.doctor_email)}</a>`:'N/A'}</div>
-      <div><b>Pharmacy:</b> ${esc(row.pharmacy_name||'N/A')}, Tel: ${esc(row.pharmacy_phone||'N/A')}, Fax: ${esc(row.pharmacy_fax||'N/A')}, Addr: ${esc(row.pharmacy_address||'N/A')}</div>
     </section>
 
-    <section class="section">
-      <h2>Summary (Original)</h2>
-      <div><b>Medications:</b> ${esc(row.medications||'None')}</div>
-      <div><b>Allergies:</b> ${esc(row.allergies||'None')}</div>
-      <div><b>Conditions:</b> ${esc(row.conditions||'None')}</div>
-      <div><b>Blood Pressure:</b> ${esc(row.bp||'—')}</div>
-      <div><b>Weight:</b> ${esc(row.weight||'—')}</div>
-      ${row.general_note ? `<div><b>General Note:</b> ${esc(row.general_note)}</div>`:''}
+    <section class="section"><h2>Patient Details</h2>
+      <div><b>Name:</b> ${esc(r.name||'')}</div>
+      <div><b>Email:</b> ${r.email?`<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>`:''}</div>
+      <div><b>Blood Type:</b> ${esc(r.blood_type||'')}</div>
+      <div><b>Emergency Contact:</b> ${esc(r.emer_name||'')} ${r.emer_phone?`(${esc(r.emer_phone)})`:''} ${r.emer_email?`<a href="mailto:${esc(r.emer_email)}">${esc(r.emer_email)}</a>`:''}</div>
+      ${r.doctor_name || r.pharmacy_name ? `
+      <div style="margin-top:8px;">
+        ${r.doctor_name ? `<div><b>Doctor:</b> ${esc(r.doctor_name)} ${r.doctor_phone?`(${esc(r.doctor_phone)})`:''} ${r.doctor_email?`<a href="mailto:${esc(r.doctor_email)}">${esc(r.doctor_email)}</a>`:''} ${r.doctor_fax?`Fax: ${esc(r.doctor_fax)}`:''}</div>`:''}
+        ${r.pharmacy_name ? `<div><b>Pharmacy:</b> ${esc(r.pharmacy_name)} ${r.pharmacy_phone?`(${esc(r.pharmacy_phone)})`:''} ${r.pharmacy_fax?`Fax: ${esc(r.pharmacy_fax)}`:''} ${r.pharmacy_address?`— ${esc(r.pharmacy_address)}`:''}</div>`:''}
+      </div>`:''}
     </section>
 
-    ${row.target_lang ? `
-    <section class="section">
-      <h2>Summary (${esc(row.target_lang)})</h2>
-      <div><b>Medications:</b><br>${(esc(row.medications_t||'')).replace(/\n/g,'<br>') || '—'}</div>
-      <div><b>Allergies:</b><br>${(esc(row.allergies_t||'')).replace(/\n/g,'<br>') || '—'}</div>
-      <div><b>Conditions:</b><br>${(esc(row.conditions_t||'')).replace(/\n/g,'<br>') || '—'}</div>
-      <div><b>Blood Pressure:</b> ${esc(row.bp_t||'—')}</div>
-      <div><b>Weight:</b> ${esc(row.weight_t||'—')}</div>
-      ${row.general_note_t ? `<div><b>General Note:</b><br>${(esc(row.general_note_t)).replace(/\n/g,'<br>')}</div>`:''}
-    </section>`: ''}
-
-    <section class="section">
-      <h2>Transcript</h2>
+    <section class="section"><h2>Summary</h2>
       <div class="dual">
         <div class="block">
-          <h3>Original${row.detected_lang ? ` (${esc(row.detected_lang)})` : ''}</h3>
-          <p>${esc(row.transcript||'')}</p>
+          <h3>Original${r.detected_lang?` (${esc(r.detected_lang)})`:''}</h3>
+          <p>${esc(r.summary_original || '(none)')}</p>
         </div>
         <div class="block">
-          <h3>${row.target_lang ? esc(row.target_lang) : 'Translated'}</h3>
-          <p>${esc(row.translated_transcript||'(no translation)')}</p>
+          <h3>${r.target_lang?`Summary (${esc(r.target_lang)})`:'Summary (translated)'}</h3>
+          <p>${esc(r.summary_translated || '(no translation)')}</p>
         </div>
       </div>
     </section>
 
-    <footer style="text-align:center;color:#666;margin-top:20px;">Hot Health © 2025</footer>
+    <section class="section"><h2>Parsed Facts</h2>
+      <div><b>Medications:</b> ${esc(r.medications || 'None')}</div>
+      <div><b>Allergies:</b> ${esc(r.allergies || 'None')}</div>
+      <div><b>Conditions:</b> ${esc(r.conditions || 'None')}</div>
+      <div><b>Blood Pressure:</b> ${esc(r.bp || '—')}</div>
+      <div><b>Weight:</b> ${esc(r.weight || '—')}</div>
+    </section>
+
+    <section class="section"><h2>Transcript</h2>
+      <div class="dual">
+        <div class="block">
+          <h3>Original${r.detected_lang?` (${esc(r.detected_lang)})`:''}</h3>
+          <p>${esc(r.transcript || '')}</p>
+        </div>
+        <div class="block">
+          <h3>${r.target_lang?`Translated (${esc(r.target_lang)})`:'Translated'}</h3>
+          <p>${esc(r.translated_transcript || '(no translation)')}</p>
+        </div>
+      </div>
+    </section>
   </div>
 </body></html>`);
 });
 
-// ----------------- start -----------------
+// -------------------------
+// Start
+// -------------------------
 await initDB();
-app.listen(PORT, ()=> console.log(`✅ Backend listening on ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Backend listening on ${PORT}`);
+});
