@@ -1,7 +1,6 @@
 // backend/index.js
-// Hot Health — sqlite3-only backend with auth, rich patient/doctor/pharmacy,
-// uploads, transcription + translation, parsed + translated summaries,
-// QR share, reports list & single report.
+// Hot Health — sqlite3-only backend with auth gate, six-part capture, parsing,
+// optional translation + translated summaries, QR share, reports list+view.
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -28,9 +27,8 @@ const USER_PASS = process.env.APP_USER_PASS || 'GoGoPana$';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(16).toString('hex');
 
 // -------- Paths --------
-const PUBLIC_DIR  = path.join(__dirname, 'public');
-const TPL_DIR     = path.join(__dirname, 'templates'); // optional (we inline HTML below)
-const UPLOAD_DIR  = path.join(__dirname, 'uploads');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // -------- OpenAI --------
@@ -41,96 +39,61 @@ const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini';
 const sqlite3 = sqlite3pkg.verbose();
 const DB_FILE = path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(DB_FILE);
-const dbRun = (sql, params = []) =>
-  new Promise((resolve, reject) => db.run(sql, params, function (err) { err ? reject(err) : resolve(this); }));
-const dbGet = (sql, params = []) =>
-  new Promise((resolve, reject) => db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
-const dbAll = (sql, params = []) =>
-  new Promise((resolve, reject) => db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows)));
+const dbRun = (sql, params = []) => new Promise((res, rej) => db.run(sql, params, function (e){ e?rej(e):res(this); }));
+const dbGet = (sql, params = []) => new Promise((res, rej) => db.get(sql, params, (e,row)=> e?rej(e):res(row)));
+const dbAll = (sql, params = []) => new Promise((res, rej) => db.all(sql, params, (e,rows)=> e?rej(e):res(rows)));
 
-async function initDB() {
-  await dbRun(`PRAGMA journal_mode = WAL;`).catch(() => {});
-
+async function initDB(){
+  await dbRun(`PRAGMA journal_mode = WAL;`).catch(()=>{});
   await dbRun(`
     CREATE TABLE IF NOT EXISTS reports (
-      id                     TEXT PRIMARY KEY,
-      created_at             TEXT,
+      id TEXT PRIMARY KEY,
+      created_at TEXT,
 
       -- Patient
-      name                   TEXT,
-      email                  TEXT,
-      blood_type             TEXT,
+      name TEXT, email TEXT, blood_type TEXT,
 
-      -- Emergency contact
-      emer_name              TEXT,
-      emer_phone             TEXT,
-      emer_email             TEXT,
+      -- Emergency
+      emer_name TEXT, emer_phone TEXT, emer_email TEXT,
 
       -- Doctor
-      doctor_name            TEXT,
-      doctor_phone           TEXT,
-      doctor_fax             TEXT,
-      doctor_email           TEXT,
+      doctor_name TEXT, doctor_phone TEXT, doctor_fax TEXT, doctor_email TEXT,
 
       -- Pharmacy
-      pharmacy_name          TEXT,
-      pharmacy_phone         TEXT,
-      pharmacy_fax           TEXT,
-      pharmacy_address       TEXT,
+      pharmacy_name TEXT, pharmacy_phone TEXT, pharmacy_fax TEXT, pharmacy_address TEXT,
 
       -- Langs
-      detected_lang          TEXT,
-      target_lang            TEXT,
+      detected_lang TEXT, target_lang TEXT,
 
       -- Text
-      transcript             TEXT,
-      translated_transcript  TEXT,
+      transcript TEXT, translated_transcript TEXT,
 
-      -- Parsed summary (orig)
-      medications            TEXT,
-      allergies              TEXT,
-      conditions             TEXT,
-      bp                     TEXT,
-      weight                 TEXT,
-      general_note           TEXT,
+      -- Parsed (original)
+      medications TEXT, allergies TEXT, conditions TEXT, bp TEXT, weight TEXT, general_note TEXT,
 
-      -- Parsed summary (translated)
-      medications_t          TEXT,
-      allergies_t            TEXT,
-      conditions_t           TEXT,
-      bp_t                   TEXT,
-      weight_t               TEXT,
-      general_note_t         TEXT,
+      -- Parsed (translated)
+      medications_t TEXT, allergies_t TEXT, conditions_t TEXT, bp_t TEXT, weight_t TEXT, general_note_t TEXT,
 
       -- Share
-      share_url              TEXT,
-      qr_data_url            TEXT
-    );
+      share_url TEXT, qr_data_url TEXT
+    )
   `);
 
-  // Add missing columns defensively (safe to run repeatedly)
+  // Defensive add columns (idempotent)
   const need = [
-    ['doctor_name','TEXT'],['doctor_phone','TEXT'],['doctor_fax','TEXT'],['doctor_email','TEXT'],
-    ['pharmacy_name','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],['pharmacy_address','TEXT'],
-    ['general_note','TEXT'],
-    ['medications_t','TEXT'],['allergies_t','TEXT'],['conditions_t','TEXT'],['bp_t','TEXT'],['weight_t','TEXT'],['general_note_t','TEXT']
+    'doctor_name','doctor_phone','doctor_fax','doctor_email',
+    'pharmacy_name','pharmacy_phone','pharmacy_fax','pharmacy_address',
+    'general_note','medications_t','allergies_t','conditions_t','bp_t','weight_t','general_note_t'
   ];
   const cols = await dbAll(`PRAGMA table_info(reports)`);
-  const have = new Set(cols.map(c => c.name));
-  for (const [name, type] of need) {
-    if (!have.has(name)) {
-      await dbRun(`ALTER TABLE reports ADD COLUMN ${name} ${type};`).catch(()=>{});
-    }
-  }
+  const have = new Set(cols.map(c=>c.name));
+  for (const c of need) if (!have.has(c)) await dbRun(`ALTER TABLE reports ADD COLUMN ${c} TEXT`).catch(()=>{});
 }
 
-// -------- Utilities --------
-app.use(cookieParser(SESSION_SECRET));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.static(PUBLIC_DIR));
+// -------- Utils --------
+const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const uid = (n=22) => crypto.randomBytes(n).toString('base64url').slice(0,n);
 
-function uid(n=22){ return crypto.randomBytes(n).toString('base64url').slice(0,n); }
 function getBaseUrl(req){
   const u = process.env.PUBLIC_BASE_URL;
   if (u && /^https?:\/\//i.test(u)) return u.replace(/\/+$/,'');
@@ -138,109 +101,84 @@ function getBaseUrl(req){
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   return `${proto}://${host}`;
 }
-const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-// quick parser (now with general note capture)
-function parseFacts(text) {
-  const meds = [];
-  const allergies = [];
-  const conditions = [];
+function parseFacts(text){
+  const meds=[], allergies=[], conditions=[];
+  const seen = new Set();
 
   // meds
-  const medRx = /([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:|\s)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
-  const seen = new Set(); let m;
-  while ((m = medRx.exec(text)) !== null) {
-    const key = `${m[1].toLowerCase()}|${m[2]} ${m[3]}`;
-    if (!seen.has(key)) { meds.push(`${m[1]} — ${m[2]} ${m[3]}`); seen.add(key); }
-  }
+  const medRx=/([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:|\s)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
+  let m; while ((m=medRx.exec(text))){ const key=`${m[1].toLowerCase()}|${m[2]} ${m[3]}`; if(!seen.has(key)){ meds.push(`${m[1]} — ${m[2]} ${m[3]}`); seen.add(key);} }
 
   // allergies
-  const aRx = /\ballerg(?:y|ies)|allergic to\b([^\.]+)/gi; let a;
-  while ((a = aRx.exec(text)) !== null) {
-    const tail = (a[1] || '').replace(/^\s*to\s*/i,'');
-    const list = tail.split(/,|;| and /i).map(s => s.trim()).filter(Boolean);
-    for (const item of list) if (item && !allergies.includes(item)) allergies.push(item);
-  }
+  const aRx=/(?:allerg(?:y|ies)|allergic to)\b([^\.]+)/gi; let a;
+  while ((a=aRx.exec(text))){ const list=(a[1]||'').replace(/^\s*to\s*/i,'').split(/,|;| and /i).map(s=>s.trim()).filter(Boolean); for(const it of list) if(!allergies.includes(it)) allergies.push(it); }
 
   // conditions
-  const cRx = /\b(I have|I've|I’ve|diagnosed with|history of)\b([^\.]+)/gi; let c;
-  while ((c = cRx.exec(text)) !== null) {
-    const s = c[2].replace(/\b(allerg(?:y|ies)|allergic|medications?|pills?)\b/ig,'').trim();
-    if (s) conditions.push(s);
-  }
+  const cRx=/\b(I have|I've|I’ve|diagnosed with|history of)\b([^\.]+)/gi; let c;
+  while ((c=cRx.exec(text))){ const s=c[2].replace(/\b(allerg(?:y|ies)|allergic|medications?|pills?)\b/ig,'').trim(); if(s) conditions.push(s); }
 
   // BP
-  let bp = null; const bpM = text.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/);
-  if (bpM) bp = `${bpM[1]}/${bpM[2]}`;
+  const bpM = text.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/); const bp = bpM?`${bpM[1]}/${bpM[2]}`: '';
 
   // Weight
-  let weight = null; const wM = text.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i);
-  if (wM) weight = `${wM[1]} ${/kg/i.test(wM[2]) ? 'kg' : 'lbs'}`;
+  const wM = text.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i); const weight = wM?`${wM[1]} ${/kg/i.test(wM[2])?'kg':'lbs'}`:'';
 
-  // General note: try to extract “note …” or “overall …”
-  let general = '';
-  const gM = text.match(/\b(note|overall|summary):?\s*([^\.]+)\.?/i);
-  if (gM) general = (gM[2] || '').trim();
+  // General note
+  const gM = text.match(/\b(note|overall|summary):?\s*([^\.]+)\.?/i); const general = gM? (gM[2]||'').trim() : '';
 
-  return { medications: meds, allergies, conditions, bp, weight, general_note: general };
+  return { medications:meds, allergies, conditions, bp, weight, general_note: general };
 }
 
-async function translateIfNeeded(textOrArray, targetLang){
-  if (!targetLang) return { ok:false, out:'' };
-  const original = Array.isArray(textOrArray) ? textOrArray.join('\n') : String(textOrArray||'');
-  if (!original.trim()) return { ok:true, out:'' };
-  const prompt = `Translate to ${targetLang}. Keep bullets/lines.\n\n${original}`;
-  try{
-    const rsp = await openai.chat.completions.create({
-      model: TEXT_MODEL,
-      messages: [{ role:'user', content: prompt }],
-      temperature: 0.2
-    });
-    const out = rsp.choices?.[0]?.message?.content?.trim() || '';
-    return { ok:true, out };
-  }catch{
-    return { ok:false, out:'' };
-  }
+async function translateBlock(sOrArr, lang){
+  if (!lang) return '';
+  const src = Array.isArray(sOrArr) ? sOrArr.join('\n') : String(sOrArr||'');
+  if (!src.trim()) return '';
+  const rsp = await openai.chat.completions.create({
+    model: TEXT_MODEL,
+    messages: [{ role:'user', content:`Translate to ${lang}. Preserve lines/bullets.\n\n${src}` }],
+    temperature: 0.2
+  });
+  return rsp.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// -------- Auth routes --------
-function setSession(res, user){
-  res.cookie('hhsess', user, { httpOnly:true, signed:true, sameSite:'lax', maxAge:7*24*3600e3 });
-}
-function clearSession(res){ res.clearCookie('hhsess'); }
-function requireAuth(req,res,next){
-  if (!req.signedCookies?.hhsess) return res.redirect('/login');
-  next();
-}
+// -------- Middleware order (fixes auth bypass) --------
+app.use(cookieParser(SESSION_SECRET));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
-app.get('/login', (req,res) => {
-  const p = path.join(PUBLIC_DIR, 'login.html');
+// Public login routes (no auth)
+app.get('/login', (req,res)=>{
+  const p = path.join(PUBLIC_DIR,'login.html');
   if (fs.existsSync(p)) return res.sendFile(p);
-  res.send(`<!doctype html><html><body>
-    <h3>Sign in</h3>
+  res.send(`<!doctype html><html><body><h3>Sign in</h3>
     <form method="POST" action="/login">
-      <input name="userId" placeholder="User ID"><br/>
-      <input name="password" type="password" placeholder="Password"><br/>
-      <button type="submit">Sign in</button>
+      <input name="userId" placeholder="User ID"/><br/>
+      <input name="password" type="password" placeholder="Password"/><br/>
+      <button>Sign in</button>
     </form></body></html>`);
 });
 app.post('/login', bodyParser.urlencoded({extended:true}), (req,res)=>{
   const { userId, password } = req.body||{};
-  if (userId===USER_ID && password===USER_PASS){ setSession(res,userId); return res.redirect('/'); }
+  if (userId===USER_ID && password===USER_PASS){ res.cookie('hhsess', userId, { httpOnly:true, signed:true, sameSite:'lax', maxAge:7*24*3600e3 }); return res.redirect('/'); }
   res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
 });
-app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
+app.post('/logout', (req,res)=>{ res.clearCookie('hhsess'); res.redirect('/login'); });
 
-// Protect app + reports
-app.use(['/', '/upload', '/reports', '/reports/*'], requireAuth);
+// Auth gate — apply BEFORE serving the app
+function requireAuth(req,res,next){ if(!req.signedCookies?.hhsess) return res.redirect('/login'); next(); }
+app.use(['/','/upload','/reports','/reports/*','/static/*'], requireAuth);
 
-// Home
+// Serve app HTML explicitly
 app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR,'index.html')));
 
-// -------- Uploads --------
+// Serve static under /static so '/' can’t be satisfied by static dir index
+app.use('/static', express.static(PUBLIC_DIR, { index:false }));
+
+// -------- Upload (single audio + optional `parts` text) --------
 const storage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-  filename:    (_, file, cb) => cb(null, `${Date.now()}-${crypto.randomUUID().slice(0,8)}.webm`)
+  destination: (_, __, cb)=> cb(null, UPLOAD_DIR),
+  filename: (_, file, cb)=> cb(null, `${Date.now()}-${crypto.randomUUID().slice(0,8)}.webm`)
 });
 const upload = multer({ storage });
 
@@ -253,66 +191,49 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       emer_name='', emer_phone='', emer_email='',
       doctor_name='N/A', doctor_phone='N/A', doctor_fax='N/A', doctor_email='N/A',
       pharmacy_name='N/A', pharmacy_phone='N/A', pharmacy_fax='N/A', pharmacy_address='N/A',
-      lang='',     // target language
-      parts=''     // optional extra typed/voice chunks from UI (we’ll merge)
-    } = req.body || {};
+      lang='', parts=''
+    } = req.body||{};
 
-    // 1) Transcribe entire recording
-    let transcript = '';
+    // 1) transcribe uploaded audio
+    let transcript='';
     try{
-      const tr = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(req.file.path),
-        model: 'gpt-4o-mini-transcribe'
-      });
+      const tr = await openai.audio.transcriptions.create({ file: fs.createReadStream(req.file.path), model:'gpt-4o-mini-transcribe' });
       transcript = tr.text?.trim() || '';
     }catch{
-      try{
-        const tr2 = await openai.audio.transcriptions.create({
-          file: fs.createReadStream(req.file.path),
-          model: 'whisper-1'
-        });
-        transcript = tr2.text?.trim() || '';
-      }catch{
-        return res.status(500).json({ ok:false, error:'Transcription failed' });
-      }
+      const tr2 = await openai.audio.transcriptions.create({ file: fs.createReadStream(req.file.path), model:'whisper-1' });
+      transcript = tr2.text?.trim() || '';
     }
 
-    // Merge any “parts” text the frontend sends (line-separated)
-    let merged = transcript;
-    if (parts && String(parts).trim()) {
-      merged = [transcript, String(parts).trim()].filter(Boolean).join('\n');
-    }
+    // Merge any text parts from the six mini recorders
+    const merged = [transcript, String(parts||'').trim()].filter(Boolean).join('\n');
 
-    // 2) Translate transcript if requested
+    // 2) optional translation of transcript
     const target_lang = (lang||'').trim();
     let translated_transcript = '';
-    if (target_lang){
-      const t = await translateIfNeeded(merged, target_lang);
-      translated_transcript = t.out || '';
-    }
+    if (target_lang) translated_transcript = await translateBlock(merged, target_lang);
 
-    // 3) Parse facts from ORIGINAL transcript (not the translated one)
+    // 3) parse facts from original
     const facts = parseFacts(merged);
 
-    // 4) Build translated summary (per block) if requested
+    // 4) translated summaries
     let medications_t='', allergies_t='', conditions_t='', bp_t='', weight_t='', general_note_t='';
     if (target_lang){
-      medications_t = (await translateIfNeeded(facts.medications, target_lang)).out;
-      allergies_t   = (await translateIfNeeded(facts.allergies, target_lang)).out;
-      conditions_t  = (await translateIfNeeded(facts.conditions, target_lang)).out;
-      bp_t          = (await translateIfNeeded(facts.bp||'', target_lang)).out;
-      weight_t      = (await translateIfNeeded(facts.weight||'', target_lang)).out;
-      general_note_t= (await translateIfNeeded(facts.general_note||'', target_lang)).out;
+      medications_t = await translateBlock(facts.medications, target_lang);
+      allergies_t   = await translateBlock(facts.allergies,   target_lang);
+      conditions_t  = await translateBlock(facts.conditions,  target_lang);
+      bp_t          = await translateBlock(facts.bp||'',      target_lang);
+      weight_t      = await translateBlock(facts.weight||'',  target_lang);
+      general_note_t= await translateBlock(facts.general_note||'', target_lang);
     }
 
-    // 5) Store
+    // 5) store
     const id = uid(20);
     const created_at = new Date().toISOString();
     const baseUrl = getBaseUrl(req);
     const shareUrl = `${baseUrl}/reports/${id}`;
     const qr_data_url = await QRCode.toDataURL(shareUrl);
 
-    const insertSql = `
+    await dbRun(`
       INSERT INTO reports (
         id, created_at,
         name, email, blood_type,
@@ -324,11 +245,8 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
         medications, allergies, conditions, bp, weight, general_note,
         medications_t, allergies_t, conditions_t, bp_t, weight_t, general_note_t,
         share_url, qr_data_url
-      )
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `;
-
-    await dbRun(insertSql, [
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `, [
       id, created_at,
       name, email, blood_type,
       emer_name, emer_phone, emer_email,
@@ -339,8 +257,8 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       (facts.medications||[]).join('; '),
       (facts.allergies||[]).join('; '),
       (facts.conditions||[]).join('; '),
-      facts.bp || '', facts.weight || '', facts.general_note || '',
-      medications_t||'', allergies_t||'', conditions_t||'', bp_t||'', weight_t||'', general_note_t||'',
+      facts.bp||'', facts.weight||'', facts.general_note||'',
+      medications_t, allergies_t, conditions_t, bp_t, weight_t, general_note_t,
       shareUrl, qr_data_url
     ]);
 
@@ -369,7 +287,7 @@ app.get('/reports', async (req,res)=>{
 <html><head>
 <meta charset="utf-8"/>
 <title>Reports</title>
-<link rel="stylesheet" href="/styles.css"/>
+<link rel="stylesheet" href="/static/styles.css"/>
 <style>
   .container { max-width: 980px; margin: 0 auto; padding: 16px; }
   header { display:flex; justify-content:space-between; align-items:center; border-bottom:3px solid aquamarine; padding:12px 0; }
@@ -396,14 +314,12 @@ app.get('/reports', async (req,res)=>{
 </body></html>`);
 });
 
-// -------- Single report (with email/share block & dual summaries) --------
+// -------- Single report (unchanged from last good build) --------
 app.get('/reports/:id', async (req,res)=>{
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!row) return res.status(404).send('Not found');
 
   const created = new Date(row.created_at).toLocaleString();
-
-  // Email compose helpers
   const subj = encodeURIComponent(`Hot Health Report for ${row.name||''}`);
   const body = encodeURIComponent(
 `Link: ${row.share_url}
@@ -413,16 +329,16 @@ Allergies: ${row.allergies||'None'}
 Conditions: ${row.conditions||'None'}
 BP: ${row.bp||'—'}   Weight: ${row.weight||'—'}`);
 
-  const mailto = `mailto:${encodeURIComponent(row.email||'')}?subject=${subj}&body=${body}`;
-  const gmail  = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(row.email||'')}&su=${subj}&body=${body}`;
-  const outlook= `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(row.email||'')}&subject=${subj}&body=${body}`;
+  const mailto  = `mailto:${encodeURIComponent(row.email||'')}?subject=${subj}&body=${body}`;
+  const gmail   = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(row.email||'')}&su=${subj}&body=${body}`;
+  const outlook = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(row.email||'')}&subject=${subj}&body=${body}`;
 
   res.send(`<!doctype html>
 <html><head>
 <meta charset="utf-8"/>
 <title>Hot Health — Report</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<link rel="stylesheet" href="/styles.css"/>
+<link rel="stylesheet" href="/static/styles.css"/>
 <style>
   .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
   header { border-bottom:3px solid aquamarine; margin-bottom:12px; padding:14px 0; }
@@ -434,7 +350,6 @@ BP: ${row.bp||'—'}   Weight: ${row.weight||'—'}`);
   .qr { text-align:center; margin:8px 0; }
   .btn { text-decoration:none; border:1px solid #dbe7ff; padding:8px 12px; border-radius:8px; background:#f0f5ff; color:#234; font-size:14px; }
   .tag { display:inline-block; font-size:12px; color:#334; background:#eef4ff; border:1px solid #dbe7ff; padding:2px 6px; border-radius:12px; margin-left:6px; }
-  ul.clean { margin:0; padding-left:18px; }
 </style>
 </head>
 <body>
@@ -474,11 +389,7 @@ BP: ${row.bp||'—'}   Weight: ${row.weight||'—'}`);
         ${row.emer_phone?` (${esc(row.emer_phone)})`:''}
         ${row.emer_email?` <a href="mailto:${esc(row.emer_email)}">${esc(row.emer_email)}</a>`:''}
       </div>
-    </section>
-
-    <section class="section">
-      <h2>Doctor & Pharmacy</h2>
-      <div><b>Doctor:</b> ${esc(row.doctor_name||'N/A')}, Tel: ${esc(row.doctor_phone||'N/A')}, Fax: ${esc(row.doctor_fax||'N/A')}, ${row.doctor_email?`<a href="mailto:${esc(row.doctor_email)}">${esc(row.doctor_email)}</a>`:'N/A'}</div>
+      <div style="margin-top:8px"><b>Doctor:</b> ${esc(row.doctor_name||'N/A')}, Tel: ${esc(row.doctor_phone||'N/A')}, Fax: ${esc(row.doctor_fax||'N/A')}, ${row.doctor_email?`<a href="mailto:${esc(row.doctor_email)}">${esc(row.doctor_email)}</a>`:'N/A'}</div>
       <div><b>Pharmacy:</b> ${esc(row.pharmacy_name||'N/A')}, Tel: ${esc(row.pharmacy_phone||'N/A')}, Fax: ${esc(row.pharmacy_fax||'N/A')}, Addr: ${esc(row.pharmacy_address||'N/A')}</div>
     </section>
 
