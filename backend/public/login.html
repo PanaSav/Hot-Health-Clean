@@ -4,21 +4,20 @@
   <meta charset="utf-8">
   <title>Hot Health — Sign In</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/styles.css">
   <style>
-    body{background:#f6f9ff;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
-    .center{max-width:420px;margin:10vh auto;padding:24px;background:#fff;border:2px solid aquamarine;border-radius:12px}
-    h1{margin:0 0 12px;color:#4b0082;text-align:center}
-    .muted{color:#555;text-align:center;margin:0 0 16px}
-    form{display:grid;gap:12px}
-    input{padding:10px;border:1px solid #cfd8ea;border-radius:8px;font-size:16px}
-    button{padding:10px 14px;border-radius:8px;border:0;background:#0a84ff;color:#fff;font-size:16px;cursor:pointer}
-    button:hover{filter:brightness(0.96)}
+    .center { max-width: 420px; margin: 10vh auto; padding: 24px; background:#fff; border:2px solid aquamarine; border-radius:12px; }
+    .title { text-align:center; color:#4b0082; margin:0 0 12px; }
+    .muted { color:#555; text-align:center; margin:0 0 16px; }
+    form { display:grid; gap:12px; }
+    input { padding:10px 12px; border:1px solid #cfd8ea; border-radius:8px; font-size:16px; }
+    button { padding:10px 14px; border-radius:8px; border:0; background:#0a84ff; color:#fff; font-size:16px; cursor:pointer; }
+    button:hover { filter:brightness(0.96); }
   </style>
 </head>
 <body>
   <div class="center">
-    <h1>Hot Health — Sign In</h1>
+    <h1 class="title">Hot Health — Sign In</h1>
     <p class="muted">Enter your credentials to continue.</p>
     <form method="POST" action="/login">
       <input name="userId" placeholder="User ID" autocomplete="username" required>

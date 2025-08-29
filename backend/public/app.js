@@ -1,117 +1,118 @@
-// public/app.js
-const $ = s => document.querySelector(s);
+const $ = sel => document.querySelector(sel);
 
-const errBox = $('#error');
+const btnRec = $('#btnRec');
+const meta   = $('#recMeta');
 const out    = $('#result');
-const btnGen = $('#btnGenerate');
+const errBox = $('#error');
 
-function gatherForm(){
+const openLink = $('#openLink');
+const copyLink = $('#copyLink');
+const emailLink= $('#emailLink');
+const shareBar = $('#shareBtns');
+
+const dualSumm = $('#dualSumm');
+const sumOrig  = $('#sumOrig');
+const sumTrans = $('#sumTrans');
+const sumLang  = $('#sumLang');
+
+let mediaRecorder, chunks = [];
+
+function setError(msg){ errBox.textContent = msg || ''; }
+function setMeta(msg){ meta.textContent = msg || ''; }
+
+function gatherForm() {
   return {
     name: $('#pName').value.trim(),
     email: $('#pEmail').value.trim(),
     blood_type: $('#blood').value.trim(),
 
-    emer_name: $('#eName')?.value.trim() || '',
-    emer_phone: $('#ePhone')?.value.trim() || '',
-    emer_email: $('#eEmail')?.value.trim() || '',
+    emer_name:  $('#eName').value.trim(),
+    emer_phone: $('#ePhone').value.trim(),
+    emer_email: $('#eEmail').value.trim(),
 
-    doctor_name: $('#dName')?.value.trim() || 'N/A',
-    doctor_phone: $('#dPhone')?.value.trim() || 'N/A',
-    doctor_fax: $('#dFax')?.value.trim() || 'N/A',
-    doctor_email: $('#dEmail')?.value.trim() || 'N/A',
+    doctor_name:  $('#dName').value.trim(),
+    doctor_phone: $('#dPhone').value.trim(),
+    doctor_email: $('#dEmail').value.trim(),
+    doctor_fax:   '',
 
-    pharmacy_name: $('#phName')?.value.trim() || 'N/A',
-    pharmacy_phone: $('#phPhone')?.value.trim() || 'N/A',
-    pharmacy_fax: $('#phFax')?.value.trim() || 'N/A',
-    pharmacy_address: $('#phAddr')?.value.trim() || 'N/A',
+    pharmacy_name:    $('#phName').value.trim(),
+    pharmacy_phone:   $('#phPhone').value.trim(),
+    pharmacy_fax:     $('#phFax').value.trim(),
+    pharmacy_address: $('#phAddress').value.trim(),
 
     lang: $('#lang').value.trim()
   };
 }
 
-function setError(m){ errBox.textContent = m || ''; }
+async function uploadBlob(blob) {
+  const fd = new FormData();
+  fd.append('audio', blob, 'recording.webm');
+  const f = gatherForm();
+  for (const [k,v] of Object.entries(f)) fd.append(k, v);
 
-// Mini recorder model
-class MiniRecorder {
-  constructor(root){
-    this.root = root;
-    this.key = root.dataset.key;
-    this.maxMs = Number(root.dataset.max||60000);
-    this.btn = root.querySelector('.rec');
-    this.hint = root.querySelector('.hint');
-    this.media = null;
-    this.chunks = [];
-    this.timer = null;
-    this.blob = null;
+  const r = await fetch('/upload', { method:'POST', body: fd });
+  if (!r.ok) throw new Error(`Server error`);
+  return r.json();
+}
 
-    this.btn.addEventListener('click', ()=> this.toggle());
+async function startRec() {
+  setError('');
+  setMeta('');
+  chunks = [];
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    setError('Microphone blocked. Allow mic permission and try again.');
+    return;
   }
-  async start(){
-    try{
-      this.chunks = [];
-      const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
-      this.media = new MediaRecorder(stream, { mimeType:'audio/webm' });
-      this.media.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
-      this.media.onstop = () => {
-        clearTimeout(this.timer);
-        try{
-          this.blob = new Blob(this.chunks, { type:'audio/webm' });
-          this.hint.textContent = `Recorded ${(this.blob.size/1024).toFixed(1)} KB`;
-        }catch(e){ setError(e.message||String(e)); }
-        this.btn.textContent = 'Record';
-      };
-      this.media.start();
-      this.btn.textContent = 'Stop';
-      this.hint.textContent = `Recording… auto-stops at ${(this.maxMs/1000)|0}s`;
-      this.timer = setTimeout(()=> this.stop(), this.maxMs);
-    }catch(e){
-      setError('Mic blocked or unsupported. Allow permission.');
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  mediaRecorder.onstop = async () => {
+    try {
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      setMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB`);
+      const json = await uploadBlob(blob);
+      if (!json.ok) throw new Error(json.error || 'Server error');
+
+      // Show result
+      out.innerHTML = `
+        <div><b>Report:</b> <a href="${json.url}" target="_blank" rel="noopener">${json.url}</a></div>
+        ${json.qr ? `<div style="margin-top:8px"><img src="${json.qr}" alt="QR" style="max-width:160px"/></div>` : ''}
+      `;
+      // Share buttons
+      openLink.href = json.url;
+      emailLink.href = `mailto:?subject=${encodeURIComponent('Hot Health Report')}&body=${encodeURIComponent(json.url)}`;
+      copyLink.onclick = () => navigator.clipboard.writeText(json.url);
+      shareBar.style.display = 'flex';
+
+      // Dual summary (if we got them)
+      if (json.summary_original || json.summary_translated) {
+        sumOrig.textContent = json.summary_original || '(none)';
+        sumTrans.textContent = json.summary_translated || '(no translation)';
+        sumLang.textContent = json.target_lang || 'Translated';
+        dualSumm.style.display = 'grid';
+      } else {
+        dualSumm.style.display = 'none';
+      }
+    } catch (e) {
+      setError(e.message || String(e));
     }
-  }
-  stop(){
-    if (this.media && this.media.state!=='inactive'){
-      this.media.stop();
-      this.media.stream.getTracks().forEach(t=>t.stop());
-    }
-  }
-  toggle(){
-    if (this.media && this.media.state!=='inactive') this.stop();
-    else this.start();
+  };
+  mediaRecorder.start();
+  btnRec.textContent = 'Stop';
+  setMeta('Recording… click Stop when done.');
+}
+
+function stopRec() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+    mediaRecorder.stream.getTracks().forEach(t => t.stop());
+    btnRec.textContent = 'Record';
   }
 }
 
-// init all mini recorders
-const minis = [...document.querySelectorAll('.mini')].map(div => new MiniRecorder(div));
-
-// Upload merges all six into one server transcription + `parts` text
-btnGen.addEventListener('click', async ()=>{
-  try{
-    setError('');
-    out.textContent = 'Uploading & generating…';
-
-    // pick the biggest blob as the primary audio (so whisper works best)
-    const blobs = minis.map(m=>m.blob).filter(Boolean);
-    if (!blobs.length) { setError('Please record at least one section.'); out.textContent=''; return; }
-    const primary = blobs.sort((a,b)=>b.size-a.size)[0];
-
-    // Concatenate text markers for parsing hints on server
-    // (Server will treat this as extra text "parts" merged with the transcription)
-    const parts = minis.map(m => m.blob ? `#${m.key}` : '').filter(Boolean).join('\n');
-
-    const fd = new FormData();
-    fd.append('audio', primary, 'recording.webm');
-    const f = gatherForm();
-    Object.entries(f).forEach(([k,v])=> fd.append(k,v));
-    fd.append('parts', parts);
-
-    const r = await fetch('/upload', { method:'POST', body: fd });
-    const txt = await r.text();
-    let json;
-    try { json = JSON.parse(txt); } catch { throw new Error(`Upload failed (${r.status}): ${txt}`); }
-    if (!json.ok) throw new Error(json.error||'Server error');
-
-    out.innerHTML = `✅ Created. <a class="btn alt" href="${json.url}" target="_blank" rel="noopener">Open report</a>`;
-  }catch(e){
-    setError(e.message||String(e));
-  }
+btnRec.addEventListener('click', () => {
+  if (btnRec.textContent === 'Record') startRec();
+  else stopRec();
 });

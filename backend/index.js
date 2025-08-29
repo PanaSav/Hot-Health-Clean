@@ -1,4 +1,5 @@
-// One-file backend (login gate, uploads, transcription+translation, summary dual blocks, QR, reports)
+// One-file backend (login gate, uploads, transcription+translation, dual summary+transcript, QR, reports)
+// SQLITE: single-driver (sqlite3) to avoid recurring package issues.
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -10,6 +11,7 @@ import multer from 'multer';
 import cookieParser from 'cookie-parser';
 import QRCode from 'qrcode';
 import OpenAI from 'openai';
+import sqlite3pkg from 'sqlite3';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -37,26 +39,35 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static(PUBLIC_DIR));
 
 // -------------------------
-// DB: prefer better-sqlite3; fallback to sqlite3+sqlite
+// DB: sqlite3 only (promisified helpers)
 // -------------------------
-let db = null;
-let useBetter = false;
+const sqlite3 = sqlite3pkg.verbose();
+const dbFile = path.join(__dirname, 'data.sqlite');
+const db = new sqlite3.Database(dbFile);
+
+function pRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) return reject(err);
+      resolve(this);
+    });
+  });
+}
+function pGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
+  });
+}
+function pAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+  });
+}
+function pExec(sql) {
+  return new Promise((resolve, reject) => db.exec(sql, err => (err ? reject(err) : resolve())));
+}
 
 async function initDB() {
-  try {
-    const { default: BetterSqlite3 } = await import('better-sqlite3');
-    db = new BetterSqlite3(path.join(__dirname, 'data.sqlite'));
-    useBetter = true;
-  } catch {
-    const { default: sqlite3 } = await import('sqlite3');
-    const { open } = await import('sqlite');
-    db = await open({
-      filename: path.join(__dirname, 'data.sqlite'),
-      driver: sqlite3.Database
-    });
-    useBetter = false;
-  }
-
   const createSql = `
   CREATE TABLE IF NOT EXISTS reports (
     id            TEXT PRIMARY KEY,
@@ -89,44 +100,24 @@ async function initDB() {
     share_url     TEXT,
     qr_data_url   TEXT
   );`;
+  await pExec(createSql);
 
-  if (useBetter) db.exec(createSql); else await db.exec(createSql);
-
-  // Add any missing columns safely (older DBs)
-  const wantCols = [
+  // add missing columns safely (older DBs)
+  const existing = await getColumns('reports');
+  const want = [
     ['doctor_name','TEXT'],['doctor_phone','TEXT'],['doctor_email','TEXT'],['doctor_fax','TEXT'],
     ['pharmacy_name','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],['pharmacy_address','TEXT'],
     ['summary_original','TEXT'],['summary_translated','TEXT']
   ];
-  const existing = await getColumns('reports');
-  for (const [name,def] of wantCols) {
-    if (!existing.includes(name)) {
-      const sql = `ALTER TABLE reports ADD COLUMN ${name} ${def}`;
-      if (useBetter) { try { db.exec(sql); } catch {} } else { try { await db.exec(sql); } catch {} }
+  for (const [col,def] of want) {
+    if (!existing.includes(col)) {
+      try { await pRun(`ALTER TABLE reports ADD COLUMN ${col} ${def}`); } catch {}
     }
   }
 }
-
-function dbRun(sql, params=[]) {
-  if (useBetter) { db.prepare(sql).run(params); return Promise.resolve(); }
-  return db.run(sql, params);
-}
-function dbGet(sql, params=[]) {
-  if (useBetter) return Promise.resolve(db.prepare(sql).get(params));
-  return db.get(sql, params);
-}
-function dbAll(sql, params=[]) {
-  if (useBetter) return Promise.resolve(db.prepare(sql).all(params));
-  return db.all(sql, params);
-}
 async function getColumns(table) {
-  if (useBetter) {
-    const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-    return rows.map(r => r.name);
-  } else {
-    const rows = await db.all(`PRAGMA table_info(${table})`);
-    return rows.map(r => r.name);
-  }
+  const rows = await pAll(`PRAGMA table_info(${table})`);
+  return rows.map(r => r.name);
 }
 
 // -------------------------
@@ -163,10 +154,7 @@ app.post('/login', (req,res) => {
 });
 app.post('/logout', (req,res) => { clearSession(res); res.redirect('/login'); });
 
-// Protect app & reports
 app.use(['/', '/upload', '/reports', '/reports/*'], requireAuth);
-
-// Home (frontend)
 app.get('/', (req,res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
 // -------------------------
@@ -181,7 +169,6 @@ function getBaseUrl(req) {
 }
 function uid(n=22){ return crypto.randomBytes(n).toString('base64url').slice(0,n); }
 
-// Basic facts parser (tune as needed)
 function parseFacts(text) {
   const meds=[], allergies=[], conditions=[];
   const medRx=/([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:)?\s*(\d+)\s*(mg|mcg|g|ml)/gi;
@@ -203,7 +190,7 @@ function parseFacts(text) {
 }
 
 // -------------------------
-// Multer (store webm)
+// Multer
 // -------------------------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
@@ -306,15 +293,24 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       share_url, qr_data_url
     };
 
-    // 6) dynamic insert = never mismatched
+    // 6) dynamic insert (never mismatched)
     const cols = await getColumns('reports');
     const insertCols = Object.keys(row).filter(k => cols.includes(k));
     const placeholders = insertCols.map(()=>'?').join(',');
     const values = insertCols.map(k => row[k]);
     const sql = `INSERT INTO reports (${insertCols.join(',')}) VALUES (${placeholders})`;
-    await dbRun(sql, values);
+    await pRun(sql, values);
 
-    res.json({ ok:true, id, url: share_url });
+    // 7) respond (include summary + QR so front page can show immediately)
+    res.json({
+      ok: true,
+      id,
+      url: share_url,
+      qr: qr_data_url,
+      target_lang,
+      summary_original,
+      summary_translated
+    });
   } catch (e) {
     console.error('UPLOAD ERROR:', e);
     res.status(500).json({ ok:false, error: e.message || 'Server error' });
@@ -325,7 +321,7 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
 // Reports list
 // -------------------------
 app.get('/reports', async (req,res) => {
-  const rows = await dbAll(`SELECT id, created_at, name, email, target_lang FROM reports ORDER BY created_at DESC`);
+  const rows = await pAll(`SELECT id, created_at, name, email, target_lang FROM reports ORDER BY created_at DESC`);
   const baseUrl = getBaseUrl(req);
   const escape = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -375,10 +371,10 @@ app.get('/reports', async (req,res) => {
 });
 
 // -------------------------
-// Single report with dual Summary + dual Transcript
+// Single report (dual summary + dual transcript + share/email/copy)
 // -------------------------
 app.get('/reports/:id', async (req,res) => {
-  const r = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
+  const r = await pGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!r) return res.status(404).send('Not found');
 
   const esc = (s='') => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -403,7 +399,6 @@ app.get('/reports/:id', async (req,res) => {
   .btn{ text-decoration:none; border:1px solid #dbe7ff; padding:8px 10px; border-radius:8px; background:#f0f5ff; color:#234; font-size:14px; }
   .hint{ font-size:13px; color:#666; }
   .qr { text-align:center; margin:8px 0; }
-  .list { margin:6px 0; padding-left:18px; }
 </style>
 </head>
 <body>
