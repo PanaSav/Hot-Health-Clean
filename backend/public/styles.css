@@ -58,6 +58,7 @@ textarea{resize:vertical}
 
 .record-row{display:flex;align-items:center;gap:12px;margin-top:8px}
 .muted{color:var(--muted);font-size:13px}
+.tip{margin-top:4px}
 .error{color:#b00020;margin-top:6px}
 
 .mini-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
