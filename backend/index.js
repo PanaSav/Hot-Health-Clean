@@ -1,5 +1,5 @@
-// One-file backend (sqlite3-only; no 'sqlite' or 'better-sqlite3')
-// Features: login gate, uploads, transcription+translation, parsing, QR, reports list & single report
+// backend/index.js
+// Hot Health — consolidated backend (auth, uploads, multi-part recorders, parsing, translation, QR, reports)
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -17,70 +17,96 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ------------------ Config ------------------
+// -------------------------
+// Config
+// -------------------------
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
 
-const USER_ID    = process.env.APP_USER_ID   || 'Pana123$';
-const USER_PASS  = process.env.APP_USER_PASS || 'GoGoPana$';
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(16).toString('hex');
+const USER_ID   = process.env.APP_USER_ID   || 'Pana123$';
+const USER_PASS = process.env.APP_USER_PASS || 'GoGoPana$';
 
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const PUBLIC_DIR  = path.join(__dirname, 'public');
+const UPLOAD_DIR  = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ------------------ DB (sqlite3 only) ------------------
+// -------------------------
+// SQLite3 (only) — permanent fix to earlier module loops
+// -------------------------
 sqlite3.verbose();
-const DB_PATH = path.join(__dirname, 'data.sqlite');
-const db = new sqlite3.Database(DB_PATH);
+const dbPath = path.join(__dirname, 'data.sqlite');
+const db = new sqlite3.Database(dbPath);
 
-// promise helpers
-const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function (err) { if (err) reject(err); else resolve(this); });
-});
-const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
-});
-const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
-});
+// Promisified helpers
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) { if (err) reject(err); else resolve(this); });
+  });
+}
+function dbGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, function (err, row) { if (err) reject(err); else resolve(row); });
+  });
+}
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, function (err, rows) { if (err) reject(err); else resolve(rows); });
+  });
+}
 
-// schema
-await dbRun(`
-  CREATE TABLE IF NOT EXISTS reports (
-    id            TEXT PRIMARY KEY,
-    created_at    TEXT,
-    name          TEXT,
-    email         TEXT,
-    blood_type    TEXT,
-    emer_name     TEXT,
-    emer_phone    TEXT,
-    emer_email    TEXT,
-    detected_lang TEXT,
-    target_lang   TEXT,
-    transcript    TEXT,
-    translated_transcript TEXT,
-    medications   TEXT,
-    allergies     TEXT,
-    conditions    TEXT,
-    bp            TEXT,
-    weight        TEXT,
-    share_url     TEXT,
-    qr_data_url   TEXT
-  )
-`);
+async function initDB() {
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      created_at TEXT,
 
-// ------------------ Middleware ------------------
-app.use(cookieParser(SESSION_SECRET));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.static(PUBLIC_DIR));
+      -- Patient
+      name TEXT, email TEXT, blood_type TEXT,
+      emer_name TEXT, emer_phone TEXT, emer_email TEXT,
 
-// ------------------ Auth ------------------
+      -- Doctor
+      doctor_name TEXT, doctor_address TEXT, doctor_phone TEXT, doctor_fax TEXT, doctor_email TEXT,
+
+      -- Pharmacy
+      pharmacy_name TEXT, pharmacy_address TEXT, pharmacy_phone TEXT, pharmacy_fax TEXT,
+
+      -- Lang
+      detected_lang TEXT, target_lang TEXT,
+
+      -- Text
+      transcript TEXT, translated_transcript TEXT,
+
+      -- Summary pieces
+      medications TEXT, allergies TEXT, conditions TEXT, bp TEXT, weight TEXT,
+      summary_text TEXT, translated_summary TEXT,
+
+      -- Share/QR
+      share_url TEXT, qr_data_url TEXT
+    )
+  `);
+
+  // Minimal safe “add column if missing” (no-op when present)
+  const addCols = [
+    ['doctor_name','TEXT'],['doctor_address','TEXT'],['doctor_phone','TEXT'],['doctor_fax','TEXT'],['doctor_email','TEXT'],
+    ['pharmacy_name','TEXT'],['pharmacy_address','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],
+    ['summary_text','TEXT'],['translated_summary','TEXT']
+  ];
+  for (const [c, def] of addCols) {
+    try { await dbRun(`ALTER TABLE reports ADD COLUMN ${c} ${def}`); } catch { /* ignore */ }
+  }
+}
+
+// -------------------------
+// Auth (cookie)
+// -------------------------
+app.use(cookieParser((process.env.SESSION_SECRET || 'hot-health-session')));
+app.use(bodyParser.json({ limit: '3mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '3mb' }));
+
 function setSession(res, user) {
-  res.cookie('hhsess', user, { httpOnly: true, signed: true, sameSite: 'lax' });
+  res.cookie('hhsess', user, { httpOnly: true, sameSite: 'lax' /*, secure: true*/ , signed: true });
 }
 function clearSession(res) { res.clearCookie('hhsess'); }
 function requireAuth(req, res, next) {
@@ -89,318 +115,495 @@ function requireAuth(req, res, next) {
   next();
 }
 
-app.get('/login', (req,res) => {
-  const p = path.join(PUBLIC_DIR, 'login.html');
-  if (fs.existsSync(p)) return res.sendFile(p);
-  res.send(`
-    <!doctype html><html><body>
-    <h3>Sign in</h3>
-    <form method="POST" action="/login">
-      <input name="userId" placeholder="User ID"><br/>
-      <input name="password" type="password" placeholder="Password"><br/>
-      <button type="submit">Sign in</button>
-    </form>
-    </body></html>
-  `);
-});
+// -------------------------
+// Static
+// -------------------------
+app.use(express.static(PUBLIC_DIR));
 
-app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
-  const { userId, password } = req.body || {};
-  if (userId === USER_ID && password === USER_PASS) {
-    setSession(res, userId);
-    return res.redirect('/');
-  }
-  res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
-});
-
-app.post('/logout', (req,res) => { clearSession(res); res.redirect('/login'); });
-
-// protect app & reports
-app.use(['/', '/upload', '/reports', '/reports/*'], requireAuth);
-
-// home page
-app.get('/', (req,res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
-
-// ------------------ Helpers ------------------
+// -------------------------
+// Helpers
+// -------------------------
 function getBaseUrl(req) {
-  const envUrl = process.env.PUBLIC_BASE_URL;
-  if (envUrl && /^https?:\/\//i.test(envUrl)) return envUrl.replace(/\/+$/, '');
+  const envUrl = (process.env.PUBLIC_BASE_URL || '').trim();
+  if (envUrl) return envUrl.replace(/\/+$/,'');
   const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0];
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   return `${proto}://${host}`;
 }
-function uid(n=22) { return crypto.randomBytes(n).toString('base64url').slice(0, n); }
+const LANG_NAMES = {
+  en: 'English', fr: 'Français', es: 'Español', pt: 'Português', de: 'Deutsch', it: 'Italiano',
+  ar: 'العربية', hi: 'हिन्दी', zh: '中文', ja: '日本語', ko: '한국어', he: 'עברית', sr: 'Srpski', pa: 'ਪੰਜਾਬੀ'
+};
+function langLabel(code='') { return LANG_NAMES[code] || code || '—'; }
 
-function parseFacts(text) {
+function uid(n=20) { return crypto.randomBytes(n).toString('base64url').slice(0,n); }
+
+// Simple parser for facts
+function parseFacts(text='') {
+  const t = text.replace(/\s+/g,' ').trim();
   const meds = [];
   const allergies = [];
   const conditions = [];
 
-  // medications: NAME — 20 mg
-  const medRx = /([A-Za-z][A-Za-z0-9\-]+)[^\n]*?(?:\bat\b|—|-|:)?\s*(\d+)\s*(mg|mcg|g|ml)\b/gi;
-  const seen = new Set();
-  let m;
-  while ((m = medRx.exec(text)) !== null) {
+  // meds like "X at 20 mg" or "X — 20 mg"
+  const medRx = /([A-Za-z][A-Za-z0-9\-]+)\s*(?:at|:|—|-)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
+  let m; const seen = new Set();
+  while ((m = medRx.exec(t)) !== null) {
     const name = m[1]; const dose = `${m[2]} ${m[3]}`;
     const key = `${name.toLowerCase()}|${dose.toLowerCase()}`;
     if (!seen.has(key)) { meds.push(`${name} — ${dose}`); seen.add(key); }
   }
 
   // allergies
-  const aRx = /\ballerg(?:y|ies)\b[^.:\n]*[:\-]?\s*([^.\n]+)/gi;
-  let a;
-  while ((a = aRx.exec(text)) !== null) {
-    const list = a[1].split(/,|;| and /i).map(s => s.trim()).filter(Boolean);
-    for (const item of list) if (!allergies.includes(item)) allergies.push(item);
+  const aHit = t.match(/\ballerg(?:y|ies)\b[^.?!]+/i);
+  if (aHit) {
+    const list = aHit[0].split(/[,;]| and /i).map(s=>s.replace(/\ballerg(?:y|ies)\b/i,'').replace(/\bto\b/ig,'').trim()).filter(Boolean);
+    for (const x of list) if (!allergies.includes(x)) allergies.push(x);
   }
-
   // conditions
-  const cRx = /\b(I have|I've|I’ve|diagnosed with|history of)\b([^.\n]+)/gi;
+  const cRx = /\b(I have|I've|I’ve|diagnosed with|history of)\b([^.!?]+)/ig;
   let c;
-  while ((c = cRx.exec(text)) !== null) {
-    const cleaned = c[2].replace(/\b(allerg(?:y|ies)|medications?|pills?)\b/ig,'').trim();
-    if (cleaned) conditions.push(cleaned);
+  while ((c = cRx.exec(t)) !== null) {
+    let phrase = c[2].replace(/\b(allerg(?:y|ies)|medications?|pills?)\b/ig,'').trim();
+    phrase = phrase.replace(/^[,:;.\s-]+/,'');
+    if (phrase) conditions.push(phrase);
   }
 
-  // blood pressure
-  let bp = null; { const mm = text.match(/\b(\d{2,3})\s*[/over\\-]\s*(\d{2,3})\b/i); if (mm) bp = `${mm[1]}/${mm[2]}`; }
+  // BP
+  let bp = null;
+  const bpM = t.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/);
+  if (bpM) bp = `${bpM[1]}/${bpM[2]}`;
 
-  // weight
-  let weight = null; {
-    const wm = text.match(/\b(\d{2,3})\s*(?:lbs?|pounds?|kg)\b/i);
-    if (wm) weight = wm[1] + (wm[0].toLowerCase().includes('kg') ? ' kg' : ' lbs');
-  }
+  // Weight
+  let weight = null;
+  const wM = t.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i);
+  if (wM) weight = wM[1] + (wM[2].toLowerCase().includes('kg') ? ' kg' : ' lbs');
 
   return { medications: meds, allergies, conditions, bp, weight };
 }
 
-// ------------------ Multer ------------------
+function summarizeFacts(f) {
+  const L = [];
+  L.push(`Medications: ${f.medications?.length ? f.medications.join('; ') : 'None mentioned'}`);
+  L.push(`Allergies: ${f.allergies?.length ? f.allergies.join('; ') : 'None mentioned'}`);
+  L.push(`Conditions: ${f.conditions?.length ? f.conditions.join('; ') : 'None mentioned'}`);
+  L.push(`Blood Pressure: ${f.bp || '—'}`);
+  L.push(`Weight: ${f.weight || '—'}`);
+  return L.join('\n');
+}
+
+// -------------------------
+// Multer storage
+// -------------------------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-  filename: (_, __, cb) => cb(null, `${Date.now()}-${uid(8)}.webm`)
+  filename: (_, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
 });
 const upload = multer({ storage });
 
-// ------------------ Upload -> Transcribe -> Translate -> Save ------------------
+// -------------------------
+// Auth routes
+// -------------------------
+app.get('/login', (req,res) => {
+  const p = path.join(PUBLIC_DIR, 'login.html');
+  if (fs.existsSync(p)) return res.sendFile(p);
+  res.send(`<!doctype html><html><body>
+    <h3>Sign in</h3>
+    <form method="POST" action="/login">
+      <input name="userId" placeholder="User ID"><br/>
+      <input name="password" type="password" placeholder="Password"><br/>
+      <button>Sign In</button>
+    </form>
+  </body></html>`);
+});
+app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
+  const { userId, password } = req.body || {};
+  if (userId === USER_ID && password === USER_PASS) { setSession(res, userId); return res.redirect('/'); }
+  res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
+});
+app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
+
+// Gate the app & reports
+app.use(['/', '/upload', '/upload-multi', '/reports', '/reports/*'], requireAuth);
+
+// Home
+app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+
+// -------------------------
+// Upload — classic single recorder (kept for compatibility)
+// -------------------------
 app.post('/upload', upload.single('audio'), async (req,res) => {
   try {
     if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
 
     const {
-      name='', email='', emer_name='', emer_phone='', emer_email='',
-      blood_type='', lang=''
+      name='', email='', blood_type='',
+      emer_name='', emer_phone='', emer_email='',
+      doctor_name='', doctor_address='', doctor_phone='', doctor_fax='', doctor_email='',
+      pharmacy_name='', pharmacy_address='', pharmacy_phone='', pharmacy_fax='',
+      lang=''
     } = req.body || {};
 
     // transcribe
+    const stream = fs.createReadStream(req.file.path);
     let transcript = '';
     try {
-      const r = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(req.file.path),
-        model: 'gpt-4o-mini-transcribe'
-      });
-      transcript = r.text?.trim() || '';
+      const tr = await openai.audio.transcriptions.create({ file: stream, model: 'gpt-4o-mini-transcribe' });
+      transcript = tr.text?.trim() || '';
     } catch {
-      try {
-        const r2 = await openai.audio.transcriptions.create({
-          file: fs.createReadStream(req.file.path),
-          model: 'whisper-1'
-        });
-        transcript = r2.text?.trim() || '';
-      } catch {
-        return res.status(500).json({ ok:false, error:'Transcription failed' });
-      }
+      const s2 = fs.createReadStream(req.file.path);
+      const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
+      transcript = tr2.text?.trim() || '';
     }
 
-    const detected_lang = 'en'; // simple default; could detect via LLM if needed
-    let target_lang = (lang || '').trim();
-    let translated = '';
+    const detected_lang = 'en'; // simple default; could detect dynamically
+    const facts = parseFacts(transcript);
+    const summary_text = summarizeFacts(facts);
+
+    let translated_transcript = '';
+    let translated_summary = '';
+    const target_lang = (lang||'').trim();
 
     if (target_lang) {
-      try {
-        const rsp = await openai.chat.completions.create({
-          model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-          messages: [{ role:'user', content:`Translate to ${target_lang}:\n\n${transcript}` }],
-          temperature: 0.2
-        });
-        translated = rsp.choices?.[0]?.message?.content?.trim() || '';
-      } catch { translated = ''; }
+      const t1 = await openai.chat.completions.create({
+        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+        temperature: 0.2,
+        messages: [{ role:'user', content: `Translate this to ${target_lang}:\n\n${transcript}` }]
+      });
+      translated_transcript = t1.choices?.[0]?.message?.content?.trim() || '';
+      const t2 = await openai.chat.completions.create({
+        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+        temperature: 0.2,
+        messages: [{ role:'user', content: `Translate this to ${target_lang}:\n\n${summary_text}` }]
+      });
+      translated_summary = t2.choices?.[0]?.message?.content?.trim() || '';
     }
 
-    const facts = parseFacts(transcript);
-
-    // save
-    const id = uid(20);
+    const id = uid();
     const created_at = new Date().toISOString();
     const baseUrl = getBaseUrl(req);
-    const shareUrl = `${baseUrl}/reports/${id}`;
-    const qrDataUrl = await QRCode.toDataURL(shareUrl);
+    const share_url = `${baseUrl}/reports/${id}`;
+    const qr_data_url = await QRCode.toDataURL(share_url);
 
     await dbRun(`
       INSERT INTO reports (
-        id, created_at, name, email, blood_type, emer_name, emer_phone, emer_email,
-        detected_lang, target_lang, transcript, translated_transcript,
+        id, created_at,
+        name, email, blood_type,
+        emer_name, emer_phone, emer_email,
+        doctor_name, doctor_address, doctor_phone, doctor_fax, doctor_email,
+        pharmacy_name, pharmacy_address, pharmacy_phone, pharmacy_fax,
+        detected_lang, target_lang,
+        transcript, translated_transcript,
         medications, allergies, conditions, bp, weight,
+        summary_text, translated_summary,
         share_url, qr_data_url
-      )
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `, [
-      id, created_at, name, email, blood_type, emer_name, emer_phone, emer_email,
-      detected_lang, target_lang, transcript, translated,
+      id, created_at,
+      name, email, blood_type,
+      emer_name, emer_phone, emer_email,
+      doctor_name, doctor_address, doctor_phone, doctor_fax, doctor_email,
+      pharmacy_name, pharmacy_address, pharmacy_phone, pharmacy_fax,
+      detected_lang, target_lang,
+      transcript, translated_transcript,
       (facts.medications||[]).join('; '),
       (facts.allergies||[]).join('; '),
       (facts.conditions||[]).join('; '),
       facts.bp || '', facts.weight || '',
-      shareUrl, qrDataUrl
+      summary_text, translated_summary,
+      share_url, qr_data_url
     ]);
 
-    res.json({ ok:true, id, url: shareUrl });
-  } catch (err) {
-    console.error(err);
+    res.json({ ok:true, id, url: share_url });
+  } catch (e) {
+    console.error(e);
     res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
-// ------------------ Reports list ------------------
+// -------------------------
+// Upload — multi-part (six mini recorders + typed inputs)
+// -------------------------
+const multiFields = upload.fields([
+  { name:'audio_bp', maxCount:1 },
+  { name:'audio_meds', maxCount:1 },
+  { name:'audio_allergies', maxCount:1 },
+  { name:'audio_weight', maxCount:1 },
+  { name:'audio_conditions', maxCount:1 },
+  { name:'audio_general', maxCount:1 },
+  { name:'audio_classic', maxCount:1 }
+]);
+
+app.post('/upload-multi', multiFields, async (req,res) => {
+  try {
+    const B = req.body || {};
+
+    const patient = {
+      name: (B.name||'').trim(),
+      email: (B.email||'').trim(),
+      blood_type: (B.blood_type||'').trim(),
+      emer_name: (B.emer_name||'').trim(),
+      emer_phone: (B.emer_phone||'').trim(),
+      emer_email: (B.emer_email||'').trim(),
+      doctor_name: (B.doctor_name||'').trim(),
+      doctor_address: (B.doctor_address||'').trim(),
+      doctor_phone: (B.doctor_phone||'').trim(),
+      doctor_fax: (B.doctor_fax||'').trim(),
+      doctor_email: (B.doctor_email||'').trim(),
+      pharmacy_name: (B.pharmacy_name||'').trim(),
+      pharmacy_address: (B.pharmacy_address||'').trim(),
+      pharmacy_phone: (B.pharmacy_phone||'').trim(),
+      pharmacy_fax: (B.pharmacy_fax||'').trim(),
+      target_lang: (B.lang||'').trim()
+    };
+
+    // Gather parts: typed + audio
+    const PARTS = [
+      { key:'bp',         label:'Blood Pressure' },
+      { key:'meds',       label:'Medications & Dose' },
+      { key:'allergies',  label:'Allergies' },
+      { key:'weight',     label:'Weight' },
+      { key:'conditions', label:'Conditions' },
+      { key:'general',    label:'General Health Note' }
+    ];
+
+    async function transcribeIfPresent(fileField) {
+      const f = req.files?.[fileField]?.[0];
+      if (!f) return '';
+      const s = fs.createReadStream(f.path);
+      try {
+        const tr = await openai.audio.transcriptions.create({ file: s, model: 'gpt-4o-mini-transcribe' });
+        return tr.text?.trim() || '';
+      } catch {
+        const s2 = fs.createReadStream(f.path);
+        const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
+        return tr2.text?.trim() || '';
+      }
+    }
+
+    const lines = [];
+    for (const p of PARTS) {
+      const typed = (B[`typed_${p.key}`] || '').trim();
+      const heard = await transcribeIfPresent(`audio_${p.key}`);
+      const combined = [typed, heard].filter(Boolean).join(' ');
+      if (combined) lines.push(`${p.label}: ${combined}`);
+    }
+
+    // Classic recorder (optional)
+    const classic = await transcribeIfPresent('audio_classic');
+    if (classic) lines.push(`Classic Note: ${classic}`);
+
+    if (!lines.length) return res.status(400).json({ ok:false, error:'No content' });
+
+    const transcript = lines.join('\n');
+    const detected_lang = 'en';
+    const facts = parseFacts(transcript);
+    const summary_text = summarizeFacts(facts);
+
+    // Translate transcript AND summary if target selected
+    let translated_transcript = '';
+    let translated_summary = '';
+    if (patient.target_lang) {
+      const [t1, t2] = await Promise.all([
+        openai.chat.completions.create({
+          model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+          temperature: 0.2,
+          messages: [{ role:'user', content: `Translate this to ${patient.target_lang}:\n\n${transcript}` }]
+        }),
+        openai.chat.completions.create({
+          model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+          temperature: 0.2,
+          messages: [{ role:'user', content: `Translate this to ${patient.target_lang}:\n\n${summary_text}` }]
+        })
+      ]);
+      translated_transcript = t1.choices?.[0]?.message?.content?.trim() || '';
+      translated_summary    = t2.choices?.[0]?.message?.content?.trim() || '';
+    }
+
+    const id = uid();
+    const created_at = new Date().toISOString();
+    const baseUrl = getBaseUrl(req);
+    const share_url = `${baseUrl}/reports/${id}`;
+    const qr_data_url = await QRCode.toDataURL(share_url);
+
+    await dbRun(`
+      INSERT INTO reports (
+        id, created_at,
+        name, email, blood_type,
+        emer_name, emer_phone, emer_email,
+        doctor_name, doctor_address, doctor_phone, doctor_fax, doctor_email,
+        pharmacy_name, pharmacy_address, pharmacy_phone, pharmacy_fax,
+        detected_lang, target_lang,
+        transcript, translated_transcript,
+        medications, allergies, conditions, bp, weight,
+        summary_text, translated_summary,
+        share_url, qr_data_url
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `, [
+      id, created_at,
+      patient.name, patient.email, patient.blood_type,
+      patient.emer_name, patient.emer_phone, patient.emer_email,
+      patient.doctor_name, patient.doctor_address, patient.doctor_phone, patient.doctor_fax, patient.doctor_email,
+      patient.pharmacy_name, patient.pharmacy_address, patient.pharmacy_phone, patient.pharmacy_fax,
+      detected_lang, patient.target_lang,
+      transcript, translated_transcript,
+      (facts.medications||[]).join('; '),
+      (facts.allergies||[]).join('; '),
+      (facts.conditions||[]).join('; '),
+      facts.bp || '', facts.weight || '',
+      summary_text, translated_summary,
+      share_url, qr_data_url
+    ]);
+
+    res.json({ ok:true, id, url: share_url });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+// -------------------------
+// Reports list
+// -------------------------
 app.get('/reports', async (req,res) => {
   const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
-  const esc = s => String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-  const items = rows.map(r => `
+  const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+  const items = rows.map(r=>`
     <li class="report-item">
-      <div class="title">Report for ${esc(r.name||'Unknown')}</div>
-      <div class="meta">${new Date(r.created_at).toLocaleString()} • ${esc(r.email||'')}</div>
-      <div class="actions"><a class="btn" href="/reports/${r.id}" target="_blank" rel="noopener">Open</a></div>
-    </li>
-  `).join('') || '<li class="report-item">No reports yet.</li>';
+      <div class="title">Report for ${esc(r.name)||'Unknown'}</div>
+      <div class="meta">${new Date(r.created_at).toLocaleString()} • ${esc(r.email)}</div>
+      <div class="actions">
+        <a class="btn" href="/reports/${esc(r.id)}" target="_blank" rel="noopener">Open</a>
+      </div>
+    </li>`).join('') || '<li class="report-item">No reports yet.</li>';
 
   res.send(`<!doctype html>
-<html><head>
-<meta charset="utf-8"/><title>Reports</title>
-<link rel="stylesheet" href="/styles.css"/>
-<style>
-.container{max-width:900px;margin:0 auto;padding:16px;}
-header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid aquamarine;padding:12px 0;}
-h1{color:#4b0082;margin:0;}
-ul{list-style:none;padding:0;margin:16px 0;}
-.report-item{background:#fff;border:1px solid #dbe7ff;border-radius:10px;padding:12px;margin:10px 0;display:grid;gap:6px;}
-.title{font-weight:600}
-.meta{color:#555;font-size:13px}
-.actions{display:flex;gap:8px}
-.btn{text-decoration:none;border:1px solid #dbe7ff;padding:8px 10px;border-radius:8px;background:#f0f5ff;color:#234;font-size:14px}
-</style>
-</head><body>
-<div class="container">
-  <header>
-    <h1>Hot Health — Reports</h1>
-    <nav>
-      <a class="btn" href="/" rel="noopener">New Report</a>
-      <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
-    </nav>
-  </header>
-  <ul>${items}</ul>
-</div>
+<html><head><meta charset="utf-8"/><title>Reports</title><link rel="stylesheet" href="/styles.css"/></head>
+<body>
+  <div class="container">
+    <header class="head">
+      <h1>Hot Health — Reports</h1>
+      <nav>
+        <a class="btn" href="/" rel="noopener">New Report</a>
+        <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
+      </nav>
+    </header>
+    <ul class="list">${items}</ul>
+  </div>
 </body></html>`);
 });
 
-// ------------------ Single report ------------------
+// -------------------------
+// Single report page (dual summaries + dual transcripts + actions)
+// -------------------------
 app.get('/reports/:id', async (req,res) => {
-  const r = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
-  if (!r) return res.status(404).send('Not found');
+  const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
+  if (!row) return res.status(404).send('Not found');
 
-  const esc = s => String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-  const created = new Date(r.created_at).toLocaleString();
-  const shareBtn = `<a class="btn" href="${esc(r.share_url)}" target="_blank" rel="noopener" title="Open share link">🔗 Link</a>`;
+  const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+  const created = new Date(row.created_at).toLocaleString();
+  const detName = langLabel(row.detected_lang);
+  const tgtName = langLabel(row.target_lang);
 
-  // Email compose helpers
-  const subj = encodeURIComponent(`Hot Health Report for ${r.name||''}`);
-  const body = encodeURIComponent(`${r.share_url}\n\nSummary:\nMeds: ${r.medications}\nAllergies: ${r.allergies}\nConditions: ${r.conditions}`);
-  const mailto = `mailto:${encodeURIComponent(r.email||'') || ''}?subject=${subj}&body=${body}`;
-  const gmail = `https://mail.google.com/mail/?view=cm&fs=1&su=${subj}&body=${body}`;
-  const outlook = `https://outlook.office.com/mail/deeplink/compose?subject=${subj}&body=${body}`;
+  const mailSubject = encodeURIComponent(`Hot Health Report — ${row.name || ''}`);
+  const bodyLines = [
+    `Shareable link: ${row.share_url}`,
+    ``,
+    `Patient: ${row.name || ''} • ${row.email || ''} • Blood: ${row.blood_type || ''}`,
+    `Emergency: ${row.emer_name || ''} (${row.emer_phone || ''}) ${row.emer_email || ''}`,
+    `Doctor: ${row.doctor_name || ''} • ${row.doctor_phone || ''} • ${row.doctor_fax || ''} • ${row.doctor_email || ''}`,
+    `Pharmacy: ${row.pharmacy_name || ''} • ${row.pharmacy_phone || ''} • ${row.pharmacy_fax || ''}`,
+    ``,
+    `Summary:\n${row.summary_text || ''}`
+  ].join('\n');
+  const gmail = `https://mail.google.com/mail/?view=cm&fs=1&su=${mailSubject}&body=${encodeURIComponent(bodyLines)}`;
+  const outlook = `https://outlook.office.com/mail/deeplink/compose?subject=${mailSubject}&body=${encodeURIComponent(bodyLines)}`;
 
   res.send(`<!doctype html>
-<html><head>
-<meta charset="utf-8"/>
-<title>Hot Health Report</title>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<link rel="stylesheet" href="/styles.css"/>
-<style>
-.container{max-width:900px;margin:0 auto;padding:0 16px 24px;}
-header{border-bottom:3px solid aquamarine;margin-bottom:12px;padding:14px 0;}
-h1{color:#4b0082;margin:0 0 6px;}
-.section{background:#fff;border:2px solid aquamarine;border-radius:12px;padding:16px;margin:16px 0;}
-.dual{display:flex;gap:12px;flex-wrap:wrap;}
-.block{flex:1;min-width:260px;background:#f8faff;border:1px solid #dbe7ff;border-radius:8px;padding:12px;}
-.qr{text-align:center;margin:8px 0;}
-.tag{display:inline-block;font-size:12px;color:#334;background:#eef4ff;border:1px solid #dbe7ff;padding:2px 6px;border-radius:12px;margin-left:6px;}
-.btnbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;}
-.list{margin:6px 0;padding-left:18px;}
-.actions{display:flex;gap:8px;flex-wrap:wrap}
-</style>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Hot Health — Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
 <div class="container">
-  <header>
-    <h1>Hot Health — Report
-      ${r.detected_lang ? `<span class="tag">Original: ${esc(r.detected_lang)}</span>`:''}
-      ${r.target_lang ? `<span class="tag">Target: ${esc(r.target_lang)}</span>`:''}
-    </h1>
-    <div><b>Created:</b> ${esc(created)} ${shareBtn}</div>
-    <div class="qr">
-      <img src="${esc(r.qr_data_url)}" alt="QR Code" style="max-width:180px;"/>
-      <div style="font-size:13px;color:#555">Scan on a phone, or use the link button.</div>
-    </div>
-    <div class="btnbar">
-      <a class="btn" href="/" rel="noopener">+ New Report</a>
-      <a class="btn" href="/reports" rel="noopener">All Reports</a>
+  <header class="head">
+    <h1>Hot Health — Report</h1>
+    <div class="meta"><b>Created:</b> ${esc(created)}</div>
+    <div class="pillrow">
+      ${row.detected_lang ? `<span class="pill">Original: ${esc(detName)}</span>`:''}
+      ${row.target_lang   ? `<span class="pill">Target: ${esc(tgtName)}</span>`:''}
     </div>
   </header>
 
-  <section class="section">
+  <section class="card">
     <h2>Patient Details</h2>
-    <div><b>Name:</b> ${esc(r.name||'')}</div>
-    <div><b>Email:</b> ${r.email ? `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>` : ''}</div>
-    <div><b>Blood Type:</b> ${esc(r.blood_type||'')}</div>
-    <div><b>Emergency Contact:</b> ${esc(r.emer_name||'')} ${r.emer_phone?`(${esc(r.emer_phone)})`:''} ${r.emer_email?`<a href="mailto:${esc(r.emer_email)}">${esc(r.emer_email)}</a>`:''}</div>
+    <div class="grid2">
+      <div><b>Name:</b> ${esc(row.name)}</div>
+      <div><b>Email:</b> ${row.email ? `<a href="mailto:${esc(row.email)}">${esc(row.email)}</a>` : ''}</div>
+      <div><b>Blood Type:</b> ${esc(row.blood_type || '')}</div>
+      <div><b>Emergency Contact:</b> ${esc(row.emer_name||'')} ${row.emer_phone?`(${esc(row.emer_phone)})`:''} ${row.emer_email?`<a href="mailto:${esc(row.emer_email)}">${esc(row.emer_email)}</a>`:''}</div>
+      <div><b>Doctor:</b> ${esc(row.doctor_name||'')} • ${esc(row.doctor_phone||'')} • ${esc(row.doctor_fax||'')} • ${row.doctor_email?`<a href="mailto:${esc(row.doctor_email)}">${esc(row.doctor_email)}</a>`:''}</div>
+      <div><b>Pharmacy:</b> ${esc(row.pharmacy_name||'')} • ${esc(row.pharmacy_phone||'')} • ${esc(row.pharmacy_fax||'')}</div>
+    </div>
   </section>
 
-  <section class="section">
+  <section class="card">
     <h2>Summary</h2>
-    <div><b>Medications:</b> ${esc(r.medications || 'None')}</div>
-    <div><b>Allergies:</b> ${esc(r.allergies || 'None')}</div>
-    <div><b>Conditions:</b> ${esc(r.conditions || 'None')}</div>
-    <div><b>Blood Pressure:</b> ${esc(r.bp || '—')}</div>
-    <div><b>Weight:</b> ${esc(r.weight || '—')}</div>
+    <div class="dual">
+      <div class="block">
+        <h3>${esc(detName||'Original')}</h3>
+        <pre class="pre">${esc(row.summary_text || '')}</pre>
+      </div>
+      <div class="block">
+        <h3>${esc(tgtName||'Target')}</h3>
+        <pre class="pre">${esc(row.translated_summary || '(no translation)')}</pre>
+      </div>
+    </div>
   </section>
 
-  <section class="section">
+  <section class="card">
     <h2>Transcript</h2>
     <div class="dual">
       <div class="block">
-        <h3>Original${r.detected_lang ? ` (${esc(r.detected_lang)})` : ''}</h3>
-        <p>${esc(r.transcript || '')}</p>
+        <h3>${esc(detName||'Original')}</h3>
+        <pre class="pre">${esc(row.transcript || '')}</pre>
       </div>
       <div class="block">
-        <h3>${r.target_lang ? `Translated (${esc(r.target_lang)})` : 'Translated'}</h3>
-        <p>${esc(r.translated_transcript || '(no translation)')}</p>
+        <h3>${esc(tgtName||'Target')}</h3>
+        <pre class="pre">${esc(row.translated_transcript || '(no translation)')}</pre>
       </div>
     </div>
   </section>
 
-  <section class="section">
+  <section class="card">
     <h2>Share / Print</h2>
-    <div class="actions">
-      <a class="btn" href="${mailto}">✉️ Email (Default)</a>
+    <div class="sharebar">
+      <a class="btn" href="${esc(row.share_url)}" target="_blank" rel="noopener" title="Open share link">🔗 Link</a>
       <a class="btn" href="${gmail}" target="_blank" rel="noopener">📧 Gmail</a>
-      <a class="btn" href="${outlook}" target="_blank" rel="noopener">📮 Outlook</a>
-      <a class="btn" href="${esc(r.share_url)}" target="_blank" rel="noopener">🔗 Get Link</a>
+      <a class="btn" href="${outlook}" target="_blank" rel="noopener">📨 Outlook</a>
       <button class="btn" onclick="window.print()">🖨️ Print</button>
+    </div>
+    <div class="qr">
+      <img src="${esc(row.qr_data_url)}" alt="QR Code" />
+      <div class="muted">Scan on a phone or use the link button.</div>
     </div>
   </section>
 
-  <footer style="text-align:center;color:#666;margin-top:20px;">Hot Health © 2025</footer>
+  <div class="bar">
+    <a class="btn" href="/" rel="noopener">+ New Report</a>
+    <a class="btn" href="/reports" rel="noopener">Open Reports</a>
+    <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
+  </div>
 </div>
-</body></html>`);
+</body>
+</html>`);
 });
 
-// ------------------ Start ------------------
+// -------------------------
+// Start
+// -------------------------
+await initDB();
 app.listen(PORT, () => console.log(`✅ Backend listening on ${PORT}`));
