@@ -1,211 +1,64 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8"/>
   <title>Hot Health — One Port</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <link rel="stylesheet" href="/styles.css" />
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
-  <header class="site-header">
-    <h1>Hot Health — One Port</h1>
-    <nav class="head-actions">
-      <a class="btn subtle" href="/reports" rel="noopener">Open Reports</a>
-      <form method="POST" action="/logout" style="display:inline">
-        <button class="btn subtle" type="submit">Log out</button>
-      </form>
-    </nav>
-  </header>
+<header class="top">
+  <h1>Hot Health — One Port</h1>
+  <nav>
+    <a class="btn" href="/reports">Open Reports</a>
+    <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
+  </nav>
+</header>
 
-  <main class="wrap">
+<main class="wrap">
+  <section class="card">
+    <h2>Patient & Options</h2>
+    <div class="row">
+      <input id="pName" placeholder="Patient Name"/>
+      <input id="pEmail" placeholder="Patient Email"/>
+    </div>
+    <div class="row">
+      <input id="eName"  placeholder="Emergency Contact Name"/>
+      <input id="ePhone" placeholder="Emergency Contact Phone"/>
+      <input id="eEmail" placeholder="Emergency Contact Email"/>
+    </div>
+    <div class="row">
+      <select id="blood">
+        <option value="">Blood Type (optional)</option>
+        <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
+        <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
+      </select>
+      <select id="lang">
+        <option value="">— No translation at upload —</option>
+        <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
+        <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
+        <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
+        <option value="ja">日本語</option><option value="ko">한국어</option>
+      </select>
+    </div>
+  </section>
 
-    <!-- Patient -->
-    <section class="card">
-      <h2>Patient</h2>
+  <section class="card">
+    <h2>Record Health Status</h2>
+    <div class="row">
+      <button id="btnRec">Record</button>
+      <div id="tip" class="muted">Tip: speak your health note (meds, allergies, conditions, BP, weight).</div>
+    </div>
+    <div id="recMeta" class="muted"></div>
+    <div id="error" class="error"></div>
+  </section>
 
-      <div class="row">
-        <label class="field">
-          <span>Patient Name</span>
-          <div class="input-with-mic">
-            <input id="pName" placeholder="Full name" />
-            <button class="mic-btn" data-target="pName" title="Dictate name"></button>
-          </div>
-        </label>
+  <section class="card">
+    <h2>Shareable Report</h2>
+    <div id="result">Record and stop to generate a report + QR.</div>
+  </section>
+</main>
 
-        <label class="field">
-          <span>Patient Email</span>
-          <div class="input-with-mic">
-            <input id="pEmail" placeholder="name@example.com" />
-            <button class="mic-btn" data-target="pEmail" title="Dictate email"></button>
-          </div>
-        </label>
-      </div>
-
-      <div class="row">
-        <label class="field">
-          <span>Emergency Contact Name</span>
-          <div class="input-with-mic">
-            <input id="eName" placeholder="Contact full name" />
-            <button class="mic-btn" data-target="eName" title="Dictate emergency name"></button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Emergency Phone</span>
-          <div class="input-with-mic">
-            <input id="ePhone" placeholder="+1 555 123 1234" />
-            <button class="mic-btn" data-target="ePhone" title="Dictate phone"></button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Emergency Email</span>
-          <div class="input-with-mic">
-            <input id="eEmail" placeholder="contact@example.com" />
-            <button class="mic-btn" data-target="eEmail" title="Dictate email"></button>
-          </div>
-        </label>
-      </div>
-
-      <div class="row">
-        <label class="field">
-          <span>Blood Type</span>
-          <div class="input-with-mic">
-            <select id="blood">
-              <option value="">Select (optional)</option>
-              <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
-              <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
-            </select>
-            <button class="mic-btn" data-target="blood" title="Dictate blood type"></button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Target Language (optional)</span>
-          <select id="lang">
-            <option value="">— none —</option>
-            <option value="en">English</option><option value="fr">Français</option>
-            <option value="es">Español</option><option value="pt">Português</option>
-            <option value="de">Deutsch</option><option value="it">Italiano</option>
-            <option value="ar">العربية</option><option value="hi">हिन्दी</option>
-            <option value="zh">中文</option><option value="ja">日本語</option>
-            <option value="ko">한국어</option><option value="he">עברית</option>
-            <option value="pa">ਪੰਜਾਬੀ</option><option value="sr">Српски</option>
-          </select>
-        </label>
-      </div>
-    </section>
-
-    <!-- Doctor -->
-    <section class="card">
-      <h2>Family Doctor</h2>
-      <div class="row">
-        <label class="field">
-          <span>Doctor Name</span>
-          <div class="input-with-mic">
-            <input id="docName" placeholder="Doctor full name" />
-            <button class="mic-btn" data-target="docName" title="Dictate doctor name"></button>
-          </div>
-        </label>
-      </div>
-
-      <div class="row">
-        <label class="field">
-          <span>Doctor Phone</span>
-          <div class="input-with-mic">
-            <input id="docPhone" placeholder="+1 555 222 3333" />
-            <button class="mic-btn" data-target="docPhone" title="Dictate phone"></button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Doctor Fax</span>
-          <div class="input-with-mic">
-            <input id="docFax" placeholder="+1 555 222 4444" />
-            <button class="mic-btn" data-target="docFax" title="Dictate fax"></button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Doctor Email</span>
-          <div class="input-with-mic">
-            <input id="docEmail" placeholder="doctor@example.com" />
-            <button class="mic-btn" data-target="docEmail" title="Dictate email"></button>
-          </div>
-        </label>
-      </div>
-    </section>
-
-    <!-- Pharmacy -->
-    <section class="card">
-      <h2>Pharmacy</h2>
-      <div class="row">
-        <label class="field">
-          <span>Pharmacy Name</span>
-          <div class="input-with-mic">
-            <input id="phName" placeholder="Pharmacy name" />
-            <button class="mic-btn" data-target="phName" title="Dictate pharmacy name"></button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Pharmacy Phone</span>
-          <div class="input-with-mic">
-            <input id="phPhone" placeholder="+1 555 777 8888" />
-            <button class="mic-btn" data-target="phPhone" title="Dictate phone"></button>
-          </div>
-        </label>
-      </div>
-
-      <div class="row">
-        <label class="field">
-          <span>Pharmacy Fax</span>
-          <div class="input-with-mic">
-            <input id="phFax" placeholder="+1 555 777 9999" />
-            <button class="mic-btn" data-target="phFax" title="Dictate fax"></button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span>Pharmacy Email</span>
-          <div class="input-with-mic">
-            <input id="phEmail" placeholder="pharmacy@example.com" />
-            <button class="mic-btn" data-target="phEmail" title="Dictate email"></button>
-          </div>
-        </label>
-      </div>
-
-      <div class="row">
-        <label class="field wide">
-          <span>Pharmacy Address</span>
-          <div class="input-with-mic">
-            <input id="phAddr" placeholder="Street, City, State/Prov, ZIP/Postal" />
-            <button class="mic-btn" data-target="phAddr" title="Dictate address"></button>
-          </div>
-        </label>
-      </div>
-    </section>
-
-    <!-- Recorders (your six mini recorders stay as-is) -->
-    <section class="card">
-      <h2>Record Health Status</h2>
-      <div class="muted">Tip: speak your health note (meds, allergies, conditions, BP, weight).</div>
-
-      <div id="recorders" class="recorders">
-        <!-- 6 mini recorders are built/handled by app.js -->
-      </div>
-
-      <div class="actions">
-        <button id="btnGenerate" class="btn primary">Generate Report</button>
-      </div>
-
-      <div id="error" class="error"></div>
-      <div id="result" class="muted">Your shareable report will appear here.</div>
-    </section>
-
-  </main>
-
-  <script src="/voice.js"></script>
-  <script src="/app.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>
