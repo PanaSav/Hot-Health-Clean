@@ -1,4 +1,5 @@
 // backend/public/app.js
+
 const $  = sel => document.querySelector(sel);
 const $$ = sel => [...document.querySelectorAll(sel)];
 
@@ -8,44 +9,117 @@ const meta   = $('#recMeta');
 const btnRec = $('#btnRec');
 const btnGen = $('#btnGen');
 
-function setError(msg){ errBox.textContent = msg || ''; }
-function setMeta(msg){ meta.textContent = msg || ''; }
+function setError(msg){ if (errBox) errBox.textContent = msg || ''; }
+function setMeta(msg){ if (meta) meta.textContent = msg || ''; }
 
-// --- Speech-to-text for text inputs ---
+// Prefill working language from browser (best-effort)
+(() => {
+  const el = $('#workLangDetected');
+  if (el && !el.value) {
+    try {
+      const navLang = (navigator.language || '').split('-')[0] || '';
+      const map = { en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano', ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ' };
+      el.value = map[navLang] || (navigator.language || 'English');
+    } catch {}
+  }
+})();
+
+// ------------------------------
+// Speech Recognition mics (inputs + selects)
+// Toggleable start/stop with icon swap
+// ------------------------------
 (function wireMics(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  $$('.mic').forEach(btn => {
-    if (!SR) { btn.disabled = true; btn.title = 'Speech recognition not supported'; return; }
-    btn.addEventListener('click', () => {
-      const target = btn.getAttribute('data-target');
-      const kind   = btn.getAttribute('data-kind') || 'input';
-      const el = document.getElementById(target);
-      if (!el) return;
+  const active = new Map(); // btn -> recognition
 
+  $$('.mic').forEach(btn => {
+    if (!SR) { btn.disabled = true; btn.title = 'Speech recognition not supported in this browser'; return; }
+
+    let listening = false;
+    const targetId = btn.getAttribute('data-target');
+    const kind     = btn.getAttribute('data-kind') || 'input';
+    const targetEl = document.getElementById(targetId);
+
+    if (!targetEl) { btn.disabled = true; return; }
+
+    const start = () => {
       const rec = new SR();
       rec.lang = 'en-US';
       rec.interimResults = false;
-      rec.onresult = (e)=>{
-        let text = e.results[0][0].transcript || '';
-        // Heuristics for email-like speech
-        text = text.replace(/\s+at\s+/ig,'@').replace(/\s+dot\s+/ig,'.').replace(/\s+dash\s+/ig,'-');
+      rec.maxAlternatives = 1;
+
+      btn.dataset.icon = btn.textContent;
+      btn.textContent = '⏹️';
+      btn.classList.add('listening');
+      listening = true;
+      active.set(btn, rec);
+
+      rec.onresult = (e) => {
+        let text = e.results?.[0]?.[0]?.transcript || '';
+        // heuristics for emails/URLs/phones
+        text = text
+          .replace(/\s+at\s+/ig,'@')
+          .replace(/\s+dot\s+/ig,'.')
+          .replace(/\s+dash\s+/ig,'-')
+          .replace(/\s+plus\s+/ig,'+');
+
         if (kind === 'select') {
-          // try to match option text
-          const match = [...el.options].find(o => o.textContent.toLowerCase().includes(text.toLowerCase()) || o.value.toLowerCase()===text.toLowerCase());
-          if (match) el.value = match.value;
+          // Try matching option text OR value
+          const opts = [...targetEl.options];
+          // also map by language names to codes, rough
+          const langNameToCode = {
+            english:'en', français:'fr', french:'fr', español:'es', spanish:'es', português:'pt', portuguese:'pt',
+            deutsch:'de', german:'de', italiano:'it', italian:'it', العربية:'ar', hindi:'hi', हिन्दी:'hi', 中文:'zh',
+            日本語:'ja', korean:'ko', 한국어:'ko', עברית:'he', srpski:'sr', serbian:'sr', ਪੰਜਾਬੀ:'pa', punjabi:'pa'
+          };
+          const lower = text.trim().toLowerCase();
+          let code = langNameToCode[lower];
+          if (code) {
+            const opt = opts.find(o => o.value === code);
+            if (opt) targetEl.value = opt.value;
+          } else {
+            const opt = opts.find(o =>
+              o.textContent.trim().toLowerCase().includes(lower) ||
+              o.value.toLowerCase() === lower
+            );
+            if (opt) targetEl.value = opt.value;
+          }
         } else {
-          el.value = text;
+          targetEl.value = text;
         }
       };
-      rec.start();
+
+      rec.onend = () => stop();
+      rec.onerror = () => stop();
+
+      try { rec.start(); } catch { stop(); }
+    };
+
+    const stop = () => {
+      const rec = active.get(btn);
+      if (rec) {
+        try { rec.stop(); } catch {}
+        active.delete(btn);
+      }
+      if (listening) {
+        btn.textContent = btn.dataset.icon || '🎙️';
+        btn.classList.remove('listening');
+      }
+      listening = false;
+    };
+
+    btn.addEventListener('click', () => {
+      if (!listening) start();
+      else stop();
     });
   });
 })();
 
-// --- Mini recorders ---
+// ------------------------------
+// Mini recorders (MediaRecorder)
+// ------------------------------
 const Recorders = {
-  bp:null, meds:null, allergies:null, weight:null, conditions:null, general:null,
-  classic:null
+  bp:null, meds:null, allergies:null, weight:null, conditions:null, general:null, classic:null
 };
 function makeRecorder(key, limitMs, metaSel) {
   let mr = null, chunks=[];
@@ -58,13 +132,13 @@ function makeRecorder(key, limitMs, metaSel) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
         mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       } catch {
-        setError('Mic blocked or unsupported'); return;
+        setError('Microphone blocked or unsupported by browser/HTTPS'); return false;
       }
       mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
       mr.onstop = ()=>{ mr.stream.getTracks().forEach(t=>t.stop()); clearTimeout(timer); };
 
       mr.start();
-      metaEl.textContent = 'Recording…';
+      metaEl && (metaEl.textContent = 'Recording…');
       timer = setTimeout(()=>{ try{ mr?.stop(); }catch{} }, limitMs);
       return true;
     },
@@ -74,7 +148,7 @@ function makeRecorder(key, limitMs, metaSel) {
         mr.onstop = ()=>{
           mr.stream.getTracks().forEach(t=>t.stop());
           const blob = new Blob(chunks, { type:'audio/webm' });
-          metaEl.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB`;
+          metaEl && (metaEl.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB`);
           resolve(blob);
         };
         try { mr.stop(); } catch { resolve(null); }
@@ -105,8 +179,10 @@ function makeRecorder(key, limitMs, metaSel) {
   });
 })();
 
-// --- Classic recorder ---
-let classicState='idle'; // toggled by btnRec
+// ------------------------------
+// Classic recorder
+// ------------------------------
+let classicState='idle';
 (function wireClassic(){
   const ms = 30000;
   if (!btnRec) return;
@@ -124,35 +200,45 @@ let classicState='idle'; // toggled by btnRec
   });
 })();
 
-// Gather form
+// ------------------------------
+// Form gathering + submit
+// ------------------------------
 function formVals() {
   return {
-    name: $('#pName').value.trim(),
-    email: $('#pEmail').value.trim(),
-    emer_name: $('#eName').value.trim(),
-    emer_phone: $('#ePhone').value.trim(),
-    emer_email: $('#eEmail').value.trim(),
-    blood_type: $('#blood').value.trim(),
-    lang: $('#lang').value.trim(),
-    doctor_name: $('#dName').value.trim(),
-    doctor_address: $('#dAddr').value.trim(),
-    doctor_phone: $('#dPhone').value.trim(),
-    doctor_fax: $('#dFax').value.trim(),
-    doctor_email: $('#dEmail').value.trim(),
-    pharmacy_name: $('#phName').value.trim(),
-    pharmacy_address: $('#phAddr').value.trim(),
-    pharmacy_phone: $('#phPhone').value.trim(),
-    pharmacy_fax: $('#phFax').value.trim(),
-    t_bp: $('#t_bp').value.trim(),
-    t_meds: $('#t_meds').value.trim(),
-    t_allergies: $('#t_allergies').value.trim(),
-    t_weight: $('#t_weight').value.trim(),
-    t_conditions: $('#t_conditions').value.trim(),
-    t_general: $('#t_general').value.trim(),
+    // language
+    lang: $('#lang')?.value.trim() || '',
+
+    // patient
+    name: $('#pName')?.value.trim() || '',
+    email: $('#pEmail')?.value.trim() || '',
+    emer_name: $('#eName')?.value.trim() || '',
+    emer_phone: $('#ePhone')?.value.trim() || '',
+    emer_email: $('#eEmail')?.value.trim() || '',
+    blood_type: $('#blood')?.value.trim() || '',
+
+    // doctor
+    doctor_name: $('#dName')?.value.trim() || '',
+    doctor_address: $('#dAddr')?.value.trim() || '',
+    doctor_phone: $('#dPhone')?.value.trim() || '',
+    doctor_fax: $('#dFax')?.value.trim() || '',
+    doctor_email: $('#dEmail')?.value.trim() || '',
+
+    // pharmacy
+    pharmacy_name: $('#phName')?.value.trim() || '',
+    pharmacy_address: $('#phAddr')?.value.trim() || '',
+    pharmacy_phone: $('#phPhone')?.value.trim() || '',
+    pharmacy_fax: $('#phFax')?.value.trim() || '',
+
+    // typed mini fields
+    t_bp: $('#t_bp')?.value.trim() || '',
+    t_meds: $('#t_meds')?.value.trim() || '',
+    t_allergies: $('#t_allergies')?.value.trim() || '',
+    t_weight: $('#t_weight')?.value.trim() || '',
+    t_conditions: $('#t_conditions')?.value.trim() || '',
+    t_general: $('#t_general')?.value.trim() || ''
   };
 }
 
-// Generate report (multi)
 btnGen?.addEventListener('click', async ()=>{
   try {
     setError(''); out.textContent='Working…';

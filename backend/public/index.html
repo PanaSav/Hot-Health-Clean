@@ -17,6 +17,47 @@
 
 <main class="container">
 
+  <!-- How To Use -->
+  <section class="card">
+    <h2>How To Use This App</h2>
+    <p>
+      Type your information in each area <em>or</em> press the microphone button to enter information using your voice.
+      Alternatively, you can enter your health status using your voice and speaking freely in the section below.
+    </p>
+    <p>
+      You can select a language to work in before you start in the <b>Working language / Translated language</b> section.
+      This app will recognize your language and provide this page in your language.
+    </p>
+    <p>After you have entered your information, press <b>“Generate Report.”</b> at the bottom of the screen.</p>
+  </section>
+
+  <!-- Language -->
+  <section class="card">
+    <h2>Language</h2>
+    <div class="grid2">
+      <label>Working language (detected)
+        <div class="inpwrap">
+          <input id="workLangDetected" placeholder="e.g., English" readonly/>
+          <button class="mic" data-target="workLangDetected" title="Dictate working language">🎙️</button>
+        </div>
+      </label>
+
+      <label>Translate to
+        <div class="inpwrap">
+          <select id="lang">
+            <option value="">— No translation —</option>
+            <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
+            <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
+            <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
+            <option value="ja">日本語</option><option value="ko">한국어</option>
+            <option value="he">עברית</option><option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option>
+          </select>
+          <button class="mic" data-target="lang" data-kind="select" title="Dictate target language">🎙️</button>
+        </div>
+      </label>
+    </div>
+  </section>
+
   <!-- Patient & Options -->
   <section class="card">
     <h2>Patient & Options</h2>
@@ -61,20 +102,6 @@
             <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
           </select>
           <button class="mic" data-target="blood" data-kind="select">🎙️</button>
-        </div>
-      </label>
-
-      <label>Target Language (optional)
-        <div class="inpwrap">
-          <select id="lang">
-            <option value="">— No translation —</option>
-            <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
-            <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
-            <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
-            <option value="ja">日本語</option><option value="ko">한국어</option>
-            <option value="he">עברית</option><option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option>
-          </select>
-          <button class="mic" data-target="lang" data-kind="select">🎙️</button>
         </div>
       </label>
     </div>
@@ -212,7 +239,7 @@
 
   <!-- Alternative classic recorder -->
   <section class="card">
-    <h2>Alternative: Record Health Status</h2>
+    <h2>Alternative: Patient Health Status — Free Speech Recording</h2>
     <p class="muted">Tip: speak your health note (e.g., meds, allergies, conditions, BP, weight).</p>
     <div class="row">
       <button id="btnRec">⏺️ Record</button>
