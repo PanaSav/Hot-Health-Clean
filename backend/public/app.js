@@ -1,163 +1,142 @@
-// public/app.js
-// Six mini recorders + typed inputs. Auto-stop timers. Uploads all blobs + fields to /upload.
+// Six mini recorders, auto-stop, merge blobs, plus typed sections -> POST /upload
+const $ = s=>document.querySelector(s);
+const $$ = s=>document.querySelectorAll(s);
 
-const $  = (s) => document.querySelector(s);
-const $$ = (s) => [...document.querySelectorAll(s)];
+const btnGenerate = $('#btnGenerate');
+const statusBox = $('#status');
+const errorBox = $('#error');
+const resultBox = $('#result');
 
-const errBox = $('#error');
-const out    = $('#result');
-const genBtn = $('#btnGen');
+function setStatus(m){ statusBox.textContent = m || ''; }
+function setError(m){ errorBox.textContent = m || ''; }
 
-function setError(msg=''){ errBox.textContent = msg; }
-function setResult(html=''){ out.innerHTML = html; }
-
-function gatherProfile() {
-  return {
-    name: $('#pName')?.value?.trim() || '',
-    email: $('#pEmail')?.value?.trim() || '',
-    phone: $('#pPhone')?.value?.trim() || '',
-    blood_type: $('#blood')?.value?.trim() || '',
-    emer_name: $('#eName')?.value?.trim() || '',
-    emer_phone: $('#ePhone')?.value?.trim() || '',
-    emer_email: $('#eEmail')?.value?.trim() || '',
-    doctor_name: $('#dName')?.value?.trim() || 'N/A',
-    doctor_phone: $('#dPhone')?.value?.trim() || '',
-    doctor_email: $('#dEmail')?.value?.trim() || '',
-    doctor_fax: $('#dFax')?.value?.trim() || '',
-    pharmacy_name: $('#phName')?.value?.trim() || '',
-    pharmacy_phone: $('#phPhone')?.value?.trim() || '',
-    pharmacy_fax: $('#phFax')?.value?.trim() || '',
-    pharmacy_address: $('#phAddr')?.value?.trim() || '',
-    lang: $('#lang')?.value?.trim() || ''
-  };
-}
-
-function gatherTypedNotes() {
-  return {
-    bp_note: $('#txt-bp')?.value?.trim() || '',
-    meds_note: $('#txt-meds')?.value?.trim() || '',
-    allergies_note: $('#txt-allergies')?.value?.trim() || '',
-    weight_note: $('#txt-weight')?.value?.trim() || '',
-    conditions_note: $('#txt-conditions')?.value?.trim() || '',
-    general_note: $('#txt-general')?.value?.trim() || ''
-  };
-}
-
-// Recorder controller for each mini block
-class MiniRecorder {
-  constructor(key, maxSeconds = 30) {
-    this.key = key;
-    this.max = maxSeconds;
-    this.btn = document.querySelector(`.rec[data-key="${key}"]`);
-    this.timerEl = document.querySelector(`#tm-${key}`);
-    this.mediaRecorder = null;
-    this.chunks = [];
-    this.elapsed = 0;
-    this.tid = null;
-    if (this.btn) this.btn.addEventListener('click', () => this.toggle());
-  }
-
-  async start() {
-    setError('');
-    this.chunks = [];
-    this.elapsed = 0;
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setError('This browser cannot record audio. Use Chrome/Edge or iOS Safari 14+.');
-      return;
-    }
-    let stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      setError('Microphone blocked. Allow mic permission and try again.');
-      return;
-    }
-    this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-    this.mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
-    this.mediaRecorder.onstop = () => { stream.getTracks().forEach(t => t.stop()); };
-    this.mediaRecorder.start();
-    this.btn.textContent = '⏹️';
-    this.tick();
-  }
-
-  stop() {
-    if (!this.mediaRecorder) return;
-    if (this.tid) { clearInterval(this.tid); this.tid = null; }
-    this.mediaRecorder.stop();
-    this.btn.textContent = '🎙️';
-  }
-
-  toggle() {
-    if (!this.mediaRecorder || this.mediaRecorder.state === 'inactive') this.start();
-    else this.stop();
-  }
-
-  tick() {
-    this.tid = setInterval(() => {
-      this.elapsed++;
-      const mm = String(Math.floor(this.elapsed / 60)).padStart(2,'0');
-      const ss = String(this.elapsed % 60).padStart(2,'0');
-      if (this.timerEl) this.timerEl.textContent = `${mm}:${ss}`;
-      if (this.elapsed >= this.max) this.stop();
-    }, 1000);
-  }
-
-  blob() {
-    if (!this.chunks.length) return null;
-    return new Blob(this.chunks, { type: 'audio/webm' });
-  }
-}
-
-// Init recorders
-const recs = {
-  bp:         new MiniRecorder('bp', 30),
-  meds:       new MiniRecorder('meds', 180),
-  allergies:  new MiniRecorder('allergies', 60),
-  weight:     new MiniRecorder('weight', 60),
-  conditions: new MiniRecorder('conditions', 180),
-  general:    new MiniRecorder('general', 180)
+const media = {
+  // each key -> { recorder, chunks:[], timerId, maxSec, metaEl }
 };
+let stream;
 
-async function uploadAll() {
-  const fd = new FormData();
+// init mini recorders
+$$('.rec-card').forEach(card=>{
+  const key = card.dataset.key;
+  const max = Number(card.dataset.max || 60);
+  const btn = card.querySelector('.rec-btn');
+  const meta= card.querySelector('.rec-meta');
 
-  // Profile fields
-  const prof = gatherProfile();
-  Object.entries(prof).forEach(([k,v]) => fd.append(k, v));
+  media[key] = { recorder:null, chunks:[], timerId:null, maxSec:max, metaEl:meta, btnEl:btn, sizeKB:0 };
 
-  // Typed notes
-  const notes = gatherTypedNotes();
-  Object.entries(notes).forEach(([k,v]) => fd.append(k, v));
+  btn.addEventListener('click', async ()=>{
+    const entry = media[key];
+    if (!entry.recorder || entry.recorder.state==='inactive') {
+      // start
+      setError('');
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      } catch {
+        setError('Microphone blocked. Allow mic and try again.');
+        return;
+      }
+      entry.chunks = [];
+      entry.sizeKB = 0;
+      const rec = new MediaRecorder(stream, { mimeType:'audio/webm' });
+      rec.ondataavailable = e=>{ if (e.data && e.data.size) { entry.chunks.push(e.data); entry.sizeKB += e.data.size/1024; } };
+      rec.onstop = ()=>{
+        stream.getTracks().forEach(t=>t.stop());
+        btn.textContent = `Record (${max>=120?`${Math.round(max/60)}m`:max+'s'})`;
+        entry.metaEl.textContent = entry.chunks.length ? `Recorded ~${entry.sizeKB.toFixed(1)} KB` : 'No audio';
+        if (entry.timerId) { clearTimeout(entry.timerId); entry.timerId=null; }
+      };
+      entry.recorder = rec;
+      rec.start();
+      btn.textContent = '■ Stop';
+      entry.metaEl.textContent = `Recording… auto-stops at ${max}s`;
+      entry.timerId = setTimeout(()=>{ if(rec.state!=='inactive') rec.stop(); }, max*1000);
+    } else {
+      // stop
+      entry.recorder.stop();
+    }
+  });
+});
 
-  // Audio blobs (append multiple fields all as 'audio')
-  let count = 0;
-  for (const key of Object.keys(recs)) {
-    const b = recs[key].blob();
-    if (b) { fd.append('audio', b, `${key}.webm`); count++; }
-  }
-
-  if (!count) {
-    setError('Please record at least one section (or type notes).');
-  }
-
-  const r = await fetch('/upload', { method: 'POST', body: fd });
-  if (!r.ok) {
-    // May return HTML error page; avoid JSON.parse crash
-    const text = await r.text().catch(()=> '');
-    throw new Error(text || `Upload failed (${r.status})`);
-  }
-  return r.json();
+function gatherPatient() {
+  return {
+    name: $('#pName').value.trim(),
+    email: $('#pEmail').value.trim(),
+    emer_name: $('#eName').value.trim(),
+    emer_phone: $('#ePhone').value.trim(),
+    emer_email: $('#eEmail').value.trim(),
+    blood_type: $('#blood').value.trim(),
+    target_lang: $('#lang').value.trim(),
+    doctor_name: $('#dName').value.trim(),
+    doctor_phone: $('#dPhone').value.trim(),
+    doctor_fax: $('#dFax').value.trim(),
+    doctor_email: $('#dEmail').value.trim(),
+    pharmacy_name: $('#phName').value.trim(),
+    pharmacy_address: $('#phAddr').value.trim(),
+    pharmacy_phone: $('#phPhone').value.trim(),
+    pharmacy_fax: $('#phFax').value.trim()
+  };
 }
 
-genBtn?.addEventListener('click', async () => {
-  try {
+function gatherSections() {
+  return {
+    bp:         $('#txt-bp').value.trim(),
+    meds:       $('#txt-meds').value.trim(),
+    allergies:  $('#txt-allergies').value.trim(),
+    weight:     $('#txt-weight').value.trim(),
+    conditions: $('#txt-conditions').value.trim(),
+    general:    $('#txt-general').value.trim()
+  };
+}
+
+async function generateReport() {
+  try{
     setError('');
-    setResult('Uploading & generating…');
-    const json = await uploadAll();
-    if (!json.ok) throw new Error(json.error || 'Server error');
-    setResult(`✅ Created. <a href="${json.url}" target="_blank" rel="noopener">Open report</a>`);
-  } catch (e) {
+    setStatus('Preparing…');
+
+    // merge all audio chunks into one Blob (same MIME)
+    const blobs = [];
+    for (const k of Object.keys(media)) {
+      const entry = media[k];
+      if (entry.recorder && entry.recorder.state!=='inactive') {
+        // ensure stopped
+        entry.recorder.stop();
+      }
+      if (entry.chunks && entry.chunks.length) {
+        blobs.push(...entry.chunks);
+      }
+    }
+    const audioBlob = blobs.length ? new Blob(blobs, { type:'audio/webm' }) : null;
+
+    const fd = new FormData();
+    const patient = gatherPatient();
+    const sections = gatherSections();
+    for (const [k,v] of Object.entries(patient)) fd.append(k, v);
+    fd.append('sections', JSON.stringify(sections));
+    if (audioBlob) fd.append('audio', audioBlob, 'note.webm');
+
+    setStatus('Uploading…');
+    const r = await fetch('/upload', { method:'POST', body:fd });
+    const isJson = (r.headers.get('content-type')||'').includes('application/json');
+    if (!r.ok) {
+      const txt = isJson ? (await r.json()).error : await r.text();
+      throw new Error(txt || `Server error (${r.status})`);
+    }
+    const json = isJson ? await r.json() : null;
+    if (!json?.ok) throw new Error(json?.error || 'Unknown server error');
+
+    const url = json.url;
+    resultBox.innerHTML = `
+      ✅ Created! 
+      <a class="btn" href="${url}" target="_blank" rel="noopener">Open Report</a>
+      <a class="btn" href="mailto:?subject=${encodeURIComponent('Hot Health Report')}&body=${encodeURIComponent(url)}">✉️ Email</a>
+      <button class="btn" onclick="navigator.clipboard.writeText('${url}').then(()=>alert('Link copied!'))">🔗 Copy Link</button>
+      <button class="btn" onclick="window.open('${url}','_blank')">🖨️ Print</button>
+    `;
+    setStatus('');
+  }catch(e){
+    setStatus('');
     setError(e.message || String(e));
-    setResult('');
   }
-});
+}
+
+btnGenerate.addEventListener('click', generateReport);
