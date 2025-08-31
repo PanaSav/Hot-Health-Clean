@@ -1,170 +1,267 @@
-// Simple helpers
-const $ = (s) => document.querySelector(s);
+// backend/public/app.js
 
-const btnRec = $('#btnRec');
-const meta   = $('#recMeta');
-const out    = $('#result');
+const $  = sel => document.querySelector(sel);
+const $$ = sel => [...document.querySelectorAll(sel)];
+
 const errBox = $('#error');
-const detectedLangEl = $('#detectedLang');
+const out    = $('#result');
+const meta   = $('#recMeta');
+const btnRec = $('#btnRec');
+const btnGen = $('#btnGen');
 
-let mediaRecorder, chunks = [];
-let lastDetectedLang = ''; // filled after first successful upload
+function setError(msg){ if (errBox) errBox.textContent = msg || ''; }
+function setMeta(msg){ if (meta) meta.textContent = msg || ''; }
 
-function setError(msg){ errBox.textContent = msg || ''; }
-function setMeta(msg){  meta.textContent  = msg || ''; }
-function showCheck(url, detected, target) {
-  const targetLabel = target ? ` → ${target}` : '';
-  out.innerHTML = `
-    <div class="report-ok">
-      <span class="check">✅</span>
-      <div>
-        <div class="title">Report generated</div>
-        <div class="sub">Detected: <b>${detected || 'auto'}</b>${targetLabel}</div>
-        <div class="actions">
-          <a class="btn" href="${url}" target="_blank" rel="noopener">Open report</a>
-          <a class="btn" href="${url}" target="_blank" rel="noopener">Copy link</a>
-        </div>
-      </div>
-    </div>
-  `;
-}
+// Prefill working language from browser (best-effort)
+(() => {
+  const el = $('#workLangDetected');
+  if (el && !el.value) {
+    try {
+      const navLang = (navigator.language || '').split('-')[0] || '';
+      const map = { en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano', ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ' };
+      el.value = map[navLang] || (navigator.language || 'English');
+    } catch {}
+  }
+})();
 
-// Speech recognition (browser)
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+// ------------------------------
+// Speech Recognition mics (inputs + selects)
+// Toggleable start/stop with icon swap
+// ------------------------------
+(function wireMics(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const active = new Map(); // btn -> recognition
 
-// Email speech normalization
-function normalizeEmailSpeech(text) {
-  if (!text) return '';
-  let t = ' ' + text.toLowerCase().trim() + ' ';
-  // canonical replacements
-  t = t
-    .replace(/\s+at\s+/g, '@')
-    .replace(/\s+dot\s+/g, '.')
-    .replace(/\s+underscore\s+/g, '_')
-    .replace(/\s+dash\s+/g, '-')
-    .replace(/\s+hyphen\s+/g, '-')
-    .replace(/\s+plus\s+/g, '+')
-    .replace(/\s+space\s+/g, '')
-    .replace(/\s+/g, '');
-  // compact periods like "gmail . com"
-  t = t.replace(/\.{2,}/g, '.'); // collapse multiple dots
-  // remove stray trailing periods/spaces
-  t = t.replace(/^\.+|\.+$/g, '');
-  return t;
-}
+  $$('.mic').forEach(btn => {
+    if (!SR) { btn.disabled = true; btn.title = 'Speech recognition not supported in this browser'; return; }
 
-function attachMicButtons() {
-  document.querySelectorAll('.mic-btn').forEach(btn => {
-    if (!SR) {
-      btn.disabled = true; btn.title = 'Speech recognition not supported';
-      return;
-    }
+    let listening = false;
     const targetId = btn.getAttribute('data-target');
-    const emailMode = btn.classList.contains('mic-email');
-    btn.addEventListener('click', () => {
-      const el = document.getElementById(targetId);
-      if (!el) return;
+    const kind     = btn.getAttribute('data-kind') || 'input';
+    const targetEl = document.getElementById(targetId);
+
+    if (!targetEl) { btn.disabled = true; return; }
+
+    const start = () => {
       const rec = new SR();
-      rec.lang = (detectedLangEl.value || navigator.language || 'en-US');
+      rec.lang = 'en-US';
       rec.interimResults = false;
       rec.maxAlternatives = 1;
 
-      btn.classList.add('rec-on');
-      const originalBg = el.style.backgroundColor;
-      el.style.backgroundColor = '#fff7cc';
+      btn.dataset.icon = btn.textContent;
+      btn.textContent = '⏹️';
+      btn.classList.add('listening');
+      listening = true;
+      active.set(btn, rec);
 
       rec.onresult = (e) => {
-        let text = e.results[0]?.[0]?.transcript || '';
-        if (emailMode) text = normalizeEmailSpeech(text);
-        el.value = text;
+        let text = e.results?.[0]?.[0]?.transcript || '';
+        // heuristics for emails/URLs/phones
+        text = text
+          .replace(/\s+at\s+/ig,'@')
+          .replace(/\s+dot\s+/ig,'.')
+          .replace(/\s+dash\s+/ig,'-')
+          .replace(/\s+plus\s+/ig,'+');
+
+        if (kind === 'select') {
+          // Try matching option text OR value
+          const opts = [...targetEl.options];
+          // also map by language names to codes, rough
+          const langNameToCode = {
+            english:'en', français:'fr', french:'fr', español:'es', spanish:'es', português:'pt', portuguese:'pt',
+            deutsch:'de', german:'de', italiano:'it', italian:'it', العربية:'ar', hindi:'hi', हिन्दी:'hi', 中文:'zh',
+            日本語:'ja', korean:'ko', 한국어:'ko', עברית:'he', srpski:'sr', serbian:'sr', ਪੰਜਾਬੀ:'pa', punjabi:'pa'
+          };
+          const lower = text.trim().toLowerCase();
+          let code = langNameToCode[lower];
+          if (code) {
+            const opt = opts.find(o => o.value === code);
+            if (opt) targetEl.value = opt.value;
+          } else {
+            const opt = opts.find(o =>
+              o.textContent.trim().toLowerCase().includes(lower) ||
+              o.value.toLowerCase() === lower
+            );
+            if (opt) targetEl.value = opt.value;
+          }
+        } else {
+          targetEl.value = text;
+        }
       };
-      rec.onend = () => {
-        btn.classList.remove('rec-on');
-        el.style.backgroundColor = originalBg;
-      };
-      rec.onerror = () => {
-        btn.classList.remove('rec-on');
-        el.style.backgroundColor = originalBg;
-      };
-      try { rec.start(); } catch { btn.classList.remove('rec-on'); el.style.backgroundColor = originalBg; }
+
+      rec.onend = () => stop();
+      rec.onerror = () => stop();
+
+      try { rec.start(); } catch { stop(); }
+    };
+
+    const stop = () => {
+      const rec = active.get(btn);
+      if (rec) {
+        try { rec.stop(); } catch {}
+        active.delete(btn);
+      }
+      if (listening) {
+        btn.textContent = btn.dataset.icon || '🎙️';
+        btn.classList.remove('listening');
+      }
+      listening = false;
+    };
+
+    btn.addEventListener('click', () => {
+      if (!listening) start();
+      else stop();
     });
   });
-}
+})();
 
-function gatherForm() {
+// ------------------------------
+// Mini recorders (MediaRecorder)
+// ------------------------------
+const Recorders = {
+  bp:null, meds:null, allergies:null, weight:null, conditions:null, general:null, classic:null
+};
+function makeRecorder(key, limitMs, metaSel) {
+  let mr = null, chunks=[];
+  let timer = null;
+  const metaEl = $(metaSel);
   return {
-    name: $('#pName')?.value.trim() || '',
-    email: ($('#pEmail')?.value || '').trim().toLowerCase(),
-    emer_name: $('#eName')?.value.trim() || '',
-    emer_phone: $('#ePhone')?.value.trim() || '',
-    emer_email: ($('#eEmail')?.value || '').trim().toLowerCase(),
-    blood_type: $('#blood')?.value.trim() || '',
-    lang: $('#lang')?.value.trim() || ''
-  };
-}
-
-async function uploadBlob(blob) {
-  const fd = new FormData();
-  fd.append('audio', blob, 'recording.webm');
-  const f = gatherForm();
-  for (const [k,v] of Object.entries(f)) fd.append(k, v);
-
-  const r = await fetch('/upload', { method:'POST', body: fd });
-  if (!r.ok) {
-    let msg = `Server error (${r.status})`;
-    try { const t = await r.text(); if (t && t.startsWith('{')) msg = JSON.parse(t).error || msg; } catch {}
-    throw new Error(msg);
-  }
-  return r.json();
-}
-
-async function startRec() {
-  setError('');
-  setMeta('');
-  chunks = [];
-  const hint = $('#recHint');
-  if (hint) hint.textContent = 'Recording… click Stop when done.';
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    setError('Microphone blocked. Allow mic permission and try again.');
-    return;
-  }
-  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-  mediaRecorder.onstop = async () => {
-    try {
-      const blob = new Blob(chunks, { type: 'audio/webm' });
-      setMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB`);
-      const json = await uploadBlob(blob);
-      if (!json.ok) throw new Error(json.error || 'Server error');
-
-      // Fill detected language if backend provided it (your backend typically does)
-      if (json.detected_lang && !lastDetectedLang) {
-        lastDetectedLang = json.detected_lang;
-        detectedLangEl.value = lastDetectedLang;
+    start: async () => {
+      chunks = []; setError('');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+        mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      } catch {
+        setError('Microphone blocked or unsupported by browser/HTTPS'); return false;
       }
-      showCheck(json.url, json.detected_lang || lastDetectedLang || 'auto', gatherForm().lang);
-    } catch (e) {
-      setError(e.message || String(e));
+      mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+      mr.onstop = ()=>{ mr.stream.getTracks().forEach(t=>t.stop()); clearTimeout(timer); };
+
+      mr.start();
+      metaEl && (metaEl.textContent = 'Recording…');
+      timer = setTimeout(()=>{ try{ mr?.stop(); }catch{} }, limitMs);
+      return true;
+    },
+    stop: async () => {
+      return new Promise(resolve=>{
+        if (!mr || mr.state==='inactive') return resolve(null);
+        mr.onstop = ()=>{
+          mr.stream.getTracks().forEach(t=>t.stop());
+          const blob = new Blob(chunks, { type:'audio/webm' });
+          metaEl && (metaEl.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB`);
+          resolve(blob);
+        };
+        try { mr.stop(); } catch { resolve(null); }
+        clearTimeout(timer);
+      });
     }
   };
-  mediaRecorder.start();
-  btnRec.textContent = 'Stop';
 }
 
-function stopRec() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-    mediaRecorder.stream.getTracks().forEach(t => t.stop());
-    btnRec.textContent = 'Record';
+// Wire mini buttons
+(function wireMini(){
+  $$('.rec').forEach(btn=>{
+    const key = btn.getAttribute('data-key');
+    const ms  = Number(btn.getAttribute('data-ms') || '30000');
+    if (!Recorders[key]) Recorders[key] = makeRecorder(key, ms, `#meta_${key}`);
+
+    let state = 'idle';
+    btn.addEventListener('click', async ()=>{
+      if (state==='idle') {
+        const ok = await Recorders[key].start();
+        if (ok) { state='rec'; btn.textContent='⏹️ Stop'; }
+      } else {
+        const blob = await Recorders[key].stop();
+        state='idle'; btn.textContent=`⏺️ Record (${Math.round(ms/1000)}s)`;
+        if (blob) Recorders[key].blob = blob;
+      }
+    });
+  });
+})();
+
+// ------------------------------
+// Classic recorder
+// ------------------------------
+let classicState='idle';
+(function wireClassic(){
+  const ms = 30000;
+  if (!btnRec) return;
+  Recorders.classic = makeRecorder('classic', ms, '#recMeta');
+
+  btnRec.addEventListener('click', async ()=>{
+    if (classicState==='idle') {
+      const ok = await Recorders.classic.start();
+      if (ok) { classicState='rec'; btnRec.textContent='⏹️ Stop'; }
+    } else {
+      const blob = await Recorders.classic.stop();
+      classicState='idle'; btnRec.textContent='⏺️ Record';
+      if (blob) Recorders.classic.blob = blob;
+    }
+  });
+})();
+
+// ------------------------------
+// Form gathering + submit
+// ------------------------------
+function formVals() {
+  return {
+    // language
+    lang: $('#lang')?.value.trim() || '',
+
+    // patient
+    name: $('#pName')?.value.trim() || '',
+    email: $('#pEmail')?.value.trim() || '',
+    emer_name: $('#eName')?.value.trim() || '',
+    emer_phone: $('#ePhone')?.value.trim() || '',
+    emer_email: $('#eEmail')?.value.trim() || '',
+    blood_type: $('#blood')?.value.trim() || '',
+
+    // doctor
+    doctor_name: $('#dName')?.value.trim() || '',
+    doctor_address: $('#dAddr')?.value.trim() || '',
+    doctor_phone: $('#dPhone')?.value.trim() || '',
+    doctor_fax: $('#dFax')?.value.trim() || '',
+    doctor_email: $('#dEmail')?.value.trim() || '',
+
+    // pharmacy
+    pharmacy_name: $('#phName')?.value.trim() || '',
+    pharmacy_address: $('#phAddr')?.value.trim() || '',
+    pharmacy_phone: $('#phPhone')?.value.trim() || '',
+    pharmacy_fax: $('#phFax')?.value.trim() || '',
+
+    // typed mini fields
+    t_bp: $('#t_bp')?.value.trim() || '',
+    t_meds: $('#t_meds')?.value.trim() || '',
+    t_allergies: $('#t_allergies')?.value.trim() || '',
+    t_weight: $('#t_weight')?.value.trim() || '',
+    t_conditions: $('#t_conditions')?.value.trim() || '',
+    t_general: $('#t_general')?.value.trim() || ''
+  };
+}
+
+btnGen?.addEventListener('click', async ()=>{
+  try {
+    setError(''); out.textContent='Working…';
+    const f = formVals();
+    const fd = new FormData();
+    for (const [k,v] of Object.entries(f)) fd.append(k, v);
+
+    // attach blobs if present
+    if (Recorders.bp?.blob)         fd.append('audio_bp', Recorders.bp.blob, 'bp.webm');
+    if (Recorders.meds?.blob)       fd.append('audio_meds', Recorders.meds.blob, 'meds.webm');
+    if (Recorders.allergies?.blob)  fd.append('audio_allergies', Recorders.allergies.blob, 'allergies.webm');
+    if (Recorders.weight?.blob)     fd.append('audio_weight', Recorders.weight.blob, 'weight.webm');
+    if (Recorders.conditions?.blob) fd.append('audio_conditions', Recorders.conditions.blob, 'conditions.webm');
+    if (Recorders.general?.blob)    fd.append('audio_general', Recorders.general.blob, 'general.webm');
+    if (Recorders.classic?.blob)    fd.append('audio_classic', Recorders.classic.blob, 'classic.webm');
+
+    const r = await fetch('/upload-multi', { method:'POST', body: fd });
+    const json = await r.json().catch(()=> ({}));
+    if (!r.ok || !json.ok) throw new Error(json.error || `Server Error (${r.status})`);
+
+    out.innerHTML = `✅ Created. <a href="${json.url}" target="_blank" rel="noopener">Open report</a>`;
+  } catch (e) {
+    setError(e.message || String(e));
+    out.textContent = '—';
   }
-}
-
-btnRec.addEventListener('click', () => {
-  if (btnRec.textContent === 'Record') startRec();
-  else stopRec();
 });
-
-attachMicButtons();
