@@ -1,19 +1,15 @@
-<script>
-/* Voice input for individual fields (safe update)
-   - Leaves existing field/mic wiring intact
-   - Adds email-specific normalization (spoken → real email)
-*/
+// Voice input for individual fields + robust email normalization
+
 (() => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  // Map common spoken tokens to email-safe characters
   function normalizeEmailSpoken(raw) {
     if (!raw) return '';
     let s = ' ' + raw.toLowerCase().trim() + ' ';
 
-    // common connectors
-    s = s.replace(/\s+at\s+/g, '@');          // "john at example dot com"
-    s = s.replace(/\s+dot\s+/g, '.');         // dot → .
+    // tokens → symbols
+    s = s.replace(/\s+at\s+/g, '@');
+    s = s.replace(/\s+dot\s+/g, '.');
     s = s.replace(/\s+period\s+/g, '.');
     s = s.replace(/\s+underscore\s+/g, '_');
     s = s.replace(/\s+(hyphen|dash)\s+/g, '-');
@@ -25,17 +21,15 @@
     s = s.replace(/\s+hotmail\s*\.?\s*com\s*/g, '@hotmail.com ');
     s = s.replace(/\s+yahoo\s*\.?\s*com\s*/g, '@yahoo.com ');
 
-    // remove residual spaces around @ and .
+    // tighten spaces
     s = s.replace(/\s*@\s*/g, '@');
     s = s.replace(/\s*\.\s*/g, '.');
-
-    // collapse spaces
     s = s.replace(/\s+/g, ' ').trim();
 
-    // final pass: strip spaces entirely (emails don’t have spaces)
+    // no spaces inside email
     s = s.replace(/\s+/g, '');
 
-    // rudimentary cleanup: avoid double dots like "john..doe"
+    // clean repeated dots
     s = s.replace(/\.\.+/g, '.');
 
     return s;
@@ -45,11 +39,7 @@
     const id = (el.id || '').toLowerCase();
     const name = (el.name || '').toLowerCase();
     const type = (el.type || '').toLowerCase();
-    return (
-      type === 'email' ||
-      id.includes('email') ||
-      name.includes('email')
-    );
+    return type === 'email' || id.includes('email') || name.includes('email');
   }
 
   document.querySelectorAll('.mic-btn').forEach(btn => {
@@ -65,7 +55,7 @@
       if (!el) return;
 
       const rec = new SR();
-      rec.lang = (window.__uiLang || 'en-US'); // keep your current lang if you set it elsewhere
+      rec.lang = (window.__uiLang || 'en-US');
       rec.interimResults = false;
       rec.maxAlternatives = 1;
 
@@ -75,12 +65,9 @@
 
       rec.onresult = (e) => {
         const raw = e.results[0][0].transcript || '';
-
-        // If an email-like field, normalize heavily
         const text = isEmailField(el) ? normalizeEmailSpoken(raw) : raw;
 
         if (el.tagName === 'SELECT') {
-          // attempt to match any option containing the spoken text
           const lower = text.toLowerCase();
           const opt = [...el.options].find(o => o.textContent.toLowerCase().includes(lower));
           if (opt) el.value = opt.value;
@@ -105,4 +92,3 @@
     });
   });
 })();
-</script>

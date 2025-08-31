@@ -1,4 +1,3 @@
-// backend/index.js
 // Hot Health — consolidated backend (auth, uploads, multi-part recorders, parsing, translation, QR, reports)
 
 import 'dotenv/config';
@@ -33,7 +32,7 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // -------------------------
-// SQLite3 (only) — permanent fix to earlier module loops
+// SQLite3 (only) — stable choice to avoid module loops
 // -------------------------
 sqlite3.verbose();
 const dbPath = path.join(__dirname, 'data.sqlite');
@@ -87,26 +86,26 @@ async function initDB() {
     )
   `);
 
-  // Minimal safe “add column if missing” (no-op when present)
+  // Minimal safe “add column if missing”
   const addCols = [
     ['doctor_name','TEXT'],['doctor_address','TEXT'],['doctor_phone','TEXT'],['doctor_fax','TEXT'],['doctor_email','TEXT'],
     ['pharmacy_name','TEXT'],['pharmacy_address','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],
     ['summary_text','TEXT'],['translated_summary','TEXT']
   ];
   for (const [c, def] of addCols) {
-    try { await dbRun(`ALTER TABLE reports ADD COLUMN ${c} ${def}`); } catch { /* ignore */ }
+    try { await dbRun(`ALTER TABLE reports ADD COLUMN ${c} ${def}`); } catch { /* ignore if exists */ }
   }
 }
 
 // -------------------------
 // Auth (cookie)
 // -------------------------
-app.use(cookieParser((process.env.SESSION_SECRET || 'hot-health-session')));
-app.use(bodyParser.json({ limit: '3mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '3mb' }));
+app.use(cookieParser(process.env.SESSION_SECRET || 'hot-health-session'));
+app.use(bodyParser.json({ limit: '5mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '5mb' }));
 
 function setSession(res, user) {
-  res.cookie('hhsess', user, { httpOnly: true, sameSite: 'lax' /*, secure: true*/ , signed: true });
+  res.cookie('hhsess', user, { httpOnly: true, sameSite: 'lax', signed: true /* , secure: true */ });
 }
 function clearSession(res) { res.clearCookie('hhsess'); }
 function requireAuth(req, res, next) {
@@ -135,17 +134,15 @@ const LANG_NAMES = {
   ar: 'العربية', hi: 'हिन्दी', zh: '中文', ja: '日本語', ko: '한국어', he: 'עברית', sr: 'Srpski', pa: 'ਪੰਜਾਬੀ'
 };
 function langLabel(code='') { return LANG_NAMES[code] || code || '—'; }
-
 function uid(n=20) { return crypto.randomBytes(n).toString('base64url').slice(0,n); }
 
-// Simple parser for facts
+// Simple facts parser
 function parseFacts(text='') {
   const t = text.replace(/\s+/g,' ').trim();
   const meds = [];
   const allergies = [];
   const conditions = [];
 
-  // meds like "X at 20 mg" or "X — 20 mg"
   const medRx = /([A-Za-z][A-Za-z0-9\-]+)\s*(?:at|:|—|-)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
   let m; const seen = new Set();
   while ((m = medRx.exec(t)) !== null) {
@@ -154,27 +151,24 @@ function parseFacts(text='') {
     if (!seen.has(key)) { meds.push(`${name} — ${dose}`); seen.add(key); }
   }
 
-  // allergies
   const aHit = t.match(/\ballerg(?:y|ies)\b[^.?!]+/i);
   if (aHit) {
     const list = aHit[0].split(/[,;]| and /i).map(s=>s.replace(/\ballerg(?:y|ies)\b/i,'').replace(/\bto\b/ig,'').trim()).filter(Boolean);
     for (const x of list) if (!allergies.includes(x)) allergies.push(x);
   }
-  // conditions
+
   const cRx = /\b(I have|I've|I’ve|diagnosed with|history of)\b([^.!?]+)/ig;
   let c;
   while ((c = cRx.exec(t)) !== null) {
     let phrase = c[2].replace(/\b(allerg(?:y|ies)|medications?|pills?)\b/ig,'').trim();
-    phrase = phrase.replace(/^[,:;.\s-]+/,'');
+    phrase = phrase.replace(/^[,:;.\s-]+/, '');
     if (phrase) conditions.push(phrase);
   }
 
-  // BP
   let bp = null;
   const bpM = t.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/);
   if (bpM) bp = `${bpM[1]}/${bpM[2]}`;
 
-  // Weight
   let weight = null;
   const wM = t.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i);
   if (wM) weight = wM[1] + (wM[2].toLowerCase().includes('kg') ? ' kg' : ' lbs');
@@ -224,13 +218,41 @@ app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
 app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
 
 // Gate the app & reports
-app.use(['/', '/upload', '/upload-multi', '/reports', '/reports/*'], requireAuth);
+app.use(['/', '/upload', '/upload-multi', '/reports', '/reports/*', '/detect-lang'], requireAuth);
 
 // Home
 app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
 // -------------------------
-// Upload — classic single recorder (kept for compatibility)
+// Language detection (optional UI prompt)
+// -------------------------
+app.post('/detect-lang', async (req,res) => {
+  try {
+    const { sample = '' } = req.body || {};
+    const text = String(sample || '').trim().slice(0, 800);
+    if (!text) return res.json({ ok:true, code: '', name: '' });
+
+    const prompt = `Detect the language of this text. Respond ONLY with a 2-letter ISO code (like en, fr, es, pt, de, it, ar, hi, zh, ja, ko, he, sr, pa).\n\nText:\n${text}`;
+    const r = await openai.chat.completions.create({
+      model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+      temperature: 0,
+      messages: [{ role:'user', content: prompt }]
+    });
+    let code = r.choices?.[0]?.message?.content?.trim().toLowerCase() || '';
+    code = code.replace(/[^a-z]/g, '').slice(0, 5);
+    // normalize some common 2-letter forms
+    const map = { 'zh-cn':'zh', 'zh-tw':'zh' };
+    code = map[code] || code;
+
+    return res.json({ ok:true, code, name: (LANG_NAMES[code] || code) });
+  } catch (e) {
+    console.error(e);
+    res.json({ ok:true, code:'', name:'' });
+  }
+});
+
+// -------------------------
+// Upload — classic single recorder
 // -------------------------
 app.post('/upload', upload.single('audio'), async (req,res) => {
   try {
@@ -244,7 +266,6 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       lang=''
     } = req.body || {};
 
-    // transcribe
     const stream = fs.createReadStream(req.file.path);
     let transcript = '';
     try {
@@ -256,7 +277,7 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       transcript = tr2.text?.trim() || '';
     }
 
-    const detected_lang = 'en'; // simple default; could detect dynamically
+    const detected_lang = 'en'; // keep simple; UI prompt handles "confirm"
     const facts = parseFacts(transcript);
     const summary_text = summarizeFacts(facts);
 
@@ -265,18 +286,20 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
     const target_lang = (lang||'').trim();
 
     if (target_lang) {
-      const t1 = await openai.chat.completions.create({
-        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-        temperature: 0.2,
-        messages: [{ role:'user', content: `Translate this to ${target_lang}:\n\n${transcript}` }]
-      });
+      const [t1, t2] = await Promise.all([
+        openai.chat.completions.create({
+          model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+          temperature: 0.2,
+          messages: [{ role:'user', content: `Translate this to ${target_lang}:\n\n${transcript}` }]
+        }),
+        openai.chat.completions.create({
+          model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+          temperature: 0.2,
+          messages: [{ role:'user', content: `Translate this to ${target_lang}:\n\n${summary_text}` }]
+        })
+      ]);
       translated_transcript = t1.choices?.[0]?.message?.content?.trim() || '';
-      const t2 = await openai.chat.completions.create({
-        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-        temperature: 0.2,
-        messages: [{ role:'user', content: `Translate this to ${target_lang}:\n\n${summary_text}` }]
-      });
-      translated_summary = t2.choices?.[0]?.message?.content?.trim() || '';
+      translated_summary    = t2.choices?.[0]?.message?.content?.trim() || '';
     }
 
     const id = uid();
@@ -314,7 +337,7 @@ app.post('/upload', upload.single('audio'), async (req,res) => {
       share_url, qr_data_url
     ]);
 
-    res.json({ ok:true, id, url: share_url });
+    res.json({ ok:true, id, url: share_url, detected_lang });
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok:false, error:'Server error' });
@@ -357,7 +380,6 @@ app.post('/upload-multi', multiFields, async (req,res) => {
       target_lang: (B.lang||'').trim()
     };
 
-    // Gather parts: typed + audio
     const PARTS = [
       { key:'bp',         label:'Blood Pressure' },
       { key:'meds',       label:'Medications & Dose' },
@@ -388,8 +410,6 @@ app.post('/upload-multi', multiFields, async (req,res) => {
       const combined = [typed, heard].filter(Boolean).join(' ');
       if (combined) lines.push(`${p.label}: ${combined}`);
     }
-
-    // Classic recorder (optional)
     const classic = await transcribeIfPresent('audio_classic');
     if (classic) lines.push(`Classic Note: ${classic}`);
 
@@ -400,7 +420,6 @@ app.post('/upload-multi', multiFields, async (req,res) => {
     const facts = parseFacts(transcript);
     const summary_text = summarizeFacts(facts);
 
-    // Translate transcript AND summary if target selected
     let translated_transcript = '';
     let translated_summary = '';
     if (patient.target_lang) {
@@ -455,7 +474,7 @@ app.post('/upload-multi', multiFields, async (req,res) => {
       share_url, qr_data_url
     ]);
 
-    res.json({ ok:true, id, url: share_url });
+    res.json({ ok:true, id, url: share_url, detected_lang });
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok:false, error:'Server error' });
@@ -494,7 +513,7 @@ app.get('/reports', async (req,res) => {
 });
 
 // -------------------------
-// Single report page (dual summaries + dual transcripts + actions)
+// Single report page
 // -------------------------
 app.get('/reports/:id', async (req,res) => {
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);

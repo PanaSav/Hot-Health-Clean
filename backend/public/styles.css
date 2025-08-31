@@ -1,42 +1,90 @@
-/* Additive styles only – won’t break your current layout */
+/* Global */
+:root{
+  --ink:#21284a;
+  --muted:#56607a;
+  --aqua:#67f1d3;
+  --aqua2:#b8ffef;
+  --indigo:#4b0082;
+  --card:#ffffff;
+  --soft:#f6f9ff;
+  --line:#dbe7ff;
+}
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:#fdfdfd; color:var(--ink); font-family:Inter,system-ui,Segoe UI,Arial,sans-serif; }
+a{ color:#0a6df0; text-decoration:none; }
+a:hover{ text-decoration:underline; }
 
-/* Make the success area obvious and clean */
+/* Layout */
+.container{ max-width:1000px; margin:0 auto; padding:16px; }
+.head{ border-bottom:3px solid var(--aqua); padding:12px 0 14px; margin-bottom:12px; }
+.head h1{ margin:0 0 6px; color:var(--indigo); }
+.meta{ color:var(--muted); font-size:14px; }
+.pillrow{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+.pill{ display:inline-block; padding:4px 10px; border:1px solid var(--line); background:#eef5ff; border-radius:999px; font-size:12px; color:#2c3354; }
+
+.card{ background:var(--card); border:2px solid var(--aqua); border-radius:12px; padding:16px; margin:16px 0; }
+.grid2{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px 18px; }
+
+.dual{ display:flex; gap:12px; flex-wrap:wrap; }
+.block{ flex:1; min-width:280px; border:1px solid var(--line); background:#f8faff; border-radius:10px; padding:12px; }
+.pre{ white-space:pre-wrap; font-family:ui-monospace,Menlo,Consolas,monospace; background:#fff; border:1px dashed #e6eeff; border-radius:8px; padding:10px; }
+
+.list{ list-style:none; padding:0; margin:16px 0; }
+.report-item{ background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px; margin:10px 0; display:grid; gap:6px; }
+.title{ font-weight:600; }
+.actions{ display:flex; gap:8px; }
+
+.qr{ text-align:center; margin:10px 0; }
+.muted{ color:var(--muted); }
+
+/* Buttons */
+.btn{
+  appearance:none; border:1px solid var(--line); background:#f0f6ff; color:#24314f;
+  padding:8px 12px; border-radius:8px; font-size:14px; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:6px;
+}
+.btn:hover{ filter:brightness(0.97); }
+.bar{ display:flex; gap:8px; flex-wrap:wrap; margin:14px 0; }
+
+/* Report Generated banner */
 .report-banner{
-  display:flex;
-  align-items:center;
-  gap:14px;
-  border:2px solid #b7f3df;
-  background:#e9fff8;
-  border-radius:12px;
-  padding:12px 14px;
-  margin-top:12px;
+  display:flex; align-items:center; gap:14px;
+  border:2px solid var(--aqua); background:var(--aqua2);
+  border-radius:12px; padding:12px 14px; margin-top:12px;
 }
 .report-icon{ font-size:24px; line-height:1; }
 .report-text{ flex:1; }
-.report-title{ font-weight:700; color:#145; margin-bottom:2px; }
-.report-sub{ font-size:14px; color:#345; }
+.report-title{ font-weight:800; color:#124f44; margin-bottom:2px; }
+.report-sub{ font-size:14px; color:#1f4b43; }
 .report-actions{ display:flex; flex-wrap:wrap; gap:8px; }
-.btn{
-  text-decoration:none; border:1px solid #cfe3ff; background:#f3f8ff; color:#234;
-  padding:8px 12px; border-radius:8px; font-size:14px; cursor:pointer;
-}
-.btn:hover{ filter:brightness(0.97); }
 
-/* Mic button state (tiny, tasteful) */
+/* Mic buttons */
 .mic-btn{
   display:inline-flex; align-items:center; justify-content:center;
   width:34px; height:34px; border-radius:50%;
   border:1px solid #d3d9ee; background:#f8faff; cursor:pointer;
 }
-.mic-btn svg{ width:18px; height:18px; }
 .mic-btn.mic-active{ background:#ffeaea; border-color:#ffb5b5; }
 
-/* Read-only language display input */
-input[readonly].detected-lang{
-  background:#f7f7f7; color:#444;
+/* Language confirmation banner */
+.lang-banner{
+  display:flex; align-items:center; gap:12px;
+  border:1px dashed var(--indigo); background:#f8f4ff; padding:10px 12px; border-radius:10px; margin-top:8px;
 }
+.lang-icon{ font-size:18px; }
+.lang-title{ font-weight:700; }
+.lang-sub{ color:var(--muted); font-size:13px; }
+.lang-actions{ display:flex; gap:8px; }
 
-/* Keep forms tidy on narrow screens */
-@media (max-width: 640px){
-  .report-actions{ gap:6px; }
+/* Forms */
+input, select, textarea{
+  width:100%; padding:10px 12px; border:1px solid #cfd8ea; border-radius:8px; font-size:15px; background:#fff;
+}
+input[readonly].detected-lang{ background:#f7f7f7; color:#444; }
+
+/* Share bar */
+.sharebar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+
+/* Responsive */
+@media (max-width:640px){
+  .report-actions, .sharebar{ gap:6px; }
 }
