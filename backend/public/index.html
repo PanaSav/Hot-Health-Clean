@@ -3,253 +3,190 @@
 <head>
   <meta charset="utf-8"/>
   <title>Hot Health — One Port</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
-  <header class="head">
-    <h1>Hot Health — One Port</h1>
-    <nav>
-      <a class="btn" href="/reports">Open Reports</a>
-      <form method="POST" action="/logout" style="display:inline">
-        <button class="btn" type="submit">Log out</button>
-      </form>
-    </nav>
-  </header>
+  <div class="container">
+    <header class="head">
+      <h1>Hot Health — One Port</h1>
+      <nav>
+        <a class="btn" href="/reports" rel="noopener">Open Reports</a>
+        <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
+      </nav>
+    </header>
 
-  <main class="container">
-
-    <!-- How to use -->
     <section class="card">
-      <h2>How to Use This App</h2>
-      <p>Type your information in each area, or tap the <span class="micmini">🎤</span> mic to fill fields by voice.
-         Alternatively, you can speak freely in the “Patient Health Status” section below using six short recorders.
-         Choose your working/target languages first. When finished, press <b>Generate Report</b> in the REPORTING section.</p>
+      <h2>How To Use This App</h2>
+      <p class="muted">
+        Type your information into each area or tap the <span class="micico"></span> to speak.
+        Alternatively, you can record a free-form health note in the section below.
+        Choose your working language and (optional) translated language first.
+        When finished, press “Generate Report”.
+      </p>
     </section>
 
-    <!-- Language block -->
     <section class="card">
       <h2>Language</h2>
       <div class="grid2">
         <div>
-          <label>Detected language (suggestion)</label>
-          <div class="row">
-            <input id="langDetected" class="w100" placeholder="(auto-detected)" readonly />
-            <button id="btnDetect" class="btn" type="button">Detect</button>
-          </div>
-          <div id="detectHint" class="muted small">We think you're speaking <span id="detectName">—</span>. Tap Detect to refresh.</div>
+          <label class="lbl">Working language (detected)</label>
+          <input id="langDetected" class="in" placeholder="Auto" readonly>
+          <div class="tiny muted" id="langHint" style="margin-top:6px;"></div>
         </div>
         <div>
-          <label>Translate to</label>
-          <div class="row">
-            <select id="lang" class="w100">
-              <option value="">— No translation —</option>
-              <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
-              <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
-              <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
-              <option value="ja">日本語</option><option value="ko">한국어</option>
-              <option value="he">עברית</option><option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option>
-            </select>
-            <button class="mic-btn" data-target="lang" title="Speak target language">🎤</button>
-          </div>
+          <label class="lbl">Translate to</label>
+          <select id="lang" class="in">
+            <option value="">— No translation —</option>
+            <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
+            <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
+            <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
+            <option value="ja">日本語</option><option value="ko">한국어</option>
+            <option value="he">עברית</option><option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option>
+          </select>
         </div>
       </div>
     </section>
 
-    <!-- Patient & options -->
     <section class="card">
       <h2>Patient & Options</h2>
+      <div class="grid3">
+        <div class="micwrap">
+          <input id="pName" class="in" placeholder="Patient Name"/>
+          <button class="mic-btn" title="Speak name" data-target="pName"></button>
+        </div>
+        <div class="micwrap">
+          <input id="pEmail" class="in" placeholder="Patient Email"/>
+          <button class="mic-btn" title="Speak email" data-target="pEmail"></button>
+        </div>
+        <div>
+          <select id="blood" class="in">
+            <option value="">Blood Type</option>
+            <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
+            <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
+          </select>
+        </div>
+
+        <div class="micwrap">
+          <input id="eName" class="in" placeholder="Emergency Contact Name"/>
+          <button class="mic-btn" title="Speak" data-target="eName"></button>
+        </div>
+        <div class="micwrap">
+          <input id="ePhone" class="in" placeholder="Emergency Contact Phone"/>
+          <button class="mic-btn" title="Speak" data-target="ePhone"></button>
+        </div>
+        <div class="micwrap">
+          <input id="eEmail" class="in" placeholder="Emergency Contact Email"/>
+          <button class="mic-btn" title="Speak email" data-target="eEmail"></button>
+        </div>
+      </div>
+
+      <div class="subhead">Doctor</div>
+      <div class="grid3">
+        <div class="micwrap">
+          <input id="dName" class="in" placeholder="Doctor Name"/>
+          <button class="mic-btn" title="Speak" data-target="dName"></button>
+        </div>
+        <div class="micwrap">
+          <input id="dAddress" class="in" placeholder="Doctor Address"/>
+          <button class="mic-btn" title="Speak" data-target="dAddress"></button>
+        </div>
+        <div class="grid2 span2">
+          <div class="micwrap">
+            <input id="dPhone" class="in" placeholder="Doctor Phone"/>
+            <button class="mic-btn" title="Speak" data-target="dPhone"></button>
+          </div>
+          <div class="micwrap">
+            <input id="dFax" class="in" placeholder="Doctor Fax"/>
+            <button class="mic-btn" title="Speak" data-target="dFax"></button>
+          </div>
+          <div class="micwrap span2">
+            <input id="dEmail" class="in" placeholder="Doctor Email"/>
+            <button class="mic-btn" title="Speak email" data-target="dEmail"></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="subhead">Pharmacy</div>
+      <div class="grid3">
+        <div class="micwrap">
+          <input id="phName" class="in" placeholder="Pharmacy Name"/>
+          <button class="mic-btn" title="Speak" data-target="phName"></button>
+        </div>
+        <div class="micwrap">
+          <input id="phAddress" class="in" placeholder="Pharmacy Address"/>
+          <button class="mic-btn" title="Speak" data-target="phAddress"></button>
+        </div>
+        <div class="grid2 span2">
+          <div class="micwrap">
+            <input id="phPhone" class="in" placeholder="Pharmacy Phone"/>
+            <button class="mic-btn" title="Speak" data-target="phPhone"></button>
+          </div>
+          <div class="micwrap">
+            <input id="phFax" class="in" placeholder="Pharmacy Fax"/>
+            <button class="mic-btn" title="Speak" data-target="phFax"></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Patient Health Status</h2>
       <div class="grid2">
-        <div>
-          <label>Patient Name</label>
-          <div class="row">
-            <input id="pName" placeholder="Full name" class="w100"/>
-            <button class="mic-btn" data-target="pName" title="Speak name">🎤</button>
-          </div>
+        <div class="micwrap">
+          <input id="typed_bp" class="in" placeholder="Blood Pressure (e.g., 120/75)"/>
+          <button class="mic-btn" title="Speak BP" data-target="typed_bp"></button>
         </div>
-        <div>
-          <label>Patient Email</label>
-          <div class="row">
-            <input id="pEmail" placeholder="name@example.com" class="w100" inputmode="email"/>
-            <button class="mic-btn" data-target="pEmail" title="Speak email">🎤</button>
-          </div>
+        <div class="micwrap">
+          <input id="typed_weight" class="in" placeholder="Weight (lbs or kg)"/>
+          <button class="mic-btn" title="Speak weight" data-target="typed_weight"></button>
         </div>
-
-        <div>
-          <label>Emergency Name</label>
-          <div class="row">
-            <input id="eName" placeholder="Contact name" class="w100"/>
-            <button class="mic-btn" data-target="eName" title="Speak emergency name">🎤</button>
-          </div>
+      </div>
+      <div class="grid1">
+        <div class="micwrap">
+          <textarea id="typed_meds" class="in" rows="2" placeholder="Medications & dose"></textarea>
+          <button class="mic-btn" title="Speak medications" data-target="typed_meds"></button>
         </div>
-        <div>
-          <label>Emergency Phone</label>
-          <div class="row">
-            <input id="ePhone" placeholder="+1 555 123 4567" class="w100" inputmode="tel"/>
-            <button class="mic-btn" data-target="ePhone" title="Speak phone">🎤</button>
-          </div>
+      </div>
+      <div class="grid1">
+        <div class="micwrap">
+          <textarea id="typed_allergies" class="in" rows="2" placeholder="Allergies"></textarea>
+          <button class="mic-btn" title="Speak allergies" data-target="typed_allergies"></button>
         </div>
-        <div>
-          <label>Emergency Email</label>
-          <div class="row">
-            <input id="eEmail" placeholder="ec@example.com" class="w100" inputmode="email"/>
-            <button class="mic-btn" data-target="eEmail" title="Speak email">🎤</button>
-          </div>
+      </div>
+      <div class="grid1">
+        <div class="micwrap">
+          <textarea id="typed_conditions" class="in" rows="2" placeholder="Conditions"></textarea>
+          <button class="mic-btn" title="Speak conditions" data-target="typed_conditions"></button>
         </div>
-
-        <div>
-          <label>Blood Type (optional)</label>
-          <div class="row">
-            <select id="blood" class="w100">
-              <option value="">—</option>
-              <option>O+</option><option>O-</option><option>A+</option><option>A-</option>
-              <option>B+</option><option>B-</option><option>AB+</option><option>AB-</option>
-            </select>
-            <button class="mic-btn" data-target="blood" title="Speak blood type">🎤</button>
-          </div>
+      </div>
+      <div class="grid1">
+        <div class="micwrap">
+          <textarea id="typed_general" class="in" rows="2" placeholder="General Health Note"></textarea>
+          <button class="mic-btn" title="Speak note" data-target="typed_general"></button>
         </div>
       </div>
     </section>
 
-    <!-- Doctor -->
     <section class="card">
-      <h2>Doctor</h2>
-      <div class="grid2">
-        <div>
-          <label>Doctor Name</label>
-          <div class="row"><input id="doctor_name" class="w100"/><button class="mic-btn" data-target="doctor_name">🎤</button></div>
-        </div>
-        <div>
-          <label>Doctor Address</label>
-          <div class="row"><input id="doctor_address" class="w100"/><button class="mic-btn" data-target="doctor_address">🎤</button></div>
-        </div>
-        <div>
-          <label>Doctor Phone</label>
-          <div class="row"><input id="doctor_phone" class="w100" inputmode="tel"/><button class="mic-btn" data-target="doctor_phone">🎤</button></div>
-        </div>
-        <div>
-          <label>Doctor Fax</label>
-          <div class="row"><input id="doctor_fax" class="w100" inputmode="tel"/><button class="mic-btn" data-target="doctor_fax">🎤</button></div>
-        </div>
-        <div>
-          <label>Doctor Email</label>
-          <div class="row"><input id="doctor_email" class="w100" inputmode="email"/><button class="mic-btn" data-target="doctor_email">🎤</button></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Pharmacy -->
-    <section class="card">
-      <h2>Pharmacy</h2>
-      <div class="grid2">
-        <div>
-          <label>Pharmacy Name</label>
-          <div class="row"><input id="pharmacy_name" class="w100"/><button class="mic-btn" data-target="pharmacy_name">🎤</button></div>
-        </div>
-        <div>
-          <label>Pharmacy Address</label>
-          <div class="row"><input id="pharmacy_address" class="w100"/><button class="mic-btn" data-target="pharmacy_address">🎤</button></div>
-        </div>
-        <div>
-          <label>Pharmacy Phone</label>
-          <div class="row"><input id="pharmacy_phone" class="w100" inputmode="tel"/><button class="mic-btn" data-target="pharmacy_phone">🎤</button></div>
-        </div>
-        <div>
-          <label>Pharmacy Fax</label>
-          <div class="row"><input id="pharmacy_fax" class="w100" inputmode="tel"/><button class="mic-btn" data-target="pharmacy_fax">🎤</button></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Alternative: Patient Health Status - Free Speech Recording -->
-    <section class="card">
-      <h2>Patient Health Status — Free Speech Recording</h2>
-      <div class="miniwrap">
-        <div class="mini">
-          <div class="minilabel">Blood Pressure (auto-stop 20s)</div>
-          <div class="row">
-            <input id="typed_bp" placeholder="e.g., 120 over 75" class="w100"/>
-            <button class="mic-btn" data-target="typed_bp" title="Speak BP">🎤</button>
-          </div>
-          <div class="row">
-            <button class="btn rec" data-key="bp">🎤 Record</button>
-            <span class="muted small" id="meta_bp"></span>
-          </div>
-        </div>
-
-        <div class="mini">
-          <div class="minilabel">Medications & Dose (auto-stop 180s)</div>
-          <div class="row">
-            <input id="typed_meds" placeholder="e.g., Lisinopril 10 mg" class="w100"/>
-            <button class="mic-btn" data-target="typed_meds">🎤</button>
-          </div>
-          <div class="row">
-            <button class="btn rec" data-key="meds">🎤 Record</button>
-            <span class="muted small" id="meta_meds"></span>
-          </div>
-        </div>
-
-        <div class="mini">
-          <div class="minilabel">Allergies (auto-stop 60s)</div>
-          <div class="row">
-            <input id="typed_allergies" placeholder="e.g., penicillin, peanuts" class="w100"/>
-            <button class="mic-btn" data-target="typed_allergies">🎤</button>
-          </div>
-          <div class="row">
-            <button class="btn rec" data-key="allergies">🎤 Record</button>
-            <span class="muted small" id="meta_allergies"></span>
-          </div>
-        </div>
-
-        <div class="mini">
-          <div class="minilabel">Weight (auto-stop 60s)</div>
-          <div class="row">
-            <input id="typed_weight" placeholder="e.g., 215 pounds" class="w100"/>
-            <button class="mic-btn" data-target="typed_weight">🎤</button>
-          </div>
-          <div class="row">
-            <button class="btn rec" data-key="weight">🎤 Record</button>
-            <span class="muted small" id="meta_weight"></span>
-          </div>
-        </div>
-
-        <div class="mini">
-          <div class="minilabel">Conditions (auto-stop 180s)</div>
-          <div class="row">
-            <input id="typed_conditions" placeholder="e.g., kidney condition" class="w100"/>
-            <button class="mic-btn" data-target="typed_conditions">🎤</button>
-          </div>
-          <div class="row">
-            <button class="btn rec" data-key="conditions">🎤 Record</button>
-            <span class="muted small" id="meta_conditions"></span>
-          </div>
-        </div>
-
-        <div class="mini">
-          <div class="minilabel">General Health Note (auto-stop 180s)</div>
-          <div class="row">
-            <input id="typed_general" placeholder="Anything else important…" class="w100"/>
-            <button class="mic-btn" data-target="typed_general">🎤</button>
-          </div>
-          <div class="row">
-            <button class="btn rec" data-key="general">🎤 Record</button>
-            <span class="muted small" id="meta_general"></span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- REPORTING -->
-    <section class="card">
-      <h2>REPORTING</h2>
+      <h2>Alternative: Patient Health Status — Free Speech Recording</h2>
       <div class="row">
+        <button id="btnRec" class="btn">Record</button>
+        <div id="recHint" class="muted" style="margin-left:8px;">Tip: speak meds, allergies, conditions, BP, weight.</div>
+      </div>
+      <div id="recMeta" class="muted"></div>
+      <div id="recErr" class="error"></div>
+    </section>
+
+    <section class="card">
+      <h2>Reporting</h2>
+      <div class="bar">
         <button id="btnGenerate" class="btn">Generate Report</button>
       </div>
-      <div id="result"></div>
+      <div id="result" class="result"></div>
       <div id="error" class="error"></div>
     </section>
-
-  </main>
+  </div>
 
   <script src="/app.js"></script>
 </body>
