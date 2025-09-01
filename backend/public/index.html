@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>Hot Health — One Port</title>
+  <title>Caregiver Card</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
   <div class="container">
     <header class="head">
-      <h1>Hot Health — One Port</h1>
+      <h1>Caregiver Card</h1>
       <nav>
         <a class="btn" href="/reports" rel="noopener">Open Reports</a>
         <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
@@ -20,9 +20,9 @@
       <h2>How To Use This App</h2>
       <p class="muted">
         Type your information into each area or tap the <span class="micico"></span> to speak.
-        Alternatively, you can record a free-form health note in the section below.
-        Choose your working language and (optional) translated language first.
-        When finished, press “Generate Report”.
+        <br/>Alternatively, press <b>Record</b> below to speak freely; the app will <b>auto-detect your language</b>.
+        After you finish, you’ll be asked: <i>“Are you speaking X?”</i> — confirm Yes/No.
+        <br/>When done, press <b>Generate Report</b>.
       </p>
     </section>
 
@@ -32,6 +32,11 @@
         <div>
           <label class="lbl">Working language (detected)</label>
           <input id="langDetected" class="in" placeholder="Auto" readonly>
+          <div id="langConfirmRow" class="row tiny" style="margin-top:6px; display:none;">
+            <div id="langQuestion" class="muted"></div>
+            <label style="margin-left:10px;"><input type="radio" name="langConfirm" value="yes"> Yes</label>
+            <label style="margin-left:10px;"><input type="radio" name="langConfirm" value="no"> No</label>
+          </div>
           <div class="tiny muted" id="langHint" style="margin-top:6px;"></div>
         </div>
         <div>
@@ -172,7 +177,7 @@
       <h2>Alternative: Patient Health Status — Free Speech Recording</h2>
       <div class="row">
         <button id="btnRec" class="btn">Record</button>
-        <div id="recHint" class="muted" style="margin-left:8px;">Tip: speak meds, allergies, conditions, BP, weight.</div>
+        <div id="recHint" class="muted" style="margin-left:8px;">Tip: hold Record and speak — language will be auto-detected.</div>
       </div>
       <div id="recMeta" class="muted"></div>
       <div id="recErr" class="error"></div>

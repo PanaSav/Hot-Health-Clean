@@ -1,16 +1,18 @@
-// Front-end logic: field mics (SpeechRecognition), classic recorder (MediaRecorder), submit to /upload
-
 const $ = sel => document.querySelector(sel);
 
-// Detect UI nodes
+// Language UI nodes
 const langDetectedEl = $('#langDetected');
 const langHint = $('#langHint');
 const langTargetEl = $('#lang');
+const langConfirmRow = $('#langConfirmRow');
+const langQuestion = $('#langQuestion');
 
+// Classic recorder nodes
 const btnRec   = $('#btnRec');
 const recMeta  = $('#recMeta');
 const recErr   = $('#recErr');
 
+// Reporting nodes
 const btnGenerate = $('#btnGenerate');
 const resultBox   = $('#result');
 const errorBox    = $('#error');
@@ -20,12 +22,9 @@ function setResult(html){ if (resultBox) resultBox.innerHTML = html || ''; }
 function setRecErr(msg){ if (recErr) recErr.textContent = msg || ''; }
 function setRecMeta(msg){ if (recMeta) recMeta.textContent = msg || ''; }
 
-// -------- Language hint (simple prompt you can refine) --------
+// Initial language hint
 if (langHint){
-  langHint.textContent = 'We think you are speaking English — tap to confirm or change.';
-}
-if (langDetectedEl){
-  langDetectedEl.value = 'English';
+  langHint.textContent = 'We’ll auto-detect if you use the free-speech recorder. You can also select a translation target.';
 }
 
 // -------- Field SpeechRecognition (mic icons) --------
@@ -41,12 +40,10 @@ if (langDetectedEl){
     s = s.replace(/\s+underscore\s+/g, '_');
     s = s.replace(/\s+(hyphen|dash)\s+/g, '-');
     s = s.replace(/\s+plus\s+/g, '+');
-
     s = s.replace(/\s+gmail\s*\.?\s*com\s*/g, '@gmail.com ');
     s = s.replace(/\s+outlook\s*\.?\s*com\s*/g, '@outlook.com ');
     s = s.replace(/\s+hotmail\s*\.?\s*com\s*/g, '@hotmail.com ');
     s = s.replace(/\s+yahoo\s*\.?\s*com\s*/g, '@yahoo.com ');
-
     s = s.replace(/\s*@\s*/g, '@');
     s = s.replace(/\s*\.\s*/g, '.');
     s = s.replace(/\s+/g, ' ').trim();
@@ -66,7 +63,7 @@ if (langDetectedEl){
       const el = document.getElementById(targetId);
       if (!el) return;
       const rec = new SR();
-      rec.lang = 'en-US'; // you can dynamically map from detected
+      rec.lang = 'en-US';
       rec.interimResults = false; rec.maxAlternatives = 1;
 
       const orig = el.style.backgroundColor;
@@ -92,7 +89,7 @@ if (langDetectedEl){
   });
 })();
 
-// -------- Classic free-speech recorder --------
+// -------- Classic free-speech recorder with 60s auto-stop --------
 let mediaRecorder=null, chunks=[];
 function startRec(){
   setRecErr(''); setRecMeta('');
@@ -106,13 +103,16 @@ function startRec(){
     mediaRecorder.ondataavailable = e=>{ if (e.data && e.data.size) chunks.push(e.data); };
     mediaRecorder.onstop = ()=>{
       const blob = new Blob(chunks, { type:'audio/webm' });
-      window.__classicBlob = blob; // store for Generate Report
-      setRecMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB`);
+      window.__classicBlob = blob;
+      setRecMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB — language will be detected after Generate`);
+      // Show a provisional question area (actual detected code arrives from backend response)
+      if (langDetectedEl){
+        langDetectedEl.placeholder = 'Detecting…';
+      }
     };
     mediaRecorder.start();
     btnRec.textContent='Stop';
     setRecMeta('Recording… it will auto-stop in 60s.');
-    // auto stop after 60s
     setTimeout(()=>{
       if (mediaRecorder && mediaRecorder.state!=='inactive'){
         stopRec();
@@ -199,11 +199,14 @@ if (btnGenerate){
       const json = await generateReport();
       if (!json.ok) throw new Error(json.error || 'Server error');
 
-      // show detected language in UI if provided
-      if (json.detected_lang && langDetectedEl) {
+      // Update detected language UI + question
+      if (json.detected_lang){
         const map = { en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
           ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ' };
-        langDetectedEl.value = map[json.detected_lang] || json.detected_lang;
+        const label = map[json.detected_lang] || json.detected_lang.toUpperCase();
+        if (langDetectedEl) langDetectedEl.value = label;
+        if (langQuestion) langQuestion.textContent = `Are you speaking ${label}?`;
+        if (langConfirmRow) langConfirmRow.style.display = 'flex';
       }
 
       const shareUrl = json.url;
@@ -217,8 +220,8 @@ if (btnGenerate){
           <div class="report-actions">
             <a class="btn" href="${shareUrl}" target="_blank" rel="noopener">Open Report</a>
             <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
-            <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Hot%20Health%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Gmail</a>
-            <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Hot%20Health%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Outlook</a>
+            <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Gmail</a>
+            <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Outlook</a>
           </div>
         </div>
       `;
