@@ -1,5 +1,5 @@
-// Caregiver Card — backend (auth, uploads, prefill, parsing, translation, QR, reports, journal)
-// Uses sqlite3 ONLY (stable on Render)
+// backend/index.js
+// Caregiver Card — consolidated backend (auth, uploads, parsing, translation, QR, reports)
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -17,13 +17,15 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ---------- Config ----------
-const app  = express();
+// -------------------------
+// Config
+// -------------------------
+const app = express();
 const PORT = Number(process.env.PORT || 10000);
 
 const USER_ID   = process.env.APP_USER_ID   || 'Pana123$';
 const USER_PASS = process.env.APP_USER_PASS || 'GoGoPana$';
-const SESSION_SECRET = process.env.SESSION_SECRET || 'hot-health-session';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'caregiver-card-session';
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
@@ -31,16 +33,24 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ---------- DB (sqlite3 only) ----------
+// -------------------------
+// SQLite3 (only) — permanent fix
+// -------------------------
 sqlite3.verbose();
 const dbPath = path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(dbPath);
 
-const dbRun = (sql, params=[]) => new Promise((res, rej)=>db.run(sql, params, function(e){ e?rej(e):res(this); }));
-const dbGet = (sql, params=[]) => new Promise((res, rej)=>db.get(sql, params, (e,row)=> e?rej(e):res(row)));
-const dbAll = (sql, params=[]) => new Promise((res, rej)=>db.all(sql, params, (e,rows)=> e?rej(e):res(rows)));
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => db.run(sql, params, function (err) { err ? reject(err) : resolve(this); }));
+}
+function dbGet(sql, params = []) {
+  return new Promise((resolve, reject) => db.get(sql, params, function (err, row) { err ? reject(err) : resolve(row); }));
+}
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => db.all(sql, params, function (err, rows) { err ? reject(err) : resolve(rows); }));
+}
 
-async function initDB(){
+async function initDB() {
   await dbRun(`
     CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY,
@@ -71,353 +81,345 @@ async function initDB(){
     )
   `);
 
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS journal (
-      id TEXT PRIMARY KEY,
-      created_at TEXT,
-      text TEXT,
-      detected_lang TEXT,
-      target_lang TEXT,
-      translated_text TEXT
-    )
-  `);
-
-  // Defensive, harmless on duplicates
+  // add-any-missing columns (safe no-op if exists)
   const addCols = [
     ['doctor_name','TEXT'],['doctor_address','TEXT'],['doctor_phone','TEXT'],['doctor_fax','TEXT'],['doctor_email','TEXT'],
     ['pharmacy_name','TEXT'],['pharmacy_address','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],
     ['summary_text','TEXT'],['translated_summary','TEXT']
   ];
-  for (const [c, def] of addCols){
+  for (const [c, def] of addCols) {
     try { await dbRun(`ALTER TABLE reports ADD COLUMN ${c} ${def}`); } catch {}
   }
 }
 
-// ---------- Auth ----------
+// -------------------------
+// Auth (cookie)
+// -------------------------
 app.use(cookieParser(SESSION_SECRET));
-app.use(bodyParser.json({limit:'8mb'}));
-app.use(bodyParser.urlencoded({extended:true, limit:'8mb'}));
+app.use(bodyParser.json({ limit: '6mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '6mb' }));
 
-function setSession(res, user){
-  res.cookie('hhsess', user, { httpOnly:true, sameSite:'lax', signed:true /*, secure:true*/ });
+function setSession(res, user) {
+  res.cookie('hhsess', user, { httpOnly: true, sameSite: 'lax', signed: true /*, secure: true*/ });
 }
-function clearSession(res){ res.clearCookie('hhsess'); }
-function requireAuth(req,res,next){
+function clearSession(res) { res.clearCookie('hhsess'); }
+function requireAuth(req, res, next) {
   const u = req.signedCookies?.hhsess;
   if (!u) return res.redirect('/login');
   next();
 }
 
-// Login first, then gate app
-app.get('/login', (req,res)=>{
-  const p = path.join(PUBLIC_DIR, 'login.html');
-  if (fs.existsSync(p)) return res.sendFile(p);
-  res.send(`<!doctype html><html><body>
-    <h2>Caregiver Card — Sign In</h2>
-    <form method="POST" action="/login">
-      <input name="userId" placeholder="User ID"><br/>
-      <input name="password" type="password" placeholder="Password"><br/>
-      <button>Sign In</button>
-    </form>
-  </body></html>`);
-});
-app.post('/login', bodyParser.urlencoded({extended:true}), (req,res)=>{
-  const { userId, password } = req.body || {};
-  if (userId === USER_ID && password === USER_PASS){ setSession(res, userId); return res.redirect('/'); }
-  res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
-});
-app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
-
-// Gate everything except /login and static assets we explicitly serve after auth
-app.use(['/','/upload','/prefill','/journal','/journal/*','/reports','/reports/*'], requireAuth);
+// -------------------------
+// Static
+// -------------------------
 app.use(express.static(PUBLIC_DIR));
 
-// ---------- Helpers ----------
-function getBaseUrl(req){
+// -------------------------
+// Helpers
+// -------------------------
+function getBaseUrl(req) {
   const envUrl = (process.env.PUBLIC_BASE_URL || '').trim();
   if (envUrl) return envUrl.replace(/\/+$/,'');
   const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0];
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   return `${proto}://${host}`;
 }
+
 const LANG_NAMES = {
-  en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
-  ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ'
+  en: 'English', fr: 'Français', es: 'Español', pt: 'Português', de: 'Deutsch', it: 'Italiano',
+  ar: 'العربية', hi: 'हिन्दी', zh: '中文', ja: '日本語', ko: '한국어', he: 'עברית', sr: 'Srpski', pa: 'ਪੰਜਾਬੀ'
 };
-const langLabel = c => LANG_NAMES[c] || (c||'—');
-const uid = (n=20)=> crypto.randomBytes(n).toString('base64url').slice(0,n);
+function langLabel(code='') { return LANG_NAMES[code] || code || '—'; }
+function uid(n=20) { return crypto.randomBytes(n).toString('base64url').slice(0,n); }
 
-// email & phone normalization
-function normalizeEmailSpoken(raw){
-  if (!raw) return '';
+function normalizeEmailSpoken(raw='') {
   let s = ' ' + raw.toLowerCase().trim() + ' ';
-  s = s.replace(/\s+at\s+/g, '@')
-       .replace(/\s+dot\s+/g, '.')
-       .replace(/\s+period\s+/g, '.')
-       .replace(/\s+underscore\s+/g, '_')
-       .replace(/\s+(hyphen|dash)\s+/g, '-')
-       .replace(/\s+plus\s+/g, '+')
-       .replace(/\s*@\s*/g, '@')
-       .replace(/\s*\.\s*/g, '.')
-       .replace(/\s+/g, ' ').trim();
-  s = s.replace(/\s+/g, '').replace(/\.\.+/g,'.');
-  return s;
-}
-function normalizePhone(raw){
-  if (!raw) return '';
-  let s = raw.replace(/[^\d+]/g,'');
-  // Keep leading +, digits; trim to reasonable length
-  if (s.length > 18) s = s.slice(0, 18);
+  s = s.replace(/\s+at\s+/g,'@')
+       .replace(/\s+dot\s+/g,'.')
+       .replace(/\s+period\s+/g,'.')
+       .replace(/\s+underscore\s+/g,'_')
+       .replace(/\s+(hyphen|dash)\s+/g,'-')
+       .replace(/\s+plus\s+/g,'+')
+       .replace(/\s+gmail\s*\.?\s*com\s*/g,'@gmail.com ')
+       .replace(/\s+outlook\s*\.?\s*com\s*/g,'@outlook.com ')
+       .replace(/\s+hotmail\s*\.?\s*com\s*/g,'@hotmail.com ')
+       .replace(/\s+yahoo\s*\.?\s*com\s*/g,'@yahoo.com ')
+       .replace(/\s*@\s*/g,'@')
+       .replace(/\s*\.\s*/g,'.')
+       .replace(/\s+/g,'').replace(/\.\.+/g,'.');
   return s;
 }
 
-// facts parser
-function parseFacts(text=''){
+// ---- health facts from text (status) ----
+function parseStatusFacts(text='') {
   const t = text.replace(/\s+/g,' ').trim();
-  const meds=[], allergies=[], conditions=[];
+  const meds = [];
+  const allergies = [];
+  const conditions = [];
+
+  // meds — "X 20 mg" or "X at 20 mg"
   const medRx = /([A-Za-z][A-Za-z0-9\-]+)\s*(?:at|:|—|-)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
-  let m; const seen=new Set();
-  while((m = medRx.exec(t))!==null){
-    const name=m[1], dose=`${m[2]} ${m[3]}`; const k=(name+'|'+dose).toLowerCase();
-    if(!seen.has(k)){ meds.push(`${name} — ${dose}`); seen.add(k); }
+  let m; const seen = new Set();
+  while ((m = medRx.exec(t)) !== null) {
+    const name = m[1]; const dose = `${m[2]} ${m[3]}`;
+    const key = `${name.toLowerCase()}|${dose.toLowerCase()}`;
+    if (!seen.has(key)) { meds.push(`${name} — ${dose}`); seen.add(key); }
   }
+
   const aHit = t.match(/\ballerg(?:y|ies)\b[^.?!]+/i);
-  if(aHit){
-    aHit[0].split(/[,;]| and /i).map(s=>s.replace(/\ballerg(?:y|ies)\b/i,'').replace(/\bto\b/ig,'').trim()).filter(Boolean)
-      .forEach(x=>{ if(!allergies.includes(x)) allergies.push(x); });
+  if (aHit) {
+    const list = aHit[0].split(/[,;]| and /i).map(s=>s.replace(/\ballerg(?:y|ies)\b/i,'').replace(/\bto\b/ig,'').trim()).filter(Boolean);
+    for (const x of list) if (!allergies.includes(x)) allergies.push(x);
   }
+
   const cRx = /\b(I have|I've|I’ve|diagnosed with|history of)\b([^.!?]+)/ig;
   let c;
-  while((c=cRx.exec(t))!==null){
-    let phr = c[2].replace(/\b(allerg(?:y|ies)|medications?|pills?)\b/ig,'').trim();
-    phr = phr.replace(/^[,:;.\s-]+/,'');
-    if(phr) conditions.push(phr);
+  while ((c = cRx.exec(t)) !== null) {
+    let phrase = c[2].replace(/\b(allerg(?:y|ies)|medications?|pills?)\b/ig,'').trim();
+    phrase = phrase.replace(/^[,:;.\s-]+/, '');
+    if (phrase) conditions.push(phrase);
   }
-  let bp=null; const bpM=t.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/);
-  if(bpM) bp=`${bpM[1]}/${bpM[2]}`;
-  let weight=null; const wM=t.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i);
-  if(wM) weight = wM[1] + (wM[2].toLowerCase().includes('kg') ? ' kg':' lbs');
-  return { medications:meds, allergies, conditions, bp, weight };
-}
-function summarizeFacts(f){
-  return [
-    `Medications: ${f.medications?.length? f.medications.join('; ') : 'None mentioned'}`,
-    `Allergies: ${f.allergies?.length? f.allergies.join('; ') : 'None mentioned'}`,
-    `Conditions: ${f.conditions?.length? f.conditions.join('; ') : 'None mentioned'}`,
-    `Blood Pressure: ${f.bp || '—'}`,
-    `Weight: ${f.weight || '—'}`
-  ].join('\n');
+
+  let bp = null;
+  const bpM = t.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/);
+  if (bpM) bp = `${bpM[1]}/${bpM[2]}`;
+
+  let weight = null;
+  const wM = t.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i);
+  if (wM) weight = wM[1] + (wM[2].toLowerCase().includes('kg') ? ' kg' : ' lbs');
+
+  return { medications: meds, allergies, conditions, bp, weight };
 }
 
-// language ID via OpenAI
-async function detectLanguageCode(text=''){
-  if (!text.trim()) return '';
-  const prompt = `Detect the language of this text and reply ONLY a 2-letter ISO 639-1 code. Text:\n\n${text}`;
-  try{
-    const rsp = await openai.chat.completions.create({
-      model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-      temperature: 0,
-      messages: [{ role:'user', content: prompt }]
-    });
-    const code = (rsp.choices?.[0]?.message?.content || '').trim().toLowerCase();
-    return code.match(/^[a-z]{2}$/) ? code : '';
-  }catch{ return ''; }
+function summarizeFacts(f) {
+  const L = [];
+  L.push(`Medications: ${f.medications?.length ? f.medications.join('; ') : 'None mentioned'}`);
+  L.push(`Allergies: ${f.allergies?.length ? f.allergies.join('; ') : 'None mentioned'}`);
+  L.push(`Conditions: ${f.conditions?.length ? f.conditions.join('; ') : 'None mentioned'}`);
+  L.push(`Blood Pressure: ${f.bp || '—'}`);
+  L.push(`Weight: ${f.weight || '—'}`);
+  return L.join('\n');
 }
 
-// ---------- Multer ----------
+// ---- patient/contact parsing (very heuristic) ----
+function parsePatientFromText(text='') {
+  const out = {
+    name:'', email:'', blood_type:'',
+    emer_name:'', emer_phone:'', emer_email:'',
+    doctor_name:'', doctor_address:'', doctor_phone:'', doctor_fax:'', doctor_email:'',
+    pharmacy_name:'', pharmacy_address:'', pharmacy_phone:'', pharmacy_fax:''
+  };
+
+  const t = text.replace(/\s+/g,' ').trim();
+
+  // email(s)
+  const emails = Array.from(t.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig)).map(x=>x[0]);
+  if (emails[0]) out.email = emails[0];
+  if (emails[1]) out.emer_email = emails[1];
+
+  // phones (very loose)
+  const phones = Array.from(t.matchAll(/(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)?\d{3}[-.\s]?\d{3,4}/g)).map(x=>x[0]);
+  if (phones[0]) out.emer_phone = phones[0];
+  if (phones[1]) out.doctor_phone = phones[1];
+  if (phones[2]) out.pharmacy_phone = phones[2];
+
+  // fax (if spoken)
+  const fax = t.match(/\bfax\b[^0-9+]*((?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)?\d{3}[-.\s]?\d{3,4})/i);
+  if (fax) {
+    if (!out.doctor_fax) out.doctor_fax = fax[1];
+    else out.pharmacy_fax = fax[1];
+  }
+
+  // blood type
+  const bt = t.match(/\b(O|A|B|AB)[\s-]?([+-])\b/i);
+  if (bt) out.blood_type = `${bt[1].toUpperCase()}${bt[2]}`;
+
+  // names (extremely rough: look for “my name is …”, “emergency contact …”, “doctor …”, “pharmacy …”)
+  const nameMy = t.match(/\b(my name is|name:)\s+([A-Za-z][A-Za-z.'\- ]{1,60})/i);
+  if (nameMy) out.name = nameMy[2].trim();
+
+  const emer = t.match(/\b(emergency contact (?:name|is|:)?|contact:)\s+([A-Za-z][A-Za-z.'\- ]{1,60})/i);
+  if (emer) out.emer_name = emer[2].trim();
+
+  const doc = t.match(/\b(doctor|dr\.?)\s+([A-Za-z][A-Za-z.'\- ]{1,60})/i);
+  if (doc) out.doctor_name = doc[2].trim();
+
+  const ph = t.match(/\b(pharmacy)\s+([A-Za-z0-9&.,' \-]{2,80})/i);
+  if (ph) out.pharmacy_name = ph[2].trim();
+
+  // very rough address capture
+  const addrDoc = t.match(/\b(doctor (?:address|located at|office at)|address:)\s+([0-9A-Za-z#.,' \-]{6,120})/i);
+  if (addrDoc) out.doctor_address = addrDoc[2].trim();
+  const addrPh = t.match(/\b(pharmacy (?:address|located at)|address:)\s+([0-9A-Za-z#.,' \-]{6,120})/i);
+  if (addrPh) out.pharmacy_address = addrPh[2].trim();
+
+  return out;
+}
+
+// -------------------------
+// Multer storage
+// -------------------------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-  filename:    (_, __f, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
+  filename: (_, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
 });
 const upload = multer({ storage });
 
-// ---------- Home ----------
+// -------------------------
+// Auth routes
+// -------------------------
+app.get('/login', (req,res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
+  const { userId, password } = req.body || {};
+  if (userId === USER_ID && password === USER_PASS) { setSession(res, userId); return res.redirect('/'); }
+  res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
+});
+app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
+
+// Gate the app & reports
+app.use(['/', '/upload', '/upload-multi', '/parse-patient', '/parse-status', '/detect-lang', '/reports', '/reports/*'], requireAuth);
+
+// Home
 app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
-// ---------- PREFILL (free-speech -> field mapping) ----------
-/*
-  POST /prefill
-  fields: mode = "patient" | "status", audio(webm)
-  returns: { ok:true, detected_lang, patch, filled }
-*/
-app.post('/prefill', upload.single('audio'), async (req,res)=>{
-  try{
-    if (!req.file) return res.status(400).json({ ok:false, error:'No audio' });
-    const s = fs.createReadStream(req.file.path);
+// -------------------------
+// Language detection (from text sample)
+// -------------------------
+app.post('/detect-lang', async (req,res) => {
+  try {
+    const sample = (req.body?.sample || '').toString().slice(0, 500);
+    if (!sample) return res.json({ ok:true, code:'', name:'' });
 
-    // 1) transcribe
-    let text='';
-    try{
-      const tr = await openai.audio.transcriptions.create({ file:s, model:'gpt-4o-mini-transcribe' });
-      text = tr.text?.trim() || '';
-    }catch{
-      const s2 = fs.createReadStream(req.file.path);
-      const tr2 = await openai.audio.transcriptions.create({ file:s2, model:'whisper-1' });
-      text = tr2.text?.trim() || '';
-    }
+    const rsp = await openai.chat.completions.create({
+      model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+      temperature: 0,
+      messages: [{
+        role:'user',
+        content:
+`Detect the language code from this text. Reply ONLY with an ISO 639-1 code (like en, es, fr, pt, de, it, ar, hi, zh, ja, ko, he, sr, pa). If unsure, guess.
 
-    // 2) language id
-    const detected = await detectLanguageCode(text);
-
-    // 3) first-pass regex extraction
-    const patch = {};
-    const T = text;
-
-    const emailR = /([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})/i;
-    const phoneR = /(\+?\d[\d\s().-]{6,}\d)/;
-
-    function capture(labelRx, afterRx){
-      const m = T.match(labelRx);
-      if (!m) return '';
-      const tail = T.slice(m.index + m[0].length);
-      const mm = tail.match(afterRx);
-      return mm ? (mm[1] || mm[0]).trim() : '';
-    }
-
-    const mode = (req.body.mode || '').toLowerCase();
-
-    if (mode === 'patient'){
-      // Strong label forms help accuracy; we also allow short “Name: …” style
-      patch.pName  = capture(/\b(patient name|name)\s*[:\-]\s*/i, /([^,.;\n]+)/i);
-      let pEmail   = capture(/\b(patient email|email)\s*[:\-]\s*/i, emailR) || normalizeEmailSpoken(capture(/\b(patient email|email)\s*[:\-]\s*/i, /([^,;\n]+)/i));
-      let pPhone   = capture(/\b(patient phone|phone)\s*[:\-]\s*/i, phoneR);
-
-      patch.pEmail = pEmail || '';
-      patch.eName  = capture(/\b(emergency contact name|emergency name|contact name)\s*[:\-]\s*/i, /([^,.;\n]+)/i);
-      let eEmail   = capture(/\b(emergency email|contact email)\s*[:\-]\s*/i, emailR) || normalizeEmailSpoken(capture(/\b(emergency email|contact email)\s*[:\-]\s*/i, /([^,;\n]+)/i));
-      let ePhone   = capture(/\b(emergency phone|contact phone)\s*[:\-]\s*/i, phoneR);
-
-      patch.eEmail = eEmail || '';
-      patch.ePhone = normalizePhone(ePhone);
-
-      // Doctor
-      patch.dName    = capture(/\b(doctor name|dr\.?\s*name|doctor)\s*[:\-]\s*/i, /([^,.;\n]+)/i);
-      patch.dAddress = capture(/\b(doctor address|office address)\s*[:\-]\s*/i, /([^;\n]+)/i);
-      patch.dPhone   = normalizePhone(capture(/\b(doctor phone|office phone)\s*[:\-]\s*/i, phoneR));
-      patch.dFax     = normalizePhone(capture(/\b(doctor fax|office fax)\s*[:\-]\s*/i, phoneR));
-      let dEmail     = capture(/\b(doctor email|office email)\s*[:\-]\s*/i, emailR) || normalizeEmailSpoken(capture(/\b(doctor email|office email)\s*[:\-]\s*/i, /([^,;\n]+)/i));
-      patch.dEmail   = dEmail || '';
-
-      // Pharmacy
-      patch.phName    = capture(/\b(pharmacy name)\s*[:\-]\s*/i, /([^,.;\n]+)/i);
-      patch.phAddress = capture(/\b(pharmacy address)\s*[:\-]\s*/i, /([^;\n]+)/i);
-      patch.phPhone   = normalizePhone(capture(/\b(pharmacy phone)\s*[:\-]\s*/i, phoneR));
-      patch.phFax     = normalizePhone(capture(/\b(pharmacy fax)\s*[:\-]\s*/i, phoneR));
-
-      // If still too sparse, ask OpenAI for a strict JSON mapping (fallback)
-      const needLLM = !patch.pName && !patch.pEmail && !patch.eName;
-      if (needLLM){
-        const prompt = `Extract fields from this free-speech patient/contact info. 
-Return STRICT JSON with keys:
-{
- "pName": "...",
- "pEmail": "...",
- "eName": "...",
- "ePhone": "...",
- "eEmail": "...",
- "dName": "...",
- "dAddress": "...",
- "dPhone": "...",
- "dFax": "...",
- "dEmail": "...",
- "phName": "...",
- "phAddress": "...",
- "phPhone": "...",
- "phFax": "..."
-}
-Text:
-${T}`;
-        try{
-          const rsp = await openai.chat.completions.create({
-            model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-            temperature: 0,
-            messages: [{ role:'user', content: prompt }]
-          });
-          const raw = rsp.choices?.[0]?.message?.content || '{}';
-          const obj = JSON.parse(raw);
-          Object.assign(patch, obj);
-        }catch{}
-      }
-
-      // Final normalizations
-      if (patch.pEmail) patch.pEmail = normalizeEmailSpoken(patch.pEmail);
-      if (patch.eEmail) patch.eEmail = normalizeEmailSpoken(patch.eEmail);
-      if (patch.dEmail) patch.dEmail = normalizeEmailSpoken(patch.dEmail);
-      patch.ePhone = normalizePhone(patch.ePhone);
-      patch.dPhone = normalizePhone(patch.dPhone);
-      patch.dFax   = normalizePhone(patch.dFax);
-      patch.phPhone= normalizePhone(patch.phPhone);
-      patch.phFax  = normalizePhone(patch.phFax);
-      if (pPhone && !patch.ePhone && !patch.dPhone) patch.ePhone = normalizePhone(pPhone); // if only one phone spoken
-
-    } else if (mode === 'status'){
-      const f = parseFacts(T);
-      if (f.bp)        patch.typed_bp = f.bp;
-      if (f.weight)    patch.typed_weight = f.weight;
-      if (f.medications?.length) patch.typed_meds = f.medications.join('; ');
-      if (f.allergies?.length)   patch.typed_allergies = f.allergies.join('; ');
-      if (f.conditions?.length)  patch.typed_conditions = f.conditions.join('; ');
-      if (!patch.typed_meds && !patch.typed_allergies && !patch.typed_conditions){
-        patch.typed_general = T;
-      }
-    }
-
-    const filled = Object.keys(patch).filter(k => (patch[k] && String(patch[k]).trim().length));
-    res.json({ ok:true, detected_lang: detected || '', patch, filled });
-  }catch(e){
+Text: """${sample}"""`
+      }]
+    });
+    const code = rsp.choices?.[0]?.message?.content?.trim().slice(0,5).toLowerCase() || '';
+    return res.json({ ok:true, code, name: langLabel(code) });
+  } catch (e) {
     console.error(e);
-    res.status(500).json({ ok:false, error:'Server error' });
+    res.json({ ok:true, code:'', name:'' });
   }
 });
 
-// ---------- Upload (Generate Report) ----------
-app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
-app.post('/upload', upload.single('audio'), async (req,res)=>{
-  try{
+// -------------------------
+// Parse: Patient & Contact (free speech)
+// -------------------------
+app.post('/parse-patient', upload.single('audio'), async (req,res) => {
+  try {
+    if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
+    const s = fs.createReadStream(req.file.path);
+    let text = '';
+    try {
+      const tr = await openai.audio.transcriptions.create({ file: s, model: 'gpt-4o-mini-transcribe' });
+      text = tr.text?.trim() || '';
+    } catch {
+      const s2 = fs.createReadStream(req.file.path);
+      const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
+      text = tr2.text?.trim() || '';
+    }
+    // normalize emails inside
+    text = text.replace(/\b([A-Za-z0-9_.+-]+)\s+at\s+([A-Za-z0-9.-]+)\s+dot\s+([A-Za-z]{2,})\b/gi, (_,u,d,tld)=>`${u}@${d}.${tld}`);
+    const parsed = parsePatientFromText(text);
+    if (parsed.email) parsed.email = normalizeEmailSpoken(parsed.email);
+    if (parsed.emer_email) parsed.emer_email = normalizeEmailSpoken(parsed.emer_email);
+    res.json({ ok:true, text, fields: parsed });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:'Parse failed' });
+  }
+});
+
+// -------------------------
+// Parse: Status (free speech)
+// -------------------------
+app.post('/parse-status', upload.single('audio'), async (req,res) => {
+  try {
+    if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
+    const s = fs.createReadStream(req.file.path);
+    let text = '';
+    try {
+      const tr = await openai.audio.transcriptions.create({ file: s, model: 'gpt-4o-mini-transcribe' });
+      text = tr.text?.trim() || '';
+    } catch {
+      const s2 = fs.createReadStream(req.file.path);
+      const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
+      text = tr2.text?.trim() || '';
+    }
+    const facts = parseStatusFacts(text);
+    res.json({ ok:true, text, facts });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:'Parse failed' });
+  }
+});
+
+// -------------------------
+// Upload — multi (typed only from UI; we no longer rely on per-field audio upload here)
+// -------------------------
+app.post('/upload-multi', async (req,res) => {
+  try {
     const B = req.body || {};
+
     const patient = {
-      name:(B.name||'').trim(), email:(B.email||'').trim(), blood_type:(B.blood_type||'').trim(),
-      emer_name:(B.emer_name||'').trim(), emer_phone:(B.emer_phone||'').trim(), emer_email:(B.emer_email||'').trim(),
-      doctor_name:(B.doctor_name||'').trim(), doctor_address:(B.doctor_address||'').trim(),
-      doctor_phone:(B.doctor_phone||'').trim(), doctor_fax:(B.doctor_fax||'').trim(), doctor_email:(B.doctor_email||'').trim(),
-      pharmacy_name:(B.pharmacy_name||'').trim(), pharmacy_address:(B.pharmacy_address||'').trim(),
-      pharmacy_phone:(B.pharmacy_phone||'').trim(), pharmacy_fax:(B.pharmacy_fax||'').trim(),
-      target_lang:(B.lang||'').trim()
+      name: (B.name||'').trim(),
+      email: (B.email||'').trim(),
+      blood_type: (B.blood_type||'').trim(),
+      emer_name: (B.emer_name||'').trim(),
+      emer_phone: (B.emer_phone||'').trim(),
+      emer_email: (B.emer_email||'').trim(),
+      doctor_name: (B.doctor_name||'').trim(),
+      doctor_address: (B.doctor_address||'').trim(),
+      doctor_phone: (B.doctor_phone||'').trim(),
+      doctor_fax: (B.doctor_fax||'').trim(),
+      doctor_email: (B.doctor_email||'').trim(),
+      pharmacy_name: (B.pharmacy_name||'').trim(),
+      pharmacy_address: (B.pharmacy_address||'').trim(),
+      pharmacy_phone: (B.pharmacy_phone||'').trim(),
+      pharmacy_fax: (B.pharmacy_fax||'').trim(),
+      target_lang: (B.lang||'').trim(),
+      detected_lang: (B.langDetected||'').trim()
     };
 
-    const pieces = [
-      B.typed_bp ? `Blood Pressure: ${B.typed_bp}` : '',
-      B.typed_weight ? `Weight: ${B.typed_weight}` : '',
-      B.typed_meds ? `Medications & Dose: ${B.typed_meds}` : '',
-      B.typed_allergies ? `Allergies: ${B.typed_allergies}` : '',
-      B.typed_conditions ? `Conditions: ${B.typed_conditions}` : '',
-      B.typed_general ? `General Health Note: ${B.typed_general}` : ''
+    // Build transcript from status parts
+    const parts = [
+      B.bp ? `Blood Pressure: ${B.bp}` : '',
+      B.meds ? `Medications & Dose: ${B.meds}` : '',
+      B.allergies ? `Allergies: ${B.allergies}` : '',
+      B.weight ? `Weight: ${B.weight}` : '',
+      B.conditions ? `Conditions: ${B.conditions}` : '',
+      B.general ? `General Health Note: ${B.general}` : ''
     ].filter(Boolean);
+    if (!parts.length && !(B.classic_note||'').trim()) {
+      return res.status(400).json({ ok:false, error:'No content' });
+    }
+    if (B.classic_note) parts.push(`Classic Note: ${B.classic_note}`);
 
-    // (Optional) classic recorder: attach as req.file if you later re-add it.
-
-    if (!pieces.length) return res.status(400).json({ ok:false, error:'No content' });
-    const transcript = pieces.join('\n');
-
-    // Language: only detect if we had voice; default en here
-    let detected_lang = 'en';
-
-    const facts = parseFacts(transcript);
+    const transcript = parts.join('\n');
+    const facts = parseStatusFacts(transcript);
     const summary_text = summarizeFacts(facts);
 
+    // Translate transcript AND summary if target selected
     let translated_transcript = '';
     let translated_summary = '';
-    if (patient.target_lang){
-      const [t1,t2] = await Promise.all([
+    if (patient.target_lang) {
+      const [t1, t2] = await Promise.all([
         openai.chat.completions.create({
           model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
           temperature: 0.2,
-          messages: [{ role:'user', content:`Translate to ${patient.target_lang}:\n\n${transcript}` }]
+          messages: [{ role:'user', content: `Translate this to ${patient.target_lang}:\n\n${transcript}` }]
         }),
         openai.chat.completions.create({
           model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
           temperature: 0.2,
-          messages: [{ role:'user', content:`Translate to ${patient.target_lang}:\n\n${summary_text}` }]
+          messages: [{ role:'user', content: `Translate this to ${patient.target_lang}:\n\n${summary_text}` }]
         })
       ]);
       translated_transcript = t1.choices?.[0]?.message?.content?.trim() || '';
@@ -449,7 +451,7 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       patient.emer_name, patient.emer_phone, patient.emer_email,
       patient.doctor_name, patient.doctor_address, patient.doctor_phone, patient.doctor_fax, patient.doctor_email,
       patient.pharmacy_name, patient.pharmacy_address, patient.pharmacy_phone, patient.pharmacy_fax,
-      detected_lang, patient.target_lang,
+      patient.detected_lang || 'en', patient.target_lang,
       transcript, translated_transcript,
       (facts.medications||[]).join('; '),
       (facts.allergies||[]).join('; '),
@@ -459,34 +461,35 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       share_url, qr_data_url
     ]);
 
-    res.json({ ok:true, id, url: share_url, detected_lang });
-  }catch(e){
+    res.json({ ok:true, id, url: share_url });
+  } catch (e) {
     console.error(e);
     res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
-// ---------- Reports list ----------
-app.get('/reports', async (req,res)=>{
+// -------------------------
+// Reports list
+// -------------------------
+app.get('/reports', async (req,res) => {
   const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
-  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
+  const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
   const items = rows.map(r=>`
     <li class="report-item">
-      <div class="title">Report for ${esc(r.name) || 'Unknown'}</div>
+      <div class="title">Report for ${esc(r.name)||'Unknown'}</div>
       <div class="meta">${new Date(r.created_at).toLocaleString()} • ${esc(r.email)}</div>
       <div class="actions">
         <a class="btn" href="/reports/${esc(r.id)}" target="_blank" rel="noopener">Open</a>
       </div>
-    </li>
-  `).join('') || '<li class="report-item">No reports yet.</li>';
+    </li>`).join('') || '<li class="report-item">No reports yet.</li>';
 
   res.send(`<!doctype html>
-<html><head><meta charset="utf-8"/><title>Caregiver Card — Reports</title><link rel="stylesheet" href="/styles.css"/></head>
+<html><head><meta charset="utf-8"/><title>Reports</title><link rel="stylesheet" href="/styles.css"/></head>
 <body>
   <div class="container">
     <header class="head">
       <h1>Caregiver Card — Reports</h1>
-      <nav>
+      <nav class="bar">
         <a class="btn" href="/" rel="noopener">New Report</a>
         <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
       </nav>
@@ -496,17 +499,19 @@ app.get('/reports', async (req,res)=>{
 </body></html>`);
 });
 
-// ---------- Single report (unchanged structure) ----------
-app.get('/reports/:id', async (req,res)=>{
+// -------------------------
+// Single report page
+// -------------------------
+app.get('/reports/:id', async (req,res) => {
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!row) return res.status(404).send('Not found');
 
-  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
+  const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
   const created = new Date(row.created_at).toLocaleString();
   const detName = langLabel(row.detected_lang);
   const tgtName = langLabel(row.target_lang);
 
-  const mailSubject = encodeURIComponent(`Caregiver Card — Report — ${row.name || ''}`);
+  const mailSubject = encodeURIComponent(`Caregiver Card — ${row.name || ''}`);
   const bodyLines = [
     `Shareable link: ${row.share_url}`,
     ``,
@@ -517,7 +522,7 @@ app.get('/reports/:id', async (req,res)=>{
     ``,
     `Summary:\n${row.summary_text || ''}`
   ].join('\n');
-  const gmail   = `https://mail.google.com/mail/?view=cm&fs=1&su=${mailSubject}&body=${encodeURIComponent(bodyLines)}`;
+  const gmail = `https://mail.google.com/mail/?view=cm&fs=1&su=${mailSubject}&body=${encodeURIComponent(bodyLines)}`;
   const outlook = `https://outlook.office.com/mail/deeplink/compose?subject=${mailSubject}&body=${encodeURIComponent(bodyLines)}`;
 
   res.send(`<!doctype html>
@@ -587,22 +592,6 @@ app.get('/reports/:id', async (req,res)=>{
       <a class="btn" href="${outlook}" target="_blank" rel="noopener">📨 Outlook</a>
       <button class="btn" onclick="window.print()">🖨️ Print</button>
     </div>
-
-    <div class="bar" style="margin-top:8px">
-      <form method="POST" action="/reports/${esc(row.id)}/translate" class="row" style="gap:8px">
-        <label for="to" class="lbl" style="margin:0">Translate to new language:</label>
-        <select name="to" id="to" class="in" style="max-width:220px">
-          <option value="">Select…</option>
-          <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
-          <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
-          <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
-          <option value="ja">日本語</option><option value="ko">한국어</option>
-          <option value="he">עברית</option><option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option>
-        </select>
-        <button class="btn" type="submit">Translate</button>
-      </form>
-    </div>
-
     <div class="qr">
       <img src="${esc(row.qr_data_url)}" alt="QR Code" />
       <div class="muted">Scan on a phone or use the link button.</div>
@@ -619,196 +608,8 @@ app.get('/reports/:id', async (req,res)=>{
 </html>`);
 });
 
-app.post('/reports/:id/translate', bodyParser.urlencoded({extended:true}), async (req,res)=>{
-  const id = req.params.id;
-  const to = (req.body?.to || '').trim();
-  if (!to) return res.redirect(`/reports/${id}`);
-
-  const row = await dbGet(`SELECT transcript, summary_text FROM reports WHERE id=?`, [id]);
-  if (!row) return res.status(404).send('Not found');
-
-  try{
-    const [t1,t2] = await Promise.all([
-      openai.chat.completions.create({
-        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-        temperature: 0.2,
-        messages: [{ role:'user', content:`Translate to ${to}:\n\n${row.transcript || ''}` }]
-      }),
-      openai.chat.completions.create({
-        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-        temperature: 0.2,
-        messages: [{ role:'user', content:`Translate to ${to}:\n\n${row.summary_text || ''}` }]
-      })
-    ]);
-    const translated_transcript = t1.choices?.[0]?.message?.content?.trim() || '';
-    const translated_summary    = t2.choices?.[0]?.message?.content?.trim() || '';
-
-    await dbRun(`UPDATE reports
-      SET target_lang=?, translated_transcript=?, translated_summary=?
-      WHERE id=?`, [to, translated_transcript, translated_summary, id]);
-
-    res.redirect(`/reports/${id}`);
-  }catch{
-    res.redirect(`/reports/${id}`);
-  }
-});
-
-// ---------- Journal endpoints (unchanged from prior good state) ----------
-app.post('/journal/add', upload.single('audio'), async (req,res)=>{
-  try{
-    let text = (req.body?.text || '').trim();
-
-    if (req.file){
-      const s = fs.createReadStream(req.file.path);
-      try{
-        const tr = await openai.audio.transcriptions.create({ file:s, model:'gpt-4o-mini-transcribe' });
-        text = (text ? (text + ' ') : '') + (tr.text?.trim() || '');
-      }catch{
-        const s2 = fs.createReadStream(req.file.path);
-        const tr2 = await openai.audio.transcriptions.create({ file:s2, model:'whisper-1' });
-        text = (text ? (text + ' ') : '') + (tr2.text?.trim() || '');
-      }
-    }
-
-    if (!text) return res.status(400).json({ ok:false, error:'No note' });
-
-    const lid = await detectLanguageCode(text) || 'en';
-    const id = uid();
-    const created_at = new Date().toISOString();
-
-    await dbRun(`INSERT INTO journal (id, created_at, text, detected_lang, target_lang, translated_text)
-                 VALUES (?,?,?,?,?,?)`, [id, created_at, text, lid, '', '']);
-
-    res.json({ ok:true, id });
-  }catch(e){
-    console.error(e);
-    res.status(500).json({ ok:false, error:'Server error' });
-  }
-});
-
-app.get('/journal', async (req,res)=>{
-  const rows = await dbAll(`SELECT * FROM journal ORDER BY created_at DESC`);
-  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
-  const items = rows.map(j=>`
-    <li class="report-item">
-      <div class="title">${new Date(j.created_at).toLocaleString()}</div>
-      <div class="meta">Detected: ${esc(langLabel(j.detected_lang))}</div>
-      <pre class="pre">${esc(j.text)}</pre>
-    </li>
-  `).join('') || '<li class="report-item">No notes yet.</li>';
-
-  res.send(`<!doctype html>
-<html><head><meta charset="utf-8"/><title>Caregiver Card — Journal</title><link rel="stylesheet" href="/styles.css"/></head>
-<body>
-  <div class="container">
-    <header class="head">
-      <h1>Caregiver Card — Journal</h1>
-      <nav>
-        <a class="btn" href="/" rel="noopener">Back</a>
-      </nav>
-    </header>
-    <ul class="list">${items}</ul>
-  </div>
-</body></html>`);
-});
-
-app.get('/journal/report', async (req,res)=>{
-  const to = (req.query?.to || '').trim();
-  const notes = await dbAll(`SELECT * FROM journal ORDER BY created_at ASC`);
-  const text = notes.map(n=>`[${new Date(n.created_at).toLocaleDateString()}] ${n.text}`).join('\n');
-
-  let summary = '';
-  if (text){
-    const prompt = `Summarize the following patient journal chronologically. Capture key symptoms, medications, changes, and action items. Keep it concise and medically readable.\n\n${text}`;
-    const rsp = await openai.chat.completions.create({
-      model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-      temperature: 0.2,
-      messages: [{ role:'user', content: prompt }]
-    });
-    summary = rsp.choices?.[0]?.message?.content?.trim() || '';
-  }
-
-  let translated = '';
-  if (to && summary){
-    const tr = await openai.chat.completions.create({
-      model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-      temperature: 0.2,
-      messages: [{ role:'user', content:`Translate to ${to}:\n\n${summary}` }]
-    });
-    translated = tr.choices?.[0]?.message?.content?.trim() || '';
-  }
-
-  const baseUrl = getBaseUrl(req);
-  const shareUrl = `${baseUrl}/journal/report${to ? ('?to=' + encodeURIComponent(to)) : ''}`;
-  const qr = await QRCode.toDataURL(shareUrl);
-
-  const gmail = `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent('Caregiver Card — Journal Summary')}&body=${encodeURIComponent(shareUrl)}`;
-  const outlook = `https://outlook.office.com/mail/deeplink/compose?subject=${encodeURIComponent('Caregiver Card — Journal Summary')}&body=${encodeURIComponent(shareUrl)}`;
-
-  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
-
-  res.send(`<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <title>Caregiver Card — Journal Summary</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <link rel="stylesheet" href="/styles.css"/>
-</head>
-<body>
-<div class="container">
-  <header class="head">
-    <h1>Caregiver Card — Journal Summary</h1>
-    <nav>
-      <a class="btn" href="/journal" rel="noopener">Journal</a>
-      <a class="btn" href="/" rel="noopener">Home</a>
-    </nav>
-  </header>
-
-  <section class="card">
-    <h2>Summary</h2>
-    <div class="dual">
-      <div class="block">
-        <h3>Original</h3>
-        <pre class="pre">${esc(summary)}</pre>
-      </div>
-      <div class="block">
-        <h3>Translated</h3>
-        <pre class="pre">${esc(translated || '(no translation)')}</pre>
-      </div>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>Share / Print</h2>
-    <div class="sharebar">
-      <a class="btn" href="${esc(shareUrl)}" target="_blank" rel="noopener">🔗 Link</a>
-      <a class="btn" href="${gmail}" target="_blank" rel="noopener">📧 Gmail</a>
-      <a class="btn" href="${outlook}" target="_blank" rel="noopener">📨 Outlook</a>
-      <button class="btn" onclick="window.print()">🖨️ Print</button>
-    </div>
-    <form method="GET" action="/journal/report" class="row" style="gap:8px">
-      <label class="lbl" for="to" style="margin:0">Translate to:</label>
-      <select class="in" name="to" id="to" style="max-width:220px">
-        <option value="">—</option>
-        <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
-        <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
-        <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
-        <option value="ja">日本語</option><option value="ko">한국어</option>
-        <option value="he">עברית</option><option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option>
-      </select>
-      <button class="btn" type="submit">Apply</button>
-    </form>
-    <div class="qr">
-      <img src="${esc(qr)}" alt="QR Code"/>
-      <div class="muted">Scan or use the link button.</div>
-    </div>
-  </section>
-</div>
-</body>
-</html>`);
-});
-
-// ---------- Start ----------
+// -------------------------
+// Start
+// -------------------------
 await initDB();
-app.listen(PORT, ()=> console.log(`✅ Backend listening on ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Backend listening on ${PORT}`));

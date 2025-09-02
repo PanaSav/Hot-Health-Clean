@@ -1,266 +1,273 @@
-const $ = s => document.querySelector(s);
+// backend/public/app.js
 
-// Language UI nodes
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+
+const resultBox = $('#result');
+const errorBox  = $('#error');
+const btnGenerate   = $('#btnGenerate');
+
 const langDetectedEl = $('#langDetected');
-const langHint = $('#langHint');
-const langTargetEl = $('#lang');
-const langConfirmRow = $('#langConfirmRow');
-const langQuestion = $('#langQuestion');
-
-// Buttons/areas
-const btnPrefillPatient = $('#btnPrefillPatient');
-const prefillPatientMeta = $('#prefillPatientMeta');
-const prefillPatientErr  = $('#prefillPatientErr');
-
-const btnPrefillStatus = $('#btnPrefillStatus');
-const prefillStatusMeta = $('#prefillStatusMeta');
-const prefillStatusErr  = $('#prefillStatusErr');
-
-const btnGenerate = $('#btnGenerate');
-const resultBox   = $('#result');
-const errorBox    = $('#error');
-
-const btnJournalSave = $('#btnJournalSave');
-const journalText    = $('#journalText');
-const journalMeta    = $('#journalMeta');
-const journalErr     = $('#journalErr');
+const btnLangSpeak   = $('#btnLangSpeak');
+const btnLangConfirm = $('#btnLangConfirm');
+const langGuessMsg   = $('#langGuessMsg');
 
 function setError(msg){ if (errorBox) errorBox.textContent = msg || ''; }
 function setResult(html){ if (resultBox) resultBox.innerHTML = html || ''; }
-if (langHint){
-  langHint.textContent = 'We’ll auto-detect your language if you use the free-speech recorder. You can choose a translation target too.';
+
+// ------------ Email normalization (spoken → valid) ------------
+function normalizeEmailSpoken(raw='') {
+  let s = ' ' + raw.toLowerCase().trim() + ' ';
+  s = s.replace(/\s+at\s+/g,'@')
+       .replace(/\s+dot\s+/g,'.')
+       .replace(/\s+period\s+/g,'.')
+       .replace(/\s+underscore\s+/g,'_')
+       .replace(/\s+(hyphen|dash)\s+/g,'-')
+       .replace(/\s+plus\s+/g,'+')
+       .replace(/\s+gmail\s*\.?\s*com\s*/g,'@gmail.com ')
+       .replace(/\s+outlook\s*\.?\s*com\s*/g,'@outlook.com ')
+       .replace(/\s+hotmail\s*\.?\s*com\s*/g,'@hotmail.com ')
+       .replace(/\s+yahoo\s*\.?\s*com\s*/g,'@yahoo.com ')
+       .replace(/\s*@\s*/g,'@')
+       .replace(/\s*\.\s*/g,'.')
+       .replace(/\s+/g,'')
+       .replace(/\.\.+/g,'.');
+  return s;
+}
+function isEmailField(el){
+  const id=(el.id||'').toLowerCase(), name=(el.name||'').toLowerCase(), type=(el.type||'').toLowerCase();
+  return type==='email' || id.includes('email') || name.includes('email');
 }
 
-// -------- Field SpeechRecognition (per-field mics) --------
-(function(){
+// ------------ Per-field mic (Web Speech Recognition) ------------
+(() => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-  function normalizeEmailSpoken(raw){
-    if (!raw) return '';
-    let s = ' ' + raw.toLowerCase().trim() + ' ';
-    s = s.replace(/\s+at\s+/g, '@')
-         .replace(/\s+dot\s+/g, '.')
-         .replace(/\s+period\s+/g, '.')
-         .replace(/\s+underscore\s+/g, '_')
-         .replace(/\s+(hyphen|dash)\s+/g, '-')
-         .replace(/\s+plus\s+/g, '+')
-         .replace(/\s*@\s*/g, '@')
-         .replace(/\s*\.\s*/g, '.')
-         .replace(/\s+/g, ' ').trim();
-    s = s.replace(/\s+/g, '').replace(/\.\.+/g,'.');
-    return s;
-  }
-  function isEmailField(el){
-    const id=(el.id||'').toLowerCase(), name=(el.name||'').toLowerCase(), type=(el.type||'').toLowerCase();
-    return type==='email' || id.includes('email') || name.includes('email');
-  }
-
-  document.querySelectorAll('.mic-btn').forEach(btn=>{
-    if (!SR){ btn.disabled=true; btn.title='Speech recognition not supported'; return; }
-    btn.addEventListener('click', ()=>{
+  $$('.mic-btn').forEach(btn => {
+    if (!SR) { btn.disabled = true; btn.title = 'Speech recognition not supported'; return; }
+    btn.addEventListener('click', () => {
       const targetId = btn.getAttribute('data-target');
       const el = document.getElementById(targetId);
       if (!el) return;
       const rec = new SR();
-      rec.lang = 'en-US';
+      rec.lang = (window.__uiLang || 'en-US');
       rec.interimResults = false; rec.maxAlternatives = 1;
 
-      const orig = el.style.backgroundColor;
+      const originalBg = el.style.backgroundColor;
       btn.classList.add('mic-active');
       el.style.backgroundColor = '#fff7cc';
 
-      rec.onresult = (e)=>{
+      rec.onresult = (e) => {
         const raw = e.results[0][0].transcript || '';
-        const text = isEmailField(el)? normalizeEmailSpoken(raw) : raw;
-        if (el.tagName==='SELECT'){
+        const text = isEmailField(el) ? normalizeEmailSpoken(raw) : raw;
+        if (el.tagName === 'SELECT') {
           const lower = text.toLowerCase();
-          const opt = [...el.options].find(o => o.textContent.toLowerCase().includes(lower));
+          const opt = Array.from(el.options).find(o => o.textContent.toLowerCase().includes(lower) || o.value.toLowerCase()===lower);
           if (opt) el.value = opt.value;
-        }else{
+        } else {
           el.value = text;
         }
       };
-      rec.onend = ()=>{ btn.classList.remove('mic-active'); el.style.backgroundColor = orig; };
-      rec.onerror = ()=>{ btn.classList.remove('mic-active'); el.style.backgroundColor = orig; };
-
-      try{ rec.start(); }catch{ btn.classList.remove('mic-active'); el.style.backgroundColor = orig; }
+      rec.onend = () => { btn.classList.remove('mic-active'); el.style.backgroundColor = originalBg; };
+      rec.onerror = () => { btn.classList.remove('mic-active'); el.style.backgroundColor = originalBg; };
+      try { rec.start(); } catch { btn.classList.remove('mic-active'); el.style.backgroundColor = originalBg; }
     });
   });
 })();
 
-// -------- Prefill free-speech (patient/status) --------
-let prefillRecorder=null, prefillChunks=[];
-function startPrefill(mode, metaEl, errEl){
-  errEl.textContent=''; metaEl.textContent='';
-  prefillChunks=[];
-  if (!navigator.mediaDevices || !window.MediaRecorder){
-    errEl.textContent='This browser does not support audio recording.';
-    return;
-  }
-  navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
-    prefillRecorder = new MediaRecorder(stream, { mimeType:'audio/webm' });
-    prefillRecorder.ondataavailable = e=>{ if (e.data && e.data.size) prefillChunks.push(e.data); };
-    prefillRecorder.onstop = async ()=>{
-      try{
-        const blob = new Blob(prefillChunks, { type:'audio/webm' });
-        metaEl.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB. Extracting…`;
-        const fd = new FormData();
-        fd.append('audio', blob, 'prefill.webm');
-        fd.append('mode', mode);
-        const r = await fetch('/prefill', { method:'POST', body: fd });
-        if (!r.ok) throw new Error(`Prefill failed (${r.status})`);
-        const j = await r.json();
-        if (!j.ok) throw new Error(j.error || 'Prefill failed');
+// ------------ Language detect flow ------------
+let __lastGuess = { code:'', name:'' };
 
-        if (j.detected_lang && langDetectedEl){
-          const map = { en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
-            ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ' };
-          const label = map[j.detected_lang] || j.detected_lang.toUpperCase();
-          langDetectedEl.value = label;
-          if (langQuestion) langQuestion.textContent = `Are you speaking ${label}?`;
-          if (langConfirmRow) langConfirmRow.style.display='flex';
-        }
-
-        const patch = j.patch || {};
-        const filled = [];
-        Object.entries(patch).forEach(([id,val])=>{
-          if (!val) return;
-          const el = document.getElementById(id);
-          if (el){ el.value = val; filled.push(id); }
+if (btnLangSpeak) {
+  btnLangSpeak.addEventListener('click', () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { langGuessMsg.textContent = 'Speech recognition not supported in this browser.'; return; }
+    const rec = new SR();
+    rec.lang = 'en-US'; // we only need a sample; backend will detect actual language
+    rec.interimResults = false; rec.maxAlternatives = 1;
+    langGuessMsg.textContent = 'Listening… say a short sentence.';
+    rec.onresult = async (e) => {
+      const sample = (e.results[0][0].transcript || '').trim();
+      if (!sample) { langGuessMsg.textContent = 'No speech detected.'; return; }
+      // ask backend to detect language from text
+      try {
+        const r = await fetch('/detect-lang', {
+          method:'POST',
+          headers:{ 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sample })
         });
-
-        metaEl.innerHTML = filled.length
-          ? `Filled ${filled.length} field(s): <span class="tiny muted">${filled.join(', ')}</span>`
-          : 'No specific fields detected — try labeling, e.g., “Patient name: Jane Doe”.';
-      }catch(e){
-        errEl.textContent = e.message || String(e);
+        const j = await r.json();
+        __lastGuess = { code: j.code || '', name: j.name || '' };
+        if (__lastGuess.code) {
+          langGuessMsg.textContent = `We think you’re speaking ${__lastGuess.name} — click Confirm if correct.`;
+          langDetectedEl.value = __lastGuess.name || __lastGuess.code;
+          window.__uiLang = (__lastGuess.code === 'en' ? 'en-US' : __lastGuess.code);
+        } else {
+          langGuessMsg.textContent = 'Could not determine language.';
+        }
+      } catch {
+        langGuessMsg.textContent = 'Detection failed.';
       }
     };
-    prefillRecorder.start();
-    metaEl.textContent='Recording… it will auto-stop in 45s.';
-    setTimeout(()=>{ if (prefillRecorder && prefillRecorder.state!=='inactive') stopPrefill(); }, 45000);
-  }).catch(()=> errEl.textContent = 'Microphone blocked. Allow permission and try again.');
-}
-function stopPrefill(){
-  if (prefillRecorder && prefillRecorder.state!=='inactive'){
-    prefillRecorder.stop();
-    prefillRecorder.stream.getTracks().forEach(t=>t.stop());
-  }
-}
-
-if (btnPrefillPatient){
-  btnPrefillPatient.addEventListener('click', ()=>{
-    if (!btnPrefillPatient.classList.contains('rec')){
-      btnPrefillPatient.classList.add('rec'); btnPrefillPatient.textContent = 'Stop';
-      startPrefill('patient', prefillPatientMeta, prefillPatientErr);
-    }else{
-      btnPrefillPatient.classList.remove('rec'); btnPrefillPatient.textContent = 'Alternative: Patient & Contact’s Info — Free Speech Recording';
-      stopPrefill();
-    }
-  });
-}
-if (btnPrefillStatus){
-  btnPrefillStatus.addEventListener('click', ()=>{
-    if (!btnPrefillStatus.classList.contains('rec')){
-      btnPrefillStatus.classList.add('rec'); btnPrefillStatus.textContent = 'Stop';
-      startPrefill('status', prefillStatusMeta, prefillStatusErr);
-    }else{
-      btnPrefillStatus.classList.remove('rec'); btnPrefillStatus.textContent = 'Alternative: Patient Health Status — Free Speech Recording';
-      stopPrefill();
-    }
+    rec.onerror = () => { langGuessMsg.textContent = 'Mic error.'; };
+    try { rec.start(); } catch { langGuessMsg.textContent = 'Unable to start mic.'; }
   });
 }
 
-// -------- Journal save (typed only; long-press behavior removed for clarity) --------
-if (btnJournalSave){
-  btnJournalSave.addEventListener('click', async ()=>{
-    journalErr.textContent=''; journalMeta.textContent='';
-    try{
+if (btnLangConfirm) {
+  btnLangConfirm.addEventListener('click', () => {
+    if (!__lastGuess.code) { langGuessMsg.textContent = 'No guess yet. Tap the mic and speak first.'; return; }
+    langGuessMsg.textContent = `Language set to ${__lastGuess.name}.`;
+    // Store a code we can send with the form if needed
+    window.__detectedLangCode = __lastGuess.code;
+  });
+}
+
+// ------------ Free speech recorders (MediaRecorder → backend parse) ------------
+async function recordOnce(maxMs=45000) {
+  // HTTPS required in browsers for getUserMedia outside localhost
+  const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+  const mr = new MediaRecorder(stream, { mimeType:'audio/webm' });
+  const chunks = [];
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { if (mr.state!=='inactive') mr.stop(); }, maxMs);
+    mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = () => {
+      clearTimeout(timer);
+      stream.getTracks().forEach(t => t.stop());
+      resolve(new Blob(chunks, { type:'audio/webm' }));
+    };
+    mr.onerror = e => { clearTimeout(timer); reject(e.error || new Error('Recorder error')); };
+    mr.start();
+  });
+}
+
+const btnRecPatient = $('#btnRecPatient');
+if (btnRecPatient) {
+  btnRecPatient.addEventListener('click', async () => {
+    const msg = $('#patientParseMsg');
+    try {
+      msg.textContent = 'Recording… speak your info. It auto-stops in 45s or click again to stop.';
+      const blob = await recordOnce(45000);
+      msg.textContent = 'Transcribing & parsing…';
       const fd = new FormData();
-      fd.append('text', journalText ? journalText.value.trim() : '');
-      const r = await fetch('/journal/add', { method:'POST', body: fd });
-      if (!r.ok) throw new Error(`Save failed (${r.status})`);
+      fd.append('audio', blob, 'patient.webm');
+      const r = await fetch('/parse-patient', { method:'POST', body: fd });
       const j = await r.json();
-      if (!j.ok) throw new Error(j.error || 'Save failed');
-      journalMeta.textContent = 'Note saved.';
-    }catch(e){
-      journalErr.textContent = e.message || String(e);
+      if (!j.ok) throw new Error(j.error || 'Parse failed');
+
+      // Fill fields safely (only if value present)
+      const F = j.fields || {};
+      const setIf = (id, v) => { if (v) { const el = $('#'+id); if (el) el.value = v; } };
+      setIf('pName', F.name);
+      setIf('pEmail', F.email);
+      setIf('blood', F.blood_type);
+      setIf('eName', F.emer_name);
+      setIf('ePhone', F.emer_phone);
+      setIf('eEmail', F.emer_email);
+      setIf('doctor_name', F.doctor_name);
+      setIf('doctor_address', F.doctor_address);
+      setIf('doctor_phone', F.doctor_phone);
+      setIf('doctor_fax', F.doctor_fax);
+      setIf('doctor_email', F.doctor_email);
+      setIf('pharmacy_name', F.pharmacy_name);
+      setIf('pharmacy_address', F.pharmacy_address);
+      setIf('pharmacy_phone', F.pharmacy_phone);
+      setIf('pharmacy_fax', F.pharmacy_fax);
+
+      msg.textContent = 'Parsed and filled available fields ✅';
+    } catch (e) {
+      msg.textContent = 'Parse error: ' + (e.message || String(e));
     }
   });
 }
 
-// -------- Generate Report (typed contents only) --------
-function val(id){ const el=$(id); return el? el.value.trim() : ''; }
-function gatherForm(){
-  return {
-    // patient
-    name: val('#pName'),
-    email: val('#pEmail'),
-    blood_type: val('#blood'),
-    emer_name: val('#eName'),
-    emer_phone: val('#ePhone'),
-    emer_email: val('#eEmail'),
+const btnRecStatus = $('#btnRecStatus');
+if (btnRecStatus) {
+  btnRecStatus.addEventListener('click', async () => {
+    const msg = $('#statusParseMsg');
+    try {
+      msg.textContent = 'Recording status… auto-stops in 60s.';
+      const blob = await recordOnce(60000);
+      msg.textContent = 'Transcribing & parsing status…';
+      const fd = new FormData();
+      fd.append('audio', blob, 'status.webm');
+      const r = await fetch('/parse-status', { method:'POST', body: fd });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'Parse failed');
 
-    // doctor
-    doctor_name: val('#dName'),
-    doctor_address: val('#dAddress'),
-    doctor_phone: val('#dPhone'),
-    doctor_fax: val('#dFax'),
-    doctor_email: val('#dEmail'),
+      const f = j.facts || {};
+      const set = (id, v) => { const el = $('#'+id); if (el && v) el.value = v; };
+      if (f.bp) set('bp', f.bp);
+      if (f.weight) set('weight', f.weight);
+      if (f.medications?.length) set('meds', f.medications.join('; '));
+      if (f.allergies?.length) set('allergies', f.allergies.join('; '));
+      if (f.conditions?.length) set('conditions', f.conditions.join('; '));
 
-    // pharmacy
-    pharmacy_name: val('#phName'),
-    pharmacy_address: val('#phAddress'),
-    pharmacy_phone: val('#phPhone'),
-    pharmacy_fax: val('#phFax'),
-
-    // language
-    lang: val('#lang'),
-
-    // typed status
-    typed_bp: val('#typed_bp'),
-    typed_weight: val('#typed_weight'),
-    typed_meds: $('#typed_meds')? $('#typed_meds').value.trim() : '',
-    typed_allergies: $('#typed_allergies')? $('#typed_allergies').value.trim() : '',
-    typed_conditions: $('#typed_conditions')? $('#typed_conditions').value.trim() : '',
-    typed_general: '' // kept empty here (journal is separate)
-  };
+      msg.textContent = 'Status parsed and filled ✅';
+    } catch (e) {
+      msg.textContent = 'Parse error: ' + (e.message || String(e));
+    }
+  });
 }
 
-async function generateReport(){
+// ------------ Gather + Generate ------------
+function val(id){ const el = $('#'+id); return el ? el.value.trim() : ''; }
+
+async function generateReport() {
   setError(''); setResult('');
   const fd = new FormData();
-  const form = gatherForm();
-  for (const [k,v] of Object.entries(form)) fd.append(k, v||'');
 
-  const r = await fetch('/upload', { method:'POST', body: fd });
-  if (!r.ok){
-    let msg = `Server Error`;
-    try{
-      const t=await r.text();
-      if (t && t.startsWith('{')){ const j=JSON.parse(t); if (j.error) msg=j.error; }
-    }catch{}
+  // patient/contact
+  fd.append('name', val('pName'));
+  fd.append('email', val('pEmail'));
+  fd.append('blood_type', val('blood'));
+  fd.append('emer_name', val('eName'));
+  fd.append('emer_phone', val('ePhone'));
+  fd.append('emer_email', val('eEmail'));
+
+  fd.append('doctor_name', val('doctor_name'));
+  fd.append('doctor_address', val('doctor_address'));
+  fd.append('doctor_phone', val('doctor_phone'));
+  fd.append('doctor_fax', val('doctor_fax'));
+  fd.append('doctor_email', val('doctor_email'));
+
+  fd.append('pharmacy_name', val('pharmacy_name'));
+  fd.append('pharmacy_address', val('pharmacy_address'));
+  fd.append('pharmacy_phone', val('pharmacy_phone'));
+  fd.append('pharmacy_fax', val('pharmacy_fax'));
+
+  // language
+  const target = val('lang');
+  fd.append('lang', target);
+  fd.append('langDetected', (window.__detectedLangCode || 'en'));
+
+  // status typed
+  fd.append('bp', val('bp'));
+  fd.append('meds', val('meds'));
+  fd.append('allergies', val('allergies'));
+  fd.append('weight', val('weight'));
+  fd.append('conditions', val('conditions'));
+  fd.append('general', val('general'));
+
+  const r = await fetch('/upload-multi', { method:'POST', body: fd });
+  if (!r.ok) {
+    let msg = `Upload failed (${r.status})`;
+    try {
+      const txt = await r.text();
+      if (txt.startsWith('{')) { const j = JSON.parse(txt); if (j.error) msg = j.error; }
+    } catch {}
     throw new Error(msg);
   }
   return r.json();
 }
 
-if (btnGenerate){
-  btnGenerate.addEventListener('click', async ()=>{
-    try{
-      const json = await generateReport();
-      if (!json.ok) throw new Error(json.error || 'Server error');
+if (btnGenerate) {
+  btnGenerate.addEventListener('click', async () => {
+    try {
+      const j = await generateReport();
+      if (!j.ok) throw new Error(j.error || 'Server error');
+      const shareUrl = j.url;
 
-      if (json.detected_lang && langDetectedEl){
-        const map = { en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
-          ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ' };
-        const label = map[json.detected_lang] || json.detected_lang.toUpperCase();
-        langDetectedEl.value = label;
-        if (langQuestion) langQuestion.textContent = `Are you speaking ${label}?`;
-        if (langConfirmRow) langConfirmRow.style.display = 'flex';
-      }
-
-      const shareUrl = json.url;
       const banner = `
         <div class="report-banner">
           <div class="report-icon">✅</div>
@@ -272,19 +279,19 @@ if (btnGenerate){
             <a class="btn" href="${shareUrl}" target="_blank" rel="noopener">Open Report</a>
             <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
             <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Gmail</a>
-            <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Outlook</a>
+            <a class="btn" href="https://outlook.office.com/mail/deeplink/compose?subject=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Outlook</a>
           </div>
         </div>
       `;
       setResult(banner);
 
       const copyBtn = $('#btnCopyLink');
-      if (copyBtn){
-        copyBtn.addEventListener('click', async ()=>{
-          try{ await navigator.clipboard.writeText(shareUrl); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy Link', 1500); }catch{}
+      if (copyBtn) {
+        copyBtn.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(shareUrl); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy Link',1500); } catch {}
         });
       }
-    }catch(e){
+    } catch (e) {
       setError(e.message || String(e));
     }
   });
