@@ -1,4 +1,4 @@
-const $ = sel => document.querySelector(sel);
+const $ = s => document.querySelector(s);
 
 // Language UI nodes
 const langDetectedEl = $('#langDetected');
@@ -7,41 +7,47 @@ const langTargetEl = $('#lang');
 const langConfirmRow = $('#langConfirmRow');
 const langQuestion = $('#langQuestion');
 
-// Classic report generation nodes
+// Buttons/areas
+const btnPrefillPatient = $('#btnPrefillPatient');
+const prefillPatientMeta = $('#prefillPatientMeta');
+const prefillPatientErr  = $('#prefillPatientErr');
+
+const btnPrefillStatus = $('#btnPrefillStatus');
+const prefillStatusMeta = $('#prefillStatusMeta');
+const prefillStatusErr  = $('#prefillStatusErr');
+
 const btnGenerate = $('#btnGenerate');
 const resultBox   = $('#result');
 const errorBox    = $('#error');
 
+const btnJournalSave = $('#btnJournalSave');
+const journalText    = $('#journalText');
+const journalMeta    = $('#journalMeta');
+const journalErr     = $('#journalErr');
+
 function setError(msg){ if (errorBox) errorBox.textContent = msg || ''; }
 function setResult(html){ if (resultBox) resultBox.innerHTML = html || ''; }
-
-// Initial language hint
 if (langHint){
-  langHint.textContent = 'We’ll auto-detect if you use a free-speech recorder. You can also select a translation target.';
+  langHint.textContent = 'We’ll auto-detect your language if you use the free-speech recorder. You can choose a translation target too.';
 }
 
-// -------- Field SpeechRecognition (mic icons) --------
+// -------- Field SpeechRecognition (per-field mics) --------
 (function(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
   function normalizeEmailSpoken(raw){
     if (!raw) return '';
     let s = ' ' + raw.toLowerCase().trim() + ' ';
-    s = s.replace(/\s+at\s+/g, '@');
-    s = s.replace(/\s+dot\s+/g, '.');
-    s = s.replace(/\s+period\s+/g, '.');
-    s = s.replace(/\s+underscore\s+/g, '_');
-    s = s.replace(/\s+(hyphen|dash)\s+/g, '-');
-    s = s.replace(/\s+plus\s+/g, '+');
-    s = s.replace(/\s+gmail\s*\.?\s*com\s*/g, '@gmail.com ');
-    s = s.replace(/\s+outlook\s*\.?\s*com\s*/g, '@outlook.com ');
-    s = s.replace(/\s+hotmail\s*\.?\s*com\s*/g, '@hotmail.com ');
-    s = s.replace(/\s+yahoo\s*\.?\s*com\s*/g, '@yahoo.com ');
-    s = s.replace(/\s*@\s*/g, '@');
-    s = s.replace(/\s*\.\s*/g, '.');
-    s = s.replace(/\s+/g, ' ').trim();
-    s = s.replace(/\s+/g, '');
-    s = s.replace(/\.\.+/g, '.');
+    s = s.replace(/\s+at\s+/g, '@')
+         .replace(/\s+dot\s+/g, '.')
+         .replace(/\s+period\s+/g, '.')
+         .replace(/\s+underscore\s+/g, '_')
+         .replace(/\s+(hyphen|dash)\s+/g, '-')
+         .replace(/\s+plus\s+/g, '+')
+         .replace(/\s*@\s*/g, '@')
+         .replace(/\s*\.\s*/g, '.')
+         .replace(/\s+/g, ' ').trim();
+    s = s.replace(/\s+/g, '').replace(/\.\.+/g,'.');
     return s;
   }
   function isEmailField(el){
@@ -50,7 +56,6 @@ if (langHint){
   }
 
   document.querySelectorAll('.mic-btn').forEach(btn=>{
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR){ btn.disabled=true; btn.title='Speech recognition not supported'; return; }
     btn.addEventListener('click', ()=>{
       const targetId = btn.getAttribute('data-target');
@@ -83,7 +88,7 @@ if (langHint){
   });
 })();
 
-// -------- Free-speech recorders for PREFILL (patient/status) --------
+// -------- Prefill free-speech (patient/status) --------
 let prefillRecorder=null, prefillChunks=[];
 function startPrefill(mode, metaEl, errEl){
   errEl.textContent=''; metaEl.textContent='';
@@ -98,7 +103,7 @@ function startPrefill(mode, metaEl, errEl){
     prefillRecorder.onstop = async ()=>{
       try{
         const blob = new Blob(prefillChunks, { type:'audio/webm' });
-        metaEl.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB. Extracting...`;
+        metaEl.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB. Extracting…`;
         const fd = new FormData();
         fd.append('audio', blob, 'prefill.webm');
         fd.append('mode', mode);
@@ -107,7 +112,6 @@ function startPrefill(mode, metaEl, errEl){
         const j = await r.json();
         if (!j.ok) throw new Error(j.error || 'Prefill failed');
 
-        // Set detected language UI
         if (j.detected_lang && langDetectedEl){
           const map = { en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
             ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ' };
@@ -117,21 +121,24 @@ function startPrefill(mode, metaEl, errEl){
           if (langConfirmRow) langConfirmRow.style.display='flex';
         }
 
-        // Patch fields
         const patch = j.patch || {};
+        const filled = [];
         Object.entries(patch).forEach(([id,val])=>{
+          if (!val) return;
           const el = document.getElementById(id);
-          if (el && val){ el.value = val; }
+          if (el){ el.value = val; filled.push(id); }
         });
 
-        metaEl.textContent = `Filled: ${Object.keys(patch).filter(k=>patch[k]).length} field(s).`;
+        metaEl.innerHTML = filled.length
+          ? `Filled ${filled.length} field(s): <span class="tiny muted">${filled.join(', ')}</span>`
+          : 'No specific fields detected — try labeling, e.g., “Patient name: Jane Doe”.';
       }catch(e){
         errEl.textContent = e.message || String(e);
       }
     };
     prefillRecorder.start();
     metaEl.textContent='Recording… it will auto-stop in 45s.';
-    setTimeout(()=>{ if (prefillRecorder && prefillRecorder.state!=='inactive') stopPrefill(mode); }, 45000);
+    setTimeout(()=>{ if (prefillRecorder && prefillRecorder.state!=='inactive') stopPrefill(); }, 45000);
   }).catch(()=> errEl.textContent = 'Microphone blocked. Allow permission and try again.');
 }
 function stopPrefill(){
@@ -141,10 +148,6 @@ function stopPrefill(){
   }
 }
 
-// Wire buttons
-const btnPrefillPatient = $('#btnPrefillPatient');
-const prefillPatientMeta = $('#prefillPatientMeta');
-const prefillPatientErr  = $('#prefillPatientErr');
 if (btnPrefillPatient){
   btnPrefillPatient.addEventListener('click', ()=>{
     if (!btnPrefillPatient.classList.contains('rec')){
@@ -156,10 +159,6 @@ if (btnPrefillPatient){
     }
   });
 }
-
-const btnPrefillStatus = $('#btnPrefillStatus');
-const prefillStatusMeta = $('#prefillStatusMeta');
-const prefillStatusErr  = $('#prefillStatusErr');
 if (btnPrefillStatus){
   btnPrefillStatus.addEventListener('click', ()=>{
     if (!btnPrefillStatus.classList.contains('rec')){
@@ -172,84 +171,25 @@ if (btnPrefillStatus){
   });
 }
 
-// -------- Journal save (typed OR mic) --------
-const btnJournalSave = $('#btnJournalSave');
-const journalText    = $('#journalText');
-const journalMeta    = $('#journalMeta');
-const journalErr     = $('#journalErr');
-
-let journalRecorder=null, journalChunks=[];
-function startJournalMic(){
-  journalErr.textContent=''; journalMeta.textContent='';
-  journalChunks=[];
-  if (!navigator.mediaDevices || !window.MediaRecorder){
-    journalErr.textContent='This browser does not support audio recording.';
-    return;
-  }
-  navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
-    journalRecorder = new MediaRecorder(stream, { mimeType:'audio/webm' });
-    journalRecorder.ondataavailable = e=>{ if (e.data && e.data.size) journalChunks.push(e.data); };
-    journalRecorder.onstop = async ()=>{
-      try{
-        const blob = new Blob(journalChunks, { type:'audio/webm' });
-        const fd = new FormData();
-        fd.append('audio', blob, 'journal.webm');
-        fd.append('text', journalText ? journalText.value.trim() : '');
-        const r = await fetch('/journal/add', { method:'POST', body: fd });
-        if (!r.ok) throw new Error(`Save failed (${r.status})`);
-        const j = await r.json();
-        if (!j.ok) throw new Error(j.error || 'Save failed');
-        journalMeta.textContent = 'Note saved.';
-      }catch(e){
-        journalErr.textContent = e.message || String(e);
-      }
-    };
-    journalRecorder.start();
-    journalMeta.textContent='Recording… it will auto-stop in 60s.';
-    setTimeout(()=>{ if (journalRecorder && journalRecorder.state!=='inactive') stopJournalMic(); }, 60000);
-  }).catch(()=> journalErr.textContent='Microphone blocked. Allow permission and try again.');
-}
-function stopJournalMic(){
-  if (journalRecorder && journalRecorder.state!=='inactive'){
-    journalRecorder.stop();
-    journalRecorder.stream.getTracks().forEach(t=>t.stop());
-  }
-}
-
+// -------- Journal save (typed only; long-press behavior removed for clarity) --------
 if (btnJournalSave){
   btnJournalSave.addEventListener('click', async ()=>{
-    // If there’s no mic going, save typed note
-    if (!journalRecorder || journalRecorder.state==='inactive'){
-      try{
-        const fd = new FormData();
-        fd.append('text', journalText ? journalText.value.trim() : '');
-        const r = await fetch('/journal/add', { method:'POST', body: fd });
-        if (!r.ok) throw new Error(`Save failed (${r.status})`);
-        const j = await r.json();
-        if (!j.ok) throw new Error(j.error || 'Save failed');
-        journalMeta.textContent = 'Note saved.';
-      }catch(e){
-        journalErr.textContent = e.message || String(e);
-      }
-    }else{
-      // stopping finishes the upload
-      stopJournalMic();
-    }
-  });
-
-  // Long-press on the same button to toggle mic (optional UX)
-  btnJournalSave.addEventListener('contextmenu', (e)=> e.preventDefault());
-  btnJournalSave.addEventListener('mousedown', (e)=>{
-    if (e.button===2) return; // ignore right-click
-    if (!journalRecorder || journalRecorder.state==='inactive'){
-      startJournalMic();
-    }else{
-      stopJournalMic();
+    journalErr.textContent=''; journalMeta.textContent='';
+    try{
+      const fd = new FormData();
+      fd.append('text', journalText ? journalText.value.trim() : '');
+      const r = await fetch('/journal/add', { method:'POST', body: fd });
+      if (!r.ok) throw new Error(`Save failed (${r.status})`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'Save failed');
+      journalMeta.textContent = 'Note saved.';
+    }catch(e){
+      journalErr.textContent = e.message || String(e);
     }
   });
 }
 
-// -------- Gather & Submit (Generate Report) --------
+// -------- Generate Report (typed contents only) --------
 function val(id){ const el=$(id); return el? el.value.trim() : ''; }
 function gatherForm(){
   return {
@@ -277,13 +217,13 @@ function gatherForm(){
     // language
     lang: val('#lang'),
 
-    // typed health status
+    // typed status
     typed_bp: val('#typed_bp'),
     typed_weight: val('#typed_weight'),
     typed_meds: $('#typed_meds')? $('#typed_meds').value.trim() : '',
     typed_allergies: $('#typed_allergies')? $('#typed_allergies').value.trim() : '',
     typed_conditions: $('#typed_conditions')? $('#typed_conditions').value.trim() : '',
-    typed_general: $('#typed_general')? $('#typed_general').value.trim() : ''
+    typed_general: '' // kept empty here (journal is separate)
   };
 }
 
@@ -292,9 +232,6 @@ async function generateReport(){
   const fd = new FormData();
   const form = gatherForm();
   for (const [k,v] of Object.entries(form)) fd.append(k, v||'');
-
-  // We no longer attach a "classic" blob here; prefill is separate. If you want to add a single classic recorder again, attach it like:
-  // if (window.__classicBlob) fd.append('audio', window.__classicBlob, 'recording.webm');
 
   const r = await fetch('/upload', { method:'POST', body: fd });
   if (!r.ok){
@@ -314,12 +251,11 @@ if (btnGenerate){
       const json = await generateReport();
       if (!json.ok) throw new Error(json.error || 'Server error');
 
-      // Update detected language UI + question
-      if (json.detected_lang){
+      if (json.detected_lang && langDetectedEl){
         const map = { en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
           ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ' };
         const label = map[json.detected_lang] || json.detected_lang.toUpperCase();
-        if (langDetectedEl) langDetectedEl.value = label;
+        langDetectedEl.value = label;
         if (langQuestion) langQuestion.textContent = `Are you speaking ${label}?`;
         if (langConfirmRow) langConfirmRow.style.display = 'flex';
       }

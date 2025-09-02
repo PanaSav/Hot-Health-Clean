@@ -19,11 +19,12 @@
 
     <section class="card">
       <h2>How To Use This App</h2>
-      <p class="muted">
-        Type your information into each area or tap the <span class="micico"></span> to speak into a single field.<br/>
-        Alternatively, use the <b>free speech</b> recorders to fill many fields automatically. The app will <b>auto-detect your language</b>.<br/>
-        When done, press <b>Generate Report</b>.
-      </p>
+      <ul class="tips">
+        <li><b>Type or tap the mic</b> <span class="micico"></span> to speak into a field.</li>
+        <li>For best accuracy, say the <b>label first</b>. Example: <i>“Patient name: Jane Doe”</i>, <i>“Patient email: jane at example dot com”</i>, <i>“Emergency contact phone: 415 555 0101”</i>.</li>
+        <li>Or use the <b>free-speech recorder</b> to fill many fields at once.</li>
+        <li>When done, press <b>Generate Report</b>.</li>
+      </ul>
     </section>
 
     <section class="card">
@@ -136,7 +137,7 @@
 
       <div class="row" style="margin-top:10px">
         <button id="btnPrefillPatient" class="btn">Alternative: Patient & Contact’s Info — Free Speech Recording</button>
-        <div id="prefillPatientMeta" class="muted"></div>
+        <div id="prefillPatientMeta" class="muted tiny"></div>
       </div>
       <div id="prefillPatientErr" class="error"></div>
     </section>
@@ -174,7 +175,7 @@
 
       <div class="row" style="margin-top:10px">
         <button id="btnPrefillStatus" class="btn">Alternative: Patient Health Status — Free Speech Recording</button>
-        <div id="prefillStatusMeta" class="muted"></div>
+        <div id="prefillStatusMeta" class="muted tiny"></div>
       </div>
       <div id="prefillStatusErr" class="error"></div>
     </section>
@@ -191,7 +192,7 @@
       <div class="row">
         <button id="btnJournalSave" class="btn">Save Journal Note</button>
         <a class="btn" href="/journal/report" target="_blank" rel="noopener">Generate Journal Report</a>
-        <div id="journalMeta" class="muted"></div>
+        <div id="journalMeta" class="muted tiny"></div>
       </div>
       <div id="journalErr" class="error"></div>
     </section>

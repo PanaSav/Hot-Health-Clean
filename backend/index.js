@@ -1,4 +1,4 @@
-// Caregiver Card — backend (auth, uploads, field/alt recorders, parsing, LID, translation, QR, reports + Journal)
+// Caregiver Card — backend (auth, uploads, prefill, parsing, translation, QR, reports, journal)
 // Uses sqlite3 ONLY (stable on Render)
 
 import 'dotenv/config';
@@ -71,7 +71,6 @@ async function initDB(){
     )
   `);
 
-  // Journal table (for General Health Notes)
   await dbRun(`
     CREATE TABLE IF NOT EXISTS journal (
       id TEXT PRIMARY KEY,
@@ -83,6 +82,7 @@ async function initDB(){
     )
   `);
 
+  // Defensive, harmless on duplicates
   const addCols = [
     ['doctor_name','TEXT'],['doctor_address','TEXT'],['doctor_phone','TEXT'],['doctor_fax','TEXT'],['doctor_email','TEXT'],
     ['pharmacy_name','TEXT'],['pharmacy_address','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],
@@ -108,7 +108,7 @@ function requireAuth(req,res,next){
   next();
 }
 
-// ---------- Static (gated after /login) ----------
+// Login first, then gate app
 app.get('/login', (req,res)=>{
   const p = path.join(PUBLIC_DIR, 'login.html');
   if (fs.existsSync(p)) return res.sendFile(p);
@@ -121,19 +121,15 @@ app.get('/login', (req,res)=>{
     </form>
   </body></html>`);
 });
-
 app.post('/login', bodyParser.urlencoded({extended:true}), (req,res)=>{
   const { userId, password } = req.body || {};
-  if (userId === USER_ID && password === USER_PASS){
-    setSession(res, userId);
-    return res.redirect('/');
-  }
+  if (userId === USER_ID && password === USER_PASS){ setSession(res, userId); return res.redirect('/'); }
   res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
 });
-
 app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
 
-app.use(['/', '/upload', '/reports', '/reports/*', '/reports/:id/translate', '/prefill', '/journal*'], requireAuth);
+// Gate everything except /login and static assets we explicitly serve after auth
+app.use(['/','/upload','/prefill','/journal','/journal/*','/reports','/reports/*'], requireAuth);
 app.use(express.static(PUBLIC_DIR));
 
 // ---------- Helpers ----------
@@ -150,6 +146,30 @@ const LANG_NAMES = {
 };
 const langLabel = c => LANG_NAMES[c] || (c||'—');
 const uid = (n=20)=> crypto.randomBytes(n).toString('base64url').slice(0,n);
+
+// email & phone normalization
+function normalizeEmailSpoken(raw){
+  if (!raw) return '';
+  let s = ' ' + raw.toLowerCase().trim() + ' ';
+  s = s.replace(/\s+at\s+/g, '@')
+       .replace(/\s+dot\s+/g, '.')
+       .replace(/\s+period\s+/g, '.')
+       .replace(/\s+underscore\s+/g, '_')
+       .replace(/\s+(hyphen|dash)\s+/g, '-')
+       .replace(/\s+plus\s+/g, '+')
+       .replace(/\s*@\s*/g, '@')
+       .replace(/\s*\.\s*/g, '.')
+       .replace(/\s+/g, ' ').trim();
+  s = s.replace(/\s+/g, '').replace(/\.\.+/g,'.');
+  return s;
+}
+function normalizePhone(raw){
+  if (!raw) return '';
+  let s = raw.replace(/[^\d+]/g,'');
+  // Keep leading +, digits; trim to reasonable length
+  if (s.length > 18) s = s.slice(0, 18);
+  return s;
+}
 
 // facts parser
 function parseFacts(text=''){
@@ -192,7 +212,7 @@ function summarizeFacts(f){
 // language ID via OpenAI
 async function detectLanguageCode(text=''){
   if (!text.trim()) return '';
-  const prompt = `Detect the language of this text and reply ONLY a 2-letter ISO 639-1 code (e.g., en, fr, es, pt, de, it, ar, hi, zh, ja, ko, he, sr, pa). Text:\n\n${text}`;
+  const prompt = `Detect the language of this text and reply ONLY a 2-letter ISO 639-1 code. Text:\n\n${text}`;
   try{
     const rsp = await openai.chat.completions.create({
       model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
@@ -207,28 +227,26 @@ async function detectLanguageCode(text=''){
 // ---------- Multer ----------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-  filename:    (_, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
+  filename:    (_, __f, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
 });
 const upload = multer({ storage });
 
 // ---------- Home ----------
 app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
-// ---------- PREFILL (auto-fill fields from a free-speech recording) ----------
+// ---------- PREFILL (free-speech -> field mapping) ----------
 /*
   POST /prefill
-    fields:
-      mode: "patient" | "status"
-      audio: webm file
-  returns: { ok:true, detected_lang, patch: { fieldId: value, ... } }
+  fields: mode = "patient" | "status", audio(webm)
+  returns: { ok:true, detected_lang, patch, filled }
 */
 app.post('/prefill', upload.single('audio'), async (req,res)=>{
   try{
     if (!req.file) return res.status(400).json({ ok:false, error:'No audio' });
     const s = fs.createReadStream(req.file.path);
 
-    // transcribe
-    let text = '';
+    // 1) transcribe
+    let text='';
     try{
       const tr = await openai.audio.transcriptions.create({ file:s, model:'gpt-4o-mini-transcribe' });
       text = tr.text?.trim() || '';
@@ -237,70 +255,123 @@ app.post('/prefill', upload.single('audio'), async (req,res)=>{
       const tr2 = await openai.audio.transcriptions.create({ file:s2, model:'whisper-1' });
       text = tr2.text?.trim() || '';
     }
+
+    // 2) language id
     const detected = await detectLanguageCode(text);
 
-    const mode = (req.body.mode || '').toLowerCase();
+    // 3) first-pass regex extraction
     const patch = {};
+    const T = text;
 
-    // Very naive field extraction helpers:
-    const take = (rx, t=text)=> (t.match(rx)?.[1] || '').trim();
+    const emailR = /([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})/i;
+    const phoneR = /(\+?\d[\d\s().-]{6,}\d)/;
+
+    function capture(labelRx, afterRx){
+      const m = T.match(labelRx);
+      if (!m) return '';
+      const tail = T.slice(m.index + m[0].length);
+      const mm = tail.match(afterRx);
+      return mm ? (mm[1] || mm[0]).trim() : '';
+    }
+
+    const mode = (req.body.mode || '').toLowerCase();
 
     if (mode === 'patient'){
-      // Name
-      patch.pName = take(/\b(name|patient name)\s*[:\-]\s*([^,.;\n]+)/i, text) || take(/\bI am\s+([^,.;\n]+)/i, text);
-      // Email (allow spoken email patterns too)
-      let email = take(/\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b/i, text);
-      if (!email){
-        let t = ' ' + text.toLowerCase() + ' ';
-        t = t.replace(/\s+at\s+/g,'@').replace(/\s+dot\s+/g,'.').replace(/\s+period\s+/g,'.').replace(/\s+underscore\s+/g,'_').replace(/\s+(hyphen|dash)\s+/g,'-').replace(/\s+plus\s+/g,'+');
-        t = t.replace(/\s*@\s*/g,'@').replace(/\s*\.\s*/g,'.'); t=t.replace(/\s+/g,' ').trim(); t=t.replace(/\s+/g,'');
-        const m = t.match(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/i);
-        if (m) email = m[0];
-      }
-      patch.pEmail = email || '';
+      // Strong label forms help accuracy; we also allow short “Name: …” style
+      patch.pName  = capture(/\b(patient name|name)\s*[:\-]\s*/i, /([^,.;\n]+)/i);
+      let pEmail   = capture(/\b(patient email|email)\s*[:\-]\s*/i, emailR) || normalizeEmailSpoken(capture(/\b(patient email|email)\s*[:\-]\s*/i, /([^,;\n]+)/i));
+      let pPhone   = capture(/\b(patient phone|phone)\s*[:\-]\s*/i, phoneR);
 
-      // Blood type
-      patch.blood = take(/\b(blood\s*type)\s*[:\-]\s*([abo]{1,2}[+-]?|ab[+-]?)\b/i, text) || '';
+      patch.pEmail = pEmail || '';
+      patch.eName  = capture(/\b(emergency contact name|emergency name|contact name)\s*[:\-]\s*/i, /([^,.;\n]+)/i);
+      let eEmail   = capture(/\b(emergency email|contact email)\s*[:\-]\s*/i, emailR) || normalizeEmailSpoken(capture(/\b(emergency email|contact email)\s*[:\-]\s*/i, /([^,;\n]+)/i));
+      let ePhone   = capture(/\b(emergency phone|contact phone)\s*[:\-]\s*/i, phoneR);
 
-      // Emergency contact
-      patch.eName  = take(/\b(emergency contact|contact name)\s*[:\-]\s*([^,.;\n]+)/i, text);
-      patch.ePhone = take(/\b(contact phone|emergency phone|phone)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
-      patch.eEmail = take(/\b(contact email|emergency email|email)\s*[:\-]\s*([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})/i, text);
+      patch.eEmail = eEmail || '';
+      patch.ePhone = normalizePhone(ePhone);
 
       // Doctor
-      patch.dName    = take(/\b(doctor|dr\.?)\s*name\s*[:\-]\s*([^,.;\n]+)/i, text) || take(/\b(doctor|dr\.?)\s+([^,.;\n]+)/i, text);
-      patch.dAddress = take(/\b(doctor address|office address)\s*[:\-]\s*([^;\n]+)/i, text);
-      patch.dPhone   = take(/\b(doctor phone|office phone)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
-      patch.dFax     = take(/\b(doctor fax|office fax)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
-      patch.dEmail   = take(/\b(doctor email|office email)\s*[:\-]\s*([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})/i, text);
+      patch.dName    = capture(/\b(doctor name|dr\.?\s*name|doctor)\s*[:\-]\s*/i, /([^,.;\n]+)/i);
+      patch.dAddress = capture(/\b(doctor address|office address)\s*[:\-]\s*/i, /([^;\n]+)/i);
+      patch.dPhone   = normalizePhone(capture(/\b(doctor phone|office phone)\s*[:\-]\s*/i, phoneR));
+      patch.dFax     = normalizePhone(capture(/\b(doctor fax|office fax)\s*[:\-]\s*/i, phoneR));
+      let dEmail     = capture(/\b(doctor email|office email)\s*[:\-]\s*/i, emailR) || normalizeEmailSpoken(capture(/\b(doctor email|office email)\s*[:\-]\s*/i, /([^,;\n]+)/i));
+      patch.dEmail   = dEmail || '';
 
       // Pharmacy
-      patch.phName    = take(/\b(pharmacy name)\s*[:\-]\s*([^,.;\n]+)/i, text);
-      patch.phAddress = take(/\b(pharmacy address)\s*[:\-]\s*([^;\n]+)/i, text);
-      patch.phPhone   = take(/\b(pharmacy phone)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
-      patch.phFax     = take(/\b(pharmacy fax)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
+      patch.phName    = capture(/\b(pharmacy name)\s*[:\-]\s*/i, /([^,.;\n]+)/i);
+      patch.phAddress = capture(/\b(pharmacy address)\s*[:\-]\s*/i, /([^;\n]+)/i);
+      patch.phPhone   = normalizePhone(capture(/\b(pharmacy phone)\s*[:\-]\s*/i, phoneR));
+      patch.phFax     = normalizePhone(capture(/\b(pharmacy fax)\s*[:\-]\s*/i, phoneR));
+
+      // If still too sparse, ask OpenAI for a strict JSON mapping (fallback)
+      const needLLM = !patch.pName && !patch.pEmail && !patch.eName;
+      if (needLLM){
+        const prompt = `Extract fields from this free-speech patient/contact info. 
+Return STRICT JSON with keys:
+{
+ "pName": "...",
+ "pEmail": "...",
+ "eName": "...",
+ "ePhone": "...",
+ "eEmail": "...",
+ "dName": "...",
+ "dAddress": "...",
+ "dPhone": "...",
+ "dFax": "...",
+ "dEmail": "...",
+ "phName": "...",
+ "phAddress": "...",
+ "phPhone": "...",
+ "phFax": "..."
+}
+Text:
+${T}`;
+        try{
+          const rsp = await openai.chat.completions.create({
+            model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+            temperature: 0,
+            messages: [{ role:'user', content: prompt }]
+          });
+          const raw = rsp.choices?.[0]?.message?.content || '{}';
+          const obj = JSON.parse(raw);
+          Object.assign(patch, obj);
+        }catch{}
+      }
+
+      // Final normalizations
+      if (patch.pEmail) patch.pEmail = normalizeEmailSpoken(patch.pEmail);
+      if (patch.eEmail) patch.eEmail = normalizeEmailSpoken(patch.eEmail);
+      if (patch.dEmail) patch.dEmail = normalizeEmailSpoken(patch.dEmail);
+      patch.ePhone = normalizePhone(patch.ePhone);
+      patch.dPhone = normalizePhone(patch.dPhone);
+      patch.dFax   = normalizePhone(patch.dFax);
+      patch.phPhone= normalizePhone(patch.phPhone);
+      patch.phFax  = normalizePhone(patch.phFax);
+      if (pPhone && !patch.ePhone && !patch.dPhone) patch.ePhone = normalizePhone(pPhone); // if only one phone spoken
+
     } else if (mode === 'status'){
-      // Use facts parser to fill status fields
-      const f = parseFacts(text);
-      patch.typed_bp        = f.bp || '';
-      patch.typed_weight    = f.weight || '';
+      const f = parseFacts(T);
+      if (f.bp)        patch.typed_bp = f.bp;
+      if (f.weight)    patch.typed_weight = f.weight;
       if (f.medications?.length) patch.typed_meds = f.medications.join('; ');
       if (f.allergies?.length)   patch.typed_allergies = f.allergies.join('; ');
       if (f.conditions?.length)  patch.typed_conditions = f.conditions.join('; ');
-      // Try a general note line if user spoke something broader
       if (!patch.typed_meds && !patch.typed_allergies && !patch.typed_conditions){
-        patch.typed_general = text;
+        patch.typed_general = T;
       }
     }
 
-    res.json({ ok:true, detected_lang: detected || '', patch });
+    const filled = Object.keys(patch).filter(k => (patch[k] && String(patch[k]).trim().length));
+    res.json({ ok:true, detected_lang: detected || '', patch, filled });
   }catch(e){
     console.error(e);
     res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
-// ---------- Main Upload (Generate Report) ----------
+// ---------- Upload (Generate Report) ----------
+app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 app.post('/upload', upload.single('audio'), async (req,res)=>{
   try{
     const B = req.body || {};
@@ -314,7 +385,6 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       target_lang:(B.lang||'').trim()
     };
 
-    // Build combined text from typed values
     const pieces = [
       B.typed_bp ? `Blood Pressure: ${B.typed_bp}` : '',
       B.typed_weight ? `Weight: ${B.typed_weight}` : '',
@@ -324,31 +394,13 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
       B.typed_general ? `General Health Note: ${B.typed_general}` : ''
     ].filter(Boolean);
 
-    // Classic recorder audio (optional)
-    let classicNote = '';
-    if (req.file){
-      const s = fs.createReadStream(req.file.path);
-      try{
-        const tr = await openai.audio.transcriptions.create({ file:s, model:'gpt-4o-mini-transcribe' });
-        classicNote = tr.text?.trim() || '';
-      }catch{
-        const s2 = fs.createReadStream(req.file.path);
-        const tr2 = await openai.audio.transcriptions.create({ file:s2, model:'whisper-1' });
-        classicNote = tr2.text?.trim() || '';
-      }
-      if (classicNote) pieces.push(`Classic Note: ${classicNote}`);
-    }
+    // (Optional) classic recorder: attach as req.file if you later re-add it.
 
     if (!pieces.length) return res.status(400).json({ ok:false, error:'No content' });
-
     const transcript = pieces.join('\n');
 
-    // Detect language ONLY if we got a recorded transcript; else default en
+    // Language: only detect if we had voice; default en here
     let detected_lang = 'en';
-    if (classicNote) {
-      const lid = await detectLanguageCode(classicNote);
-      if (lid) detected_lang = lid;
-    }
 
     const facts = parseFacts(transcript);
     const summary_text = summarizeFacts(facts);
@@ -417,7 +469,7 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
 // ---------- Reports list ----------
 app.get('/reports', async (req,res)=>{
   const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
-  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
   const items = rows.map(r=>`
     <li class="report-item">
       <div class="title">Report for ${esc(r.name) || 'Unknown'}</div>
@@ -444,7 +496,7 @@ app.get('/reports', async (req,res)=>{
 </body></html>`);
 });
 
-// ---------- Single report + "Translate to new language" ----------
+// ---------- Single report (unchanged structure) ----------
 app.get('/reports/:id', async (req,res)=>{
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!row) return res.status(404).send('Not found');
@@ -601,7 +653,7 @@ app.post('/reports/:id/translate', bodyParser.urlencoded({extended:true}), async
   }
 });
 
-// ---------- Journal (General Health Notes) ----------
+// ---------- Journal endpoints (unchanged from prior good state) ----------
 app.post('/journal/add', upload.single('audio'), async (req,res)=>{
   try{
     let text = (req.body?.text || '').trim();
@@ -636,7 +688,7 @@ app.post('/journal/add', upload.single('audio'), async (req,res)=>{
 
 app.get('/journal', async (req,res)=>{
   const rows = await dbAll(`SELECT * FROM journal ORDER BY created_at DESC`);
-  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
   const items = rows.map(j=>`
     <li class="report-item">
       <div class="title">${new Date(j.created_at).toLocaleString()}</div>
@@ -693,7 +745,7 @@ app.get('/journal/report', async (req,res)=>{
   const gmail = `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent('Caregiver Card — Journal Summary')}&body=${encodeURIComponent(shareUrl)}`;
   const outlook = `https://outlook.office.com/mail/deeplink/compose?subject=${encodeURIComponent('Caregiver Card — Journal Summary')}&body=${encodeURIComponent(shareUrl)}`;
 
-  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
 
   res.send(`<!doctype html>
 <html>
