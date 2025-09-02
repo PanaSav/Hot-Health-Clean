@@ -11,6 +11,7 @@
     <header class="head">
       <h1>Caregiver Card</h1>
       <nav>
+        <a class="btn" href="/journal" rel="noopener">Journal</a>
         <a class="btn" href="/reports" rel="noopener">Open Reports</a>
         <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
       </nav>
@@ -19,10 +20,9 @@
     <section class="card">
       <h2>How To Use This App</h2>
       <p class="muted">
-        Type your information into each area or tap the <span class="micico"></span> to speak.
-        <br/>Alternatively, press <b>Record</b> below to speak freely; the app will <b>auto-detect your language</b>.
-        After you finish, you’ll be asked: <i>“Are you speaking X?”</i> — confirm Yes/No.
-        <br/>When done, press <b>Generate Report</b>.
+        Type your information into each area or tap the <span class="micico"></span> to speak into a single field.<br/>
+        Alternatively, use the <b>free speech</b> recorders to fill many fields automatically. The app will <b>auto-detect your language</b>.<br/>
+        When done, press <b>Generate Report</b>.
       </p>
     </section>
 
@@ -54,7 +54,7 @@
     </section>
 
     <section class="card">
-      <h2>Patient & Options</h2>
+      <h2>Patient & Contact’s Info</h2>
       <div class="grid3">
         <div class="micwrap">
           <input id="pName" class="in" placeholder="Patient Name"/>
@@ -133,6 +133,12 @@
           </div>
         </div>
       </div>
+
+      <div class="row" style="margin-top:10px">
+        <button id="btnPrefillPatient" class="btn">Alternative: Patient & Contact’s Info — Free Speech Recording</button>
+        <div id="prefillPatientMeta" class="muted"></div>
+      </div>
+      <div id="prefillPatientErr" class="error"></div>
     </section>
 
     <section class="card">
@@ -165,22 +171,29 @@
           <button class="mic-btn" title="Speak conditions" data-target="typed_conditions"></button>
         </div>
       </div>
-      <div class="grid1">
-        <div class="micwrap">
-          <textarea id="typed_general" class="in" rows="2" placeholder="General Health Note"></textarea>
-          <button class="mic-btn" title="Speak note" data-target="typed_general"></button>
-        </div>
+
+      <div class="row" style="margin-top:10px">
+        <button id="btnPrefillStatus" class="btn">Alternative: Patient Health Status — Free Speech Recording</button>
+        <div id="prefillStatusMeta" class="muted"></div>
       </div>
+      <div id="prefillStatusErr" class="error"></div>
     </section>
 
     <section class="card">
-      <h2>Alternative: Patient Health Status — Free Speech Recording</h2>
-      <div class="row">
-        <button id="btnRec" class="btn">Record</button>
-        <div id="recHint" class="muted" style="margin-left:8px;">Tip: hold Record and speak — language will be auto-detected.</div>
+      <h2>General Health Note</h2>
+      <p class="muted tiny">Tip: journal health information as it happens. This can be summarized into a special report.</p>
+      <div class="grid1">
+        <div class="micwrap">
+          <textarea id="journalText" class="in" rows="3" placeholder="Type a note or use the mic to dictate it"></textarea>
+          <button class="mic-btn" title="Speak note" data-target="journalText"></button>
+        </div>
       </div>
-      <div id="recMeta" class="muted"></div>
-      <div id="recErr" class="error"></div>
+      <div class="row">
+        <button id="btnJournalSave" class="btn">Save Journal Note</button>
+        <a class="btn" href="/journal/report" target="_blank" rel="noopener">Generate Journal Report</a>
+        <div id="journalMeta" class="muted"></div>
+      </div>
+      <div id="journalErr" class="error"></div>
     </section>
 
     <section class="card">

@@ -1,4 +1,4 @@
-// Caregiver Card — backend (auth, uploads, classic recorder, field mics, parsing, LID, translation, QR, reports)
+// Caregiver Card — backend (auth, uploads, field/alt recorders, parsing, LID, translation, QR, reports + Journal)
 // Uses sqlite3 ONLY (stable on Render)
 
 import 'dotenv/config';
@@ -71,6 +71,18 @@ async function initDB(){
     )
   `);
 
+  // Journal table (for General Health Notes)
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS journal (
+      id TEXT PRIMARY KEY,
+      created_at TEXT,
+      text TEXT,
+      detected_lang TEXT,
+      target_lang TEXT,
+      translated_text TEXT
+    )
+  `);
+
   const addCols = [
     ['doctor_name','TEXT'],['doctor_address','TEXT'],['doctor_phone','TEXT'],['doctor_fax','TEXT'],['doctor_email','TEXT'],
     ['pharmacy_name','TEXT'],['pharmacy_address','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],
@@ -83,8 +95,8 @@ async function initDB(){
 
 // ---------- Auth ----------
 app.use(cookieParser(SESSION_SECRET));
-app.use(bodyParser.json({limit:'5mb'}));
-app.use(bodyParser.urlencoded({extended:true, limit:'5mb'}));
+app.use(bodyParser.json({limit:'8mb'}));
+app.use(bodyParser.urlencoded({extended:true, limit:'8mb'}));
 
 function setSession(res, user){
   res.cookie('hhsess', user, { httpOnly:true, sameSite:'lax', signed:true /*, secure:true*/ });
@@ -121,7 +133,7 @@ app.post('/login', bodyParser.urlencoded({extended:true}), (req,res)=>{
 
 app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
 
-app.use(['/', '/upload', '/reports', '/reports/*', '/reports/:id/translate'], requireAuth);
+app.use(['/', '/upload', '/reports', '/reports/*', '/reports/:id/translate', '/prefill', '/journal*'], requireAuth);
 app.use(express.static(PUBLIC_DIR));
 
 // ---------- Helpers ----------
@@ -177,7 +189,7 @@ function summarizeFacts(f){
   ].join('\n');
 }
 
-// language ID via OpenAI (simple, fast)
+// language ID via OpenAI
 async function detectLanguageCode(text=''){
   if (!text.trim()) return '';
   const prompt = `Detect the language of this text and reply ONLY a 2-letter ISO 639-1 code (e.g., en, fr, es, pt, de, it, ar, hi, zh, ja, ko, he, sr, pa). Text:\n\n${text}`;
@@ -192,17 +204,103 @@ async function detectLanguageCode(text=''){
   }catch{ return ''; }
 }
 
-// ---------- Multer (classic recorder uploads) ----------
+// ---------- Multer ----------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
   filename:    (_, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
 });
 const upload = multer({ storage });
 
-// ---------- Routes ----------
+// ---------- Home ----------
 app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
-// Upload (classic recorder OR typed only)
+// ---------- PREFILL (auto-fill fields from a free-speech recording) ----------
+/*
+  POST /prefill
+    fields:
+      mode: "patient" | "status"
+      audio: webm file
+  returns: { ok:true, detected_lang, patch: { fieldId: value, ... } }
+*/
+app.post('/prefill', upload.single('audio'), async (req,res)=>{
+  try{
+    if (!req.file) return res.status(400).json({ ok:false, error:'No audio' });
+    const s = fs.createReadStream(req.file.path);
+
+    // transcribe
+    let text = '';
+    try{
+      const tr = await openai.audio.transcriptions.create({ file:s, model:'gpt-4o-mini-transcribe' });
+      text = tr.text?.trim() || '';
+    }catch{
+      const s2 = fs.createReadStream(req.file.path);
+      const tr2 = await openai.audio.transcriptions.create({ file:s2, model:'whisper-1' });
+      text = tr2.text?.trim() || '';
+    }
+    const detected = await detectLanguageCode(text);
+
+    const mode = (req.body.mode || '').toLowerCase();
+    const patch = {};
+
+    // Very naive field extraction helpers:
+    const take = (rx, t=text)=> (t.match(rx)?.[1] || '').trim();
+
+    if (mode === 'patient'){
+      // Name
+      patch.pName = take(/\b(name|patient name)\s*[:\-]\s*([^,.;\n]+)/i, text) || take(/\bI am\s+([^,.;\n]+)/i, text);
+      // Email (allow spoken email patterns too)
+      let email = take(/\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b/i, text);
+      if (!email){
+        let t = ' ' + text.toLowerCase() + ' ';
+        t = t.replace(/\s+at\s+/g,'@').replace(/\s+dot\s+/g,'.').replace(/\s+period\s+/g,'.').replace(/\s+underscore\s+/g,'_').replace(/\s+(hyphen|dash)\s+/g,'-').replace(/\s+plus\s+/g,'+');
+        t = t.replace(/\s*@\s*/g,'@').replace(/\s*\.\s*/g,'.'); t=t.replace(/\s+/g,' ').trim(); t=t.replace(/\s+/g,'');
+        const m = t.match(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/i);
+        if (m) email = m[0];
+      }
+      patch.pEmail = email || '';
+
+      // Blood type
+      patch.blood = take(/\b(blood\s*type)\s*[:\-]\s*([abo]{1,2}[+-]?|ab[+-]?)\b/i, text) || '';
+
+      // Emergency contact
+      patch.eName  = take(/\b(emergency contact|contact name)\s*[:\-]\s*([^,.;\n]+)/i, text);
+      patch.ePhone = take(/\b(contact phone|emergency phone|phone)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
+      patch.eEmail = take(/\b(contact email|emergency email|email)\s*[:\-]\s*([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})/i, text);
+
+      // Doctor
+      patch.dName    = take(/\b(doctor|dr\.?)\s*name\s*[:\-]\s*([^,.;\n]+)/i, text) || take(/\b(doctor|dr\.?)\s+([^,.;\n]+)/i, text);
+      patch.dAddress = take(/\b(doctor address|office address)\s*[:\-]\s*([^;\n]+)/i, text);
+      patch.dPhone   = take(/\b(doctor phone|office phone)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
+      patch.dFax     = take(/\b(doctor fax|office fax)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
+      patch.dEmail   = take(/\b(doctor email|office email)\s*[:\-]\s*([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})/i, text);
+
+      // Pharmacy
+      patch.phName    = take(/\b(pharmacy name)\s*[:\-]\s*([^,.;\n]+)/i, text);
+      patch.phAddress = take(/\b(pharmacy address)\s*[:\-]\s*([^;\n]+)/i, text);
+      patch.phPhone   = take(/\b(pharmacy phone)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
+      patch.phFax     = take(/\b(pharmacy fax)\s*[:\-]\s*([0-9().\-\s+]{7,})/i, text);
+    } else if (mode === 'status'){
+      // Use facts parser to fill status fields
+      const f = parseFacts(text);
+      patch.typed_bp        = f.bp || '';
+      patch.typed_weight    = f.weight || '';
+      if (f.medications?.length) patch.typed_meds = f.medications.join('; ');
+      if (f.allergies?.length)   patch.typed_allergies = f.allergies.join('; ');
+      if (f.conditions?.length)  patch.typed_conditions = f.conditions.join('; ');
+      // Try a general note line if user spoke something broader
+      if (!patch.typed_meds && !patch.typed_allergies && !patch.typed_conditions){
+        patch.typed_general = text;
+      }
+    }
+
+    res.json({ ok:true, detected_lang: detected || '', patch });
+  }catch(e){
+    console.error(e);
+    res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+// ---------- Main Upload (Generate Report) ----------
 app.post('/upload', upload.single('audio'), async (req,res)=>{
   try{
     const B = req.body || {};
@@ -316,7 +414,7 @@ app.post('/upload', upload.single('audio'), async (req,res)=>{
   }
 });
 
-// Reports list
+// ---------- Reports list ----------
 app.get('/reports', async (req,res)=>{
   const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
   const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
@@ -346,12 +444,12 @@ app.get('/reports', async (req,res)=>{
 </body></html>`);
 });
 
-// Single report + "Translate to new language" action
+// ---------- Single report + "Translate to new language" ----------
 app.get('/reports/:id', async (req,res)=>{
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!row) return res.status(404).send('Not found');
 
-  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
   const created = new Date(row.created_at).toLocaleString();
   const detName = langLabel(row.detected_lang);
   const tgtName = langLabel(row.target_lang);
@@ -469,7 +567,6 @@ app.get('/reports/:id', async (req,res)=>{
 </html>`);
 });
 
-// POST translate current report to a new language
 app.post('/reports/:id/translate', bodyParser.urlencoded({extended:true}), async (req,res)=>{
   const id = req.params.id;
   const to = (req.body?.to || '').trim();
@@ -502,6 +599,162 @@ app.post('/reports/:id/translate', bodyParser.urlencoded({extended:true}), async
   }catch{
     res.redirect(`/reports/${id}`);
   }
+});
+
+// ---------- Journal (General Health Notes) ----------
+app.post('/journal/add', upload.single('audio'), async (req,res)=>{
+  try{
+    let text = (req.body?.text || '').trim();
+
+    if (req.file){
+      const s = fs.createReadStream(req.file.path);
+      try{
+        const tr = await openai.audio.transcriptions.create({ file:s, model:'gpt-4o-mini-transcribe' });
+        text = (text ? (text + ' ') : '') + (tr.text?.trim() || '');
+      }catch{
+        const s2 = fs.createReadStream(req.file.path);
+        const tr2 = await openai.audio.transcriptions.create({ file:s2, model:'whisper-1' });
+        text = (text ? (text + ' ') : '') + (tr2.text?.trim() || '');
+      }
+    }
+
+    if (!text) return res.status(400).json({ ok:false, error:'No note' });
+
+    const lid = await detectLanguageCode(text) || 'en';
+    const id = uid();
+    const created_at = new Date().toISOString();
+
+    await dbRun(`INSERT INTO journal (id, created_at, text, detected_lang, target_lang, translated_text)
+                 VALUES (?,?,?,?,?,?)`, [id, created_at, text, lid, '', '']);
+
+    res.json({ ok:true, id });
+  }catch(e){
+    console.error(e);
+    res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+app.get('/journal', async (req,res)=>{
+  const rows = await dbAll(`SELECT * FROM journal ORDER BY created_at DESC`);
+  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+  const items = rows.map(j=>`
+    <li class="report-item">
+      <div class="title">${new Date(j.created_at).toLocaleString()}</div>
+      <div class="meta">Detected: ${esc(langLabel(j.detected_lang))}</div>
+      <pre class="pre">${esc(j.text)}</pre>
+    </li>
+  `).join('') || '<li class="report-item">No notes yet.</li>';
+
+  res.send(`<!doctype html>
+<html><head><meta charset="utf-8"/><title>Caregiver Card — Journal</title><link rel="stylesheet" href="/styles.css"/></head>
+<body>
+  <div class="container">
+    <header class="head">
+      <h1>Caregiver Card — Journal</h1>
+      <nav>
+        <a class="btn" href="/" rel="noopener">Back</a>
+      </nav>
+    </header>
+    <ul class="list">${items}</ul>
+  </div>
+</body></html>`);
+});
+
+app.get('/journal/report', async (req,res)=>{
+  const to = (req.query?.to || '').trim();
+  const notes = await dbAll(`SELECT * FROM journal ORDER BY created_at ASC`);
+  const text = notes.map(n=>`[${new Date(n.created_at).toLocaleDateString()}] ${n.text}`).join('\n');
+
+  let summary = '';
+  if (text){
+    const prompt = `Summarize the following patient journal chronologically. Capture key symptoms, medications, changes, and action items. Keep it concise and medically readable.\n\n${text}`;
+    const rsp = await openai.chat.completions.create({
+      model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+      temperature: 0.2,
+      messages: [{ role:'user', content: prompt }]
+    });
+    summary = rsp.choices?.[0]?.message?.content?.trim() || '';
+  }
+
+  let translated = '';
+  if (to && summary){
+    const tr = await openai.chat.completions.create({
+      model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+      temperature: 0.2,
+      messages: [{ role:'user', content:`Translate to ${to}:\n\n${summary}` }]
+    });
+    translated = tr.choices?.[0]?.message?.content?.trim() || '';
+  }
+
+  const baseUrl = getBaseUrl(req);
+  const shareUrl = `${baseUrl}/journal/report${to ? ('?to=' + encodeURIComponent(to)) : ''}`;
+  const qr = await QRCode.toDataURL(shareUrl);
+
+  const gmail = `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent('Caregiver Card — Journal Summary')}&body=${encodeURIComponent(shareUrl)}`;
+  const outlook = `https://outlook.office.com/mail/deeplink/compose?subject=${encodeURIComponent('Caregiver Card — Journal Summary')}&body=${encodeURIComponent(shareUrl)}`;
+
+  const esc = s=>String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+
+  res.send(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Caregiver Card — Journal Summary</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body>
+<div class="container">
+  <header class="head">
+    <h1>Caregiver Card — Journal Summary</h1>
+    <nav>
+      <a class="btn" href="/journal" rel="noopener">Journal</a>
+      <a class="btn" href="/" rel="noopener">Home</a>
+    </nav>
+  </header>
+
+  <section class="card">
+    <h2>Summary</h2>
+    <div class="dual">
+      <div class="block">
+        <h3>Original</h3>
+        <pre class="pre">${esc(summary)}</pre>
+      </div>
+      <div class="block">
+        <h3>Translated</h3>
+        <pre class="pre">${esc(translated || '(no translation)')}</pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Share / Print</h2>
+    <div class="sharebar">
+      <a class="btn" href="${esc(shareUrl)}" target="_blank" rel="noopener">🔗 Link</a>
+      <a class="btn" href="${gmail}" target="_blank" rel="noopener">📧 Gmail</a>
+      <a class="btn" href="${outlook}" target="_blank" rel="noopener">📨 Outlook</a>
+      <button class="btn" onclick="window.print()">🖨️ Print</button>
+    </div>
+    <form method="GET" action="/journal/report" class="row" style="gap:8px">
+      <label class="lbl" for="to" style="margin:0">Translate to:</label>
+      <select class="in" name="to" id="to" style="max-width:220px">
+        <option value="">—</option>
+        <option value="en">English</option><option value="fr">Français</option><option value="es">Español</option>
+        <option value="pt">Português</option><option value="de">Deutsch</option><option value="it">Italiano</option>
+        <option value="ar">العربية</option><option value="hi">हिन्दी</option><option value="zh">中文</option>
+        <option value="ja">日本語</option><option value="ko">한국어</option>
+        <option value="he">עברית</option><option value="sr">Srpski</option><option value="pa">ਪੰਜਾਬੀ</option>
+      </select>
+      <button class="btn" type="submit">Apply</button>
+    </form>
+    <div class="qr">
+      <img src="${esc(qr)}" alt="QR Code"/>
+      <div class="muted">Scan or use the link button.</div>
+    </div>
+  </section>
+</div>
+</body>
+</html>`);
 });
 
 // ---------- Start ----------

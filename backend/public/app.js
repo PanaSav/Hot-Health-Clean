@@ -7,24 +7,17 @@ const langTargetEl = $('#lang');
 const langConfirmRow = $('#langConfirmRow');
 const langQuestion = $('#langQuestion');
 
-// Classic recorder nodes
-const btnRec   = $('#btnRec');
-const recMeta  = $('#recMeta');
-const recErr   = $('#recErr');
-
-// Reporting nodes
+// Classic report generation nodes
 const btnGenerate = $('#btnGenerate');
 const resultBox   = $('#result');
 const errorBox    = $('#error');
 
 function setError(msg){ if (errorBox) errorBox.textContent = msg || ''; }
 function setResult(html){ if (resultBox) resultBox.innerHTML = html || ''; }
-function setRecErr(msg){ if (recErr) recErr.textContent = msg || ''; }
-function setRecMeta(msg){ if (recMeta) recMeta.textContent = msg || ''; }
 
 // Initial language hint
 if (langHint){
-  langHint.textContent = 'We’ll auto-detect if you use the free-speech recorder. You can also select a translation target.';
+  langHint.textContent = 'We’ll auto-detect if you use a free-speech recorder. You can also select a translation target.';
 }
 
 // -------- Field SpeechRecognition (mic icons) --------
@@ -57,6 +50,7 @@ if (langHint){
   }
 
   document.querySelectorAll('.mic-btn').forEach(btn=>{
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR){ btn.disabled=true; btn.title='Speech recognition not supported'; return; }
     btn.addEventListener('click', ()=>{
       const targetId = btn.getAttribute('data-target');
@@ -89,51 +83,173 @@ if (langHint){
   });
 })();
 
-// -------- Classic free-speech recorder with 60s auto-stop --------
-let mediaRecorder=null, chunks=[];
-function startRec(){
-  setRecErr(''); setRecMeta('');
-  chunks=[];
+// -------- Free-speech recorders for PREFILL (patient/status) --------
+let prefillRecorder=null, prefillChunks=[];
+function startPrefill(mode, metaEl, errEl){
+  errEl.textContent=''; metaEl.textContent='';
+  prefillChunks=[];
   if (!navigator.mediaDevices || !window.MediaRecorder){
-    setRecErr('This browser does not support audio recording. Use Chrome/Edge or iOS Safari 14+.');
+    errEl.textContent='This browser does not support audio recording.';
     return;
   }
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
-    mediaRecorder = new MediaRecorder(stream, { mimeType:'audio/webm' });
-    mediaRecorder.ondataavailable = e=>{ if (e.data && e.data.size) chunks.push(e.data); };
-    mediaRecorder.onstop = ()=>{
-      const blob = new Blob(chunks, { type:'audio/webm' });
-      window.__classicBlob = blob;
-      setRecMeta(`Recorded ${(blob.size/1024).toFixed(1)} KB — language will be detected after Generate`);
-      // Show a provisional question area (actual detected code arrives from backend response)
-      if (langDetectedEl){
-        langDetectedEl.placeholder = 'Detecting…';
+    prefillRecorder = new MediaRecorder(stream, { mimeType:'audio/webm' });
+    prefillRecorder.ondataavailable = e=>{ if (e.data && e.data.size) prefillChunks.push(e.data); };
+    prefillRecorder.onstop = async ()=>{
+      try{
+        const blob = new Blob(prefillChunks, { type:'audio/webm' });
+        metaEl.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB. Extracting...`;
+        const fd = new FormData();
+        fd.append('audio', blob, 'prefill.webm');
+        fd.append('mode', mode);
+        const r = await fetch('/prefill', { method:'POST', body: fd });
+        if (!r.ok) throw new Error(`Prefill failed (${r.status})`);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'Prefill failed');
+
+        // Set detected language UI
+        if (j.detected_lang && langDetectedEl){
+          const map = { en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
+            ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ' };
+          const label = map[j.detected_lang] || j.detected_lang.toUpperCase();
+          langDetectedEl.value = label;
+          if (langQuestion) langQuestion.textContent = `Are you speaking ${label}?`;
+          if (langConfirmRow) langConfirmRow.style.display='flex';
+        }
+
+        // Patch fields
+        const patch = j.patch || {};
+        Object.entries(patch).forEach(([id,val])=>{
+          const el = document.getElementById(id);
+          if (el && val){ el.value = val; }
+        });
+
+        metaEl.textContent = `Filled: ${Object.keys(patch).filter(k=>patch[k]).length} field(s).`;
+      }catch(e){
+        errEl.textContent = e.message || String(e);
       }
     };
-    mediaRecorder.start();
-    btnRec.textContent='Stop';
-    setRecMeta('Recording… it will auto-stop in 60s.');
-    setTimeout(()=>{
-      if (mediaRecorder && mediaRecorder.state!=='inactive'){
-        stopRec();
-      }
-    }, 60000);
-  }).catch(()=> setRecErr('Microphone blocked. Allow permission and try again.'));
+    prefillRecorder.start();
+    metaEl.textContent='Recording… it will auto-stop in 45s.';
+    setTimeout(()=>{ if (prefillRecorder && prefillRecorder.state!=='inactive') stopPrefill(mode); }, 45000);
+  }).catch(()=> errEl.textContent = 'Microphone blocked. Allow permission and try again.');
 }
-function stopRec(){
-  if (mediaRecorder && mediaRecorder.state!=='inactive'){
-    mediaRecorder.stop();
-    mediaRecorder.stream.getTracks().forEach(t=>t.stop());
-    btnRec.textContent='Record';
+function stopPrefill(){
+  if (prefillRecorder && prefillRecorder.state!=='inactive'){
+    prefillRecorder.stop();
+    prefillRecorder.stream.getTracks().forEach(t=>t.stop());
   }
 }
-if (btnRec){
-  btnRec.addEventListener('click', ()=> {
-    if (btnRec.textContent==='Record') startRec(); else stopRec();
+
+// Wire buttons
+const btnPrefillPatient = $('#btnPrefillPatient');
+const prefillPatientMeta = $('#prefillPatientMeta');
+const prefillPatientErr  = $('#prefillPatientErr');
+if (btnPrefillPatient){
+  btnPrefillPatient.addEventListener('click', ()=>{
+    if (!btnPrefillPatient.classList.contains('rec')){
+      btnPrefillPatient.classList.add('rec'); btnPrefillPatient.textContent = 'Stop';
+      startPrefill('patient', prefillPatientMeta, prefillPatientErr);
+    }else{
+      btnPrefillPatient.classList.remove('rec'); btnPrefillPatient.textContent = 'Alternative: Patient & Contact’s Info — Free Speech Recording';
+      stopPrefill();
+    }
   });
 }
 
-// -------- Gather & Submit --------
+const btnPrefillStatus = $('#btnPrefillStatus');
+const prefillStatusMeta = $('#prefillStatusMeta');
+const prefillStatusErr  = $('#prefillStatusErr');
+if (btnPrefillStatus){
+  btnPrefillStatus.addEventListener('click', ()=>{
+    if (!btnPrefillStatus.classList.contains('rec')){
+      btnPrefillStatus.classList.add('rec'); btnPrefillStatus.textContent = 'Stop';
+      startPrefill('status', prefillStatusMeta, prefillStatusErr);
+    }else{
+      btnPrefillStatus.classList.remove('rec'); btnPrefillStatus.textContent = 'Alternative: Patient Health Status — Free Speech Recording';
+      stopPrefill();
+    }
+  });
+}
+
+// -------- Journal save (typed OR mic) --------
+const btnJournalSave = $('#btnJournalSave');
+const journalText    = $('#journalText');
+const journalMeta    = $('#journalMeta');
+const journalErr     = $('#journalErr');
+
+let journalRecorder=null, journalChunks=[];
+function startJournalMic(){
+  journalErr.textContent=''; journalMeta.textContent='';
+  journalChunks=[];
+  if (!navigator.mediaDevices || !window.MediaRecorder){
+    journalErr.textContent='This browser does not support audio recording.';
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
+    journalRecorder = new MediaRecorder(stream, { mimeType:'audio/webm' });
+    journalRecorder.ondataavailable = e=>{ if (e.data && e.data.size) journalChunks.push(e.data); };
+    journalRecorder.onstop = async ()=>{
+      try{
+        const blob = new Blob(journalChunks, { type:'audio/webm' });
+        const fd = new FormData();
+        fd.append('audio', blob, 'journal.webm');
+        fd.append('text', journalText ? journalText.value.trim() : '');
+        const r = await fetch('/journal/add', { method:'POST', body: fd });
+        if (!r.ok) throw new Error(`Save failed (${r.status})`);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'Save failed');
+        journalMeta.textContent = 'Note saved.';
+      }catch(e){
+        journalErr.textContent = e.message || String(e);
+      }
+    };
+    journalRecorder.start();
+    journalMeta.textContent='Recording… it will auto-stop in 60s.';
+    setTimeout(()=>{ if (journalRecorder && journalRecorder.state!=='inactive') stopJournalMic(); }, 60000);
+  }).catch(()=> journalErr.textContent='Microphone blocked. Allow permission and try again.');
+}
+function stopJournalMic(){
+  if (journalRecorder && journalRecorder.state!=='inactive'){
+    journalRecorder.stop();
+    journalRecorder.stream.getTracks().forEach(t=>t.stop());
+  }
+}
+
+if (btnJournalSave){
+  btnJournalSave.addEventListener('click', async ()=>{
+    // If there’s no mic going, save typed note
+    if (!journalRecorder || journalRecorder.state==='inactive'){
+      try{
+        const fd = new FormData();
+        fd.append('text', journalText ? journalText.value.trim() : '');
+        const r = await fetch('/journal/add', { method:'POST', body: fd });
+        if (!r.ok) throw new Error(`Save failed (${r.status})`);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'Save failed');
+        journalMeta.textContent = 'Note saved.';
+      }catch(e){
+        journalErr.textContent = e.message || String(e);
+      }
+    }else{
+      // stopping finishes the upload
+      stopJournalMic();
+    }
+  });
+
+  // Long-press on the same button to toggle mic (optional UX)
+  btnJournalSave.addEventListener('contextmenu', (e)=> e.preventDefault());
+  btnJournalSave.addEventListener('mousedown', (e)=>{
+    if (e.button===2) return; // ignore right-click
+    if (!journalRecorder || journalRecorder.state==='inactive'){
+      startJournalMic();
+    }else{
+      stopJournalMic();
+    }
+  });
+}
+
+// -------- Gather & Submit (Generate Report) --------
 function val(id){ const el=$(id); return el? el.value.trim() : ''; }
 function gatherForm(){
   return {
@@ -177,9 +293,8 @@ async function generateReport(){
   const form = gatherForm();
   for (const [k,v] of Object.entries(form)) fd.append(k, v||'');
 
-  if (window.__classicBlob){
-    fd.append('audio', window.__classicBlob, 'recording.webm');
-  }
+  // We no longer attach a "classic" blob here; prefill is separate. If you want to add a single classic recorder again, attach it like:
+  // if (window.__classicBlob) fd.append('audio', window.__classicBlob, 'recording.webm');
 
   const r = await fetch('/upload', { method:'POST', body: fd });
   if (!r.ok){
