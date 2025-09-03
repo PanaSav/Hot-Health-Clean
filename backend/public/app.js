@@ -1,298 +1,267 @@
-// backend/public/app.js
+// Caregiver Card — front-end logic (speech dictation, mini recorders, generate)
 
-const $  = s => document.querySelector(s);
-const $$ = s => Array.from(document.querySelectorAll(s));
+const $ = (s) => document.querySelector(s);
 
-const resultBox = $('#result');
-const errorBox  = $('#error');
-const btnGenerate   = $('#btnGenerate');
-
-const langDetectedEl = $('#langDetected');
-const btnLangSpeak   = $('#btnLangSpeak');
-const btnLangConfirm = $('#btnLangConfirm');
-const langGuessMsg   = $('#langGuessMsg');
-
-function setError(msg){ if (errorBox) errorBox.textContent = msg || ''; }
-function setResult(html){ if (resultBox) resultBox.innerHTML = html || ''; }
-
-// ------------ Email normalization (spoken → valid) ------------
-function normalizeEmailSpoken(raw='') {
-  let s = ' ' + raw.toLowerCase().trim() + ' ';
-  s = s.replace(/\s+at\s+/g,'@')
-       .replace(/\s+dot\s+/g,'.')
-       .replace(/\s+period\s+/g,'.')
-       .replace(/\s+underscore\s+/g,'_')
-       .replace(/\s+(hyphen|dash)\s+/g,'-')
-       .replace(/\s+plus\s+/g,'+')
-       .replace(/\s+gmail\s*\.?\s*com\s*/g,'@gmail.com ')
-       .replace(/\s+outlook\s*\.?\s*com\s*/g,'@outlook.com ')
-       .replace(/\s+hotmail\s*\.?\s*com\s*/g,'@hotmail.com ')
-       .replace(/\s+yahoo\s*\.?\s*com\s*/g,'@yahoo.com ')
-       .replace(/\s*@\s*/g,'@')
-       .replace(/\s*\.\s*/g,'.')
-       .replace(/\s+/g,'')
-       .replace(/\.\.+/g,'.');
-  return s;
-}
-function isEmailField(el){
-  const id=(el.id||'').toLowerCase(), name=(el.name||'').toLowerCase(), type=(el.type||'').toLowerCase();
-  return type==='email' || id.includes('email') || name.includes('email');
-}
-
-// ------------ Per-field mic (Web Speech Recognition) ------------
+/* =====================
+   Speech dictation for fields
+   ===================== */
 (() => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  $$('.mic-btn').forEach(btn => {
-    if (!SR) { btn.disabled = true; btn.title = 'Speech recognition not supported'; return; }
-    btn.addEventListener('click', () => {
+
+  function normalizeEmailSpoken(raw) {
+    if (!raw) return '';
+    let s = ' ' + raw.toLowerCase().trim() + ' ';
+    s = s.replace(/\s+at\s+/g, '@');
+    s = s.replace(/\s+dot\s+/g, '.').replace(/\s+period\s+/g, '.');
+    s = s.replace(/\s+underscore\s+/g, '_');
+    s = s.replace(/\s+(hyphen|dash)\s+/g, '-');
+    s = s.replace(/\s+plus\s+/g, '+');
+
+    s = s.replace(/\s+gmail\s*\.?\s*com\s*/g, '@gmail.com ');
+    s = s.replace(/\s+outlook\s*\.?\s*com\s*/g, '@outlook.com ');
+    s = s.replace(/\s+hotmail\s*\.?\s*com\s*/g, '@hotmail.com ');
+    s = s.replace(/\s+yahoo\s*\.?\s*com\s*/g, '@yahoo.com ');
+
+    s = s.replace(/\s*@\s*/g, '@').replace(/\s*\.\s*/g, '.').trim();
+    s = s.replace(/\s+/g, '');       // emails cannot have spaces
+    s = s.replace(/\.\.+/g, '.');    // de-duplicate dots
+    return s;
+  }
+  function isEmailField(el){
+    const id=(el.id||'').toLowerCase(), name=(el.name||'').toLowerCase(), type=(el.type||'').toLowerCase();
+    return type==='email' || id.includes('email') || name.includes('email');
+  }
+
+  document.querySelectorAll('.mic-btn').forEach(btn=>{
+    if(!SR){ btn.disabled=true; btn.title='Speech recognition not supported'; return; }
+    btn.addEventListener('click', ()=>{
       const targetId = btn.getAttribute('data-target');
       const el = document.getElementById(targetId);
-      if (!el) return;
-      const rec = new SR();
-      rec.lang = (window.__uiLang || 'en-US');
-      rec.interimResults = false; rec.maxAlternatives = 1;
+      if(!el) return;
 
-      const originalBg = el.style.backgroundColor;
+      const rec = new SR();
+      rec.lang = 'en-US';       // You can change this default or wire to UI language
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+
       btn.classList.add('mic-active');
+      const origBG = el.style.backgroundColor;
       el.style.backgroundColor = '#fff7cc';
 
-      rec.onresult = (e) => {
+      rec.onresult = (e)=>{
         const raw = e.results[0][0].transcript || '';
         const text = isEmailField(el) ? normalizeEmailSpoken(raw) : raw;
+
         if (el.tagName === 'SELECT') {
           const lower = text.toLowerCase();
-          const opt = Array.from(el.options).find(o => o.textContent.toLowerCase().includes(lower) || o.value.toLowerCase()===lower);
+          const opt = [...el.options].find(o => o.textContent.toLowerCase().includes(lower) || o.value.toLowerCase().includes(lower));
           if (opt) el.value = opt.value;
         } else {
-          el.value = text;
+          if (el.tagName === 'TEXTAREA') el.value = (el.value ? el.value + ' ' : '') + text;
+          else el.value = text;
         }
+
+        // naive “language detected” UX: if any speech occurs, set a placeholder
+        const det = $('#langDetected');
+        if (det && !det.value) det.value = 'auto';
       };
-      rec.onend = () => { btn.classList.remove('mic-active'); el.style.backgroundColor = originalBg; };
-      rec.onerror = () => { btn.classList.remove('mic-active'); el.style.backgroundColor = originalBg; };
-      try { rec.start(); } catch { btn.classList.remove('mic-active'); el.style.backgroundColor = originalBg; }
+      rec.onend = ()=>{ btn.classList.remove('mic-active'); el.style.backgroundColor = origBG; };
+      rec.onerror = ()=>{ btn.classList.remove('mic-active'); el.style.backgroundColor = origBG; };
+      try{ rec.start(); }catch{ btn.classList.remove('mic-active'); el.style.backgroundColor = origBG; }
     });
   });
 })();
 
-// ------------ Language detect flow ------------
-let __lastGuess = { code:'', name:'' };
+/* =====================
+   Mini recorders + classic recorder
+   ===================== */
 
-if (btnLangSpeak) {
-  btnLangSpeak.addEventListener('click', () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { langGuessMsg.textContent = 'Speech recognition not supported in this browser.'; return; }
-    const rec = new SR();
-    rec.lang = 'en-US'; // we only need a sample; backend will detect actual language
-    rec.interimResults = false; rec.maxAlternatives = 1;
-    langGuessMsg.textContent = 'Listening… say a short sentence.';
-    rec.onresult = async (e) => {
-      const sample = (e.results[0][0].transcript || '').trim();
-      if (!sample) { langGuessMsg.textContent = 'No speech detected.'; return; }
-      // ask backend to detect language from text
-      try {
-        const r = await fetch('/detect-lang', {
-          method:'POST',
-          headers:{ 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sample })
-        });
-        const j = await r.json();
-        __lastGuess = { code: j.code || '', name: j.name || '' };
-        if (__lastGuess.code) {
-          langGuessMsg.textContent = `We think you’re speaking ${__lastGuess.name} — click Confirm if correct.`;
-          langDetectedEl.value = __lastGuess.name || __lastGuess.code;
-          window.__uiLang = (__lastGuess.code === 'en' ? 'en-US' : __lastGuess.code);
-        } else {
-          langGuessMsg.textContent = 'Could not determine language.';
-        }
-      } catch {
-        langGuessMsg.textContent = 'Detection failed.';
-      }
-    };
-    rec.onerror = () => { langGuessMsg.textContent = 'Mic error.'; };
-    try { rec.start(); } catch { langGuessMsg.textContent = 'Unable to start mic.'; }
-  });
-}
+const RECORD_LIMITS_MS = {
+  bp: 30_000,
+  meds: 180_000,
+  allergies: 90_000,
+  weight: 60_000,
+  conditions: 180_000,
+  general: 180_000,
+  classic: 60_000
+};
 
-if (btnLangConfirm) {
-  btnLangConfirm.addEventListener('click', () => {
-    if (!__lastGuess.code) { langGuessMsg.textContent = 'No guess yet. Tap the mic and speak first.'; return; }
-    langGuessMsg.textContent = `Language set to ${__lastGuess.name}.`;
-    // Store a code we can send with the form if needed
-    window.__detectedLangCode = __lastGuess.code;
-  });
-}
+const state = {
+  chunks: {},
+  media: {},
+  timers: {},
+  blobs: {} // final audio blobs by key
+};
 
-// ------------ Free speech recorders (MediaRecorder → backend parse) ------------
-async function recordOnce(maxMs=45000) {
-  // HTTPS required in browsers for getUserMedia outside localhost
-  const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
-  const mr = new MediaRecorder(stream, { mimeType:'audio/webm' });
-  const chunks = [];
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { if (mr.state!=='inactive') mr.stop(); }, maxMs);
-    mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-    mr.onstop = () => {
-      clearTimeout(timer);
-      stream.getTracks().forEach(t => t.stop());
-      resolve(new Blob(chunks, { type:'audio/webm' }));
-    };
-    mr.onerror = e => { clearTimeout(timer); reject(e.error || new Error('Recorder error')); };
-    mr.start();
-  });
-}
+function setupRecorder(key){
+  const btn = $(`#rec_${key}`);
+  const meta = $(`#meta_${key}`);
+  if(!btn || !meta) return;
 
-const btnRecPatient = $('#btnRecPatient');
-if (btnRecPatient) {
-  btnRecPatient.addEventListener('click', async () => {
-    const msg = $('#patientParseMsg');
-    try {
-      msg.textContent = 'Recording… speak your info. It auto-stops in 45s or click again to stop.';
-      const blob = await recordOnce(45000);
-      msg.textContent = 'Transcribing & parsing…';
-      const fd = new FormData();
-      fd.append('audio', blob, 'patient.webm');
-      const r = await fetch('/parse-patient', { method:'POST', body: fd });
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error || 'Parse failed');
+  btn.addEventListener('click', async ()=>{
+    if(state.media[key] && state.media[key].state === 'recording'){
+      stopRecorder(key);
+      return;
+    }
+    // start
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      state.chunks[key] = [];
+      state.media[key] = mr;
 
-      // Fill fields safely (only if value present)
-      const F = j.fields || {};
-      const setIf = (id, v) => { if (v) { const el = $('#'+id); if (el) el.value = v; } };
-      setIf('pName', F.name);
-      setIf('pEmail', F.email);
-      setIf('blood', F.blood_type);
-      setIf('eName', F.emer_name);
-      setIf('ePhone', F.emer_phone);
-      setIf('eEmail', F.emer_email);
-      setIf('doctor_name', F.doctor_name);
-      setIf('doctor_address', F.doctor_address);
-      setIf('doctor_phone', F.doctor_phone);
-      setIf('doctor_fax', F.doctor_fax);
-      setIf('doctor_email', F.doctor_email);
-      setIf('pharmacy_name', F.pharmacy_name);
-      setIf('pharmacy_address', F.pharmacy_address);
-      setIf('pharmacy_phone', F.pharmacy_phone);
-      setIf('pharmacy_fax', F.pharmacy_fax);
+      mr.ondataavailable = (e)=>{ if(e.data && e.data.size) state.chunks[key].push(e.data); };
+      mr.onstop = ()=>{
+        // finalize blob
+        stream.getTracks().forEach(t=>t.stop());
+        const blob = new Blob(state.chunks[key]||[], { type: 'audio/webm' });
+        state.blobs[key] = blob;
+        meta.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB`;
+        btn.classList.remove('on');
+        btn.textContent = 'Start';
+        if(state.timers[key]) clearTimeout(state.timers[key]);
+      };
 
-      msg.textContent = 'Parsed and filled available fields ✅';
-    } catch (e) {
-      msg.textContent = 'Parse error: ' + (e.message || String(e));
+      mr.start();
+      btn.classList.add('on');
+      btn.textContent = 'Stop';
+      meta.textContent = 'Recording…';
+
+      // auto-stop
+      state.timers[key] = setTimeout(()=> stopRecorder(key), RECORD_LIMITS_MS[key]||60_000);
+
+    }catch(e){
+      meta.textContent = 'Mic blocked — allow permission.';
     }
   });
 }
 
-const btnRecStatus = $('#btnRecStatus');
-if (btnRecStatus) {
-  btnRecStatus.addEventListener('click', async () => {
-    const msg = $('#statusParseMsg');
-    try {
-      msg.textContent = 'Recording status… auto-stops in 60s.';
-      const blob = await recordOnce(60000);
-      msg.textContent = 'Transcribing & parsing status…';
-      const fd = new FormData();
-      fd.append('audio', blob, 'status.webm');
-      const r = await fetch('/parse-status', { method:'POST', body: fd });
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error || 'Parse failed');
-
-      const f = j.facts || {};
-      const set = (id, v) => { const el = $('#'+id); if (el && v) el.value = v; };
-      if (f.bp) set('bp', f.bp);
-      if (f.weight) set('weight', f.weight);
-      if (f.medications?.length) set('meds', f.medications.join('; '));
-      if (f.allergies?.length) set('allergies', f.allergies.join('; '));
-      if (f.conditions?.length) set('conditions', f.conditions.join('; '));
-
-      msg.textContent = 'Status parsed and filled ✅';
-    } catch (e) {
-      msg.textContent = 'Parse error: ' + (e.message || String(e));
-    }
-  });
+function stopRecorder(key){
+  const mr = state.media[key];
+  if(mr && mr.state !== 'inactive') mr.stop();
 }
 
-// ------------ Gather + Generate ------------
-function val(id){ const el = $('#'+id); return el ? el.value.trim() : ''; }
+/* hook all */
+['bp','meds','allergies','weight','conditions','general','classic'].forEach(setupRecorder);
 
-async function generateReport() {
+/* =====================
+   Generate Report (multi-upload)
+   ===================== */
+
+const btnGenerate = $('#btnGenerate');
+const resultBox = $('#result');
+const errorBox = $('#error');
+
+function setError(m){ if(errorBox) errorBox.textContent = m||''; }
+function setResult(h){ if(resultBox) resultBox.innerHTML = h||''; }
+
+function getVal(id){ const el=$(id); return el ? el.value.trim() : ''; }
+
+function gatherPatient(){
+  return {
+    name: getVal('#pName'),
+    email: getVal('#pEmail'),
+    blood_type: getVal('#blood'),
+    emer_name: getVal('#eName'),
+    emer_phone:getVal('#ePhone'),
+    emer_email:getVal('#eEmail'),
+    doctor_name: getVal('#doctor_name'),
+    doctor_address:getVal('#doctor_address'),
+    doctor_phone:getVal('#doctor_phone'),
+    doctor_fax:  getVal('#doctor_fax'),
+    doctor_email:getVal('#doctor_email'),
+    pharmacy_name: getVal('#pharmacy_name'),
+    pharmacy_address:getVal('#pharmacy_address'),
+    pharmacy_phone:getVal('#pharmacy_phone'),
+    pharmacy_fax:  getVal('#pharmacy_fax'),
+    lang: getVal('#lang')
+  };
+}
+
+function gatherTypedStatus(){
+  return {
+    typed_bp: getVal('#typed_bp'),
+    typed_meds: getVal('#typed_meds'),
+    typed_allergies: getVal('#typed_allergies'),
+    typed_weight: getVal('#typed_weight'),
+    typed_conditions: getVal('#typed_conditions'),
+    typed_general: getVal('#typed_general')
+  };
+}
+
+async function generateReport(){
   setError(''); setResult('');
+
   const fd = new FormData();
+  // patient fields
+  const patient = gatherPatient();
+  Object.entries(patient).forEach(([k,v])=> fd.append(k, v));
 
-  // patient/contact
-  fd.append('name', val('pName'));
-  fd.append('email', val('pEmail'));
-  fd.append('blood_type', val('blood'));
-  fd.append('emer_name', val('eName'));
-  fd.append('emer_phone', val('ePhone'));
-  fd.append('emer_email', val('eEmail'));
+  // typed status
+  const typed = gatherTypedStatus();
+  Object.entries(typed).forEach(([k,v])=> fd.append(k, v));
 
-  fd.append('doctor_name', val('doctor_name'));
-  fd.append('doctor_address', val('doctor_address'));
-  fd.append('doctor_phone', val('doctor_phone'));
-  fd.append('doctor_fax', val('doctor_fax'));
-  fd.append('doctor_email', val('doctor_email'));
+  // audio parts (mini)
+  Object.entries(state.blobs).forEach(([k,blob])=>{
+    if(!blob || !blob.size) return;
+    if(k==='classic') fd.append('audio_classic', blob, 'classic.webm');
+    else fd.append(`audio_${k}`, blob, `${k}.webm`);
+  });
 
-  fd.append('pharmacy_name', val('pharmacy_name'));
-  fd.append('pharmacy_address', val('pharmacy_address'));
-  fd.append('pharmacy_phone', val('pharmacy_phone'));
-  fd.append('pharmacy_fax', val('pharmacy_fax'));
-
-  // language
-  const target = val('lang');
-  fd.append('lang', target);
-  fd.append('langDetected', (window.__detectedLangCode || 'en'));
-
-  // status typed
-  fd.append('bp', val('bp'));
-  fd.append('meds', val('meds'));
-  fd.append('allergies', val('allergies'));
-  fd.append('weight', val('weight'));
-  fd.append('conditions', val('conditions'));
-  fd.append('general', val('general'));
+  // guarantee content: if no audio and no typed provided, build minimal typed_general from patient
+  const noAudio = Object.values(state.blobs).every(b => !b || !b.size);
+  const noTyped = !Object.values(typed).some(v => v && v.length>0);
+  if(noAudio && noTyped){
+    const fallback = [
+      patient.name && `Patient Name: ${patient.name}`,
+      patient.email && `Email: ${patient.email}`,
+      patient.blood_type && `Blood: ${patient.blood_type}`
+    ].filter(Boolean).join(' — ');
+    if(fallback) fd.set('typed_general', fallback);
+  }
 
   const r = await fetch('/upload-multi', { method:'POST', body: fd });
-  if (!r.ok) {
+  if(!r.ok){
     let msg = `Upload failed (${r.status})`;
-    try {
-      const txt = await r.text();
-      if (txt.startsWith('{')) { const j = JSON.parse(txt); if (j.error) msg = j.error; }
-    } catch {}
+    try{
+      const t = await r.text();
+      if(t.startsWith('{')){ const j=JSON.parse(t); if(j.error) msg = j.error; }
+    }catch{}
     throw new Error(msg);
   }
   return r.json();
 }
 
-if (btnGenerate) {
-  btnGenerate.addEventListener('click', async () => {
-    try {
-      const j = await generateReport();
-      if (!j.ok) throw new Error(j.error || 'Server error');
-      const shareUrl = j.url;
+if(btnGenerate){
+  btnGenerate.addEventListener('click', async ()=>{
+    try{
+      const json = await generateReport();
+      if(!json.ok) throw new Error(json.error||'Server error');
 
       const banner = `
         <div class="report-banner">
           <div class="report-icon">✅</div>
           <div class="report-text">
             <div class="report-title">Report Generated</div>
-            <div class="report-sub">Open, share or email below.</div>
+            <div class="report-sub">Open, copy link or email below.</div>
           </div>
           <div class="report-actions">
-            <a class="btn" href="${shareUrl}" target="_blank" rel="noopener">Open Report</a>
+            <a class="btn" href="${json.url}" target="_blank" rel="noopener">Open Report</a>
             <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
-            <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Gmail</a>
-            <a class="btn" href="https://outlook.office.com/mail/deeplink/compose?subject=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Outlook</a>
+            <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card%20Report&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Gmail</a>
+            <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Caregiver%20Card%20Report&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Outlook</a>
           </div>
-        </div>
-      `;
+        </div>`;
       setResult(banner);
 
       const copyBtn = $('#btnCopyLink');
-      if (copyBtn) {
-        copyBtn.addEventListener('click', async () => {
-          try { await navigator.clipboard.writeText(shareUrl); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy Link',1500); } catch {}
+      if(copyBtn){
+        copyBtn.addEventListener('click', async ()=>{
+          try{ await navigator.clipboard.writeText(json.url); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy Link',1500); }catch{}
         });
       }
-    } catch (e) {
-      setError(e.message || String(e));
+    }catch(e){
+      setError(e.message||String(e));
     }
   });
 }
