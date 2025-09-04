@@ -1,5 +1,4 @@
-// backend/index.js
-// Caregiver Card — consolidated backend (auth, uploads, parsing, translation, QR, reports)
+// Caregiver Card — backend (auth, uploads, multi-part, parsing, translation, QR, reports)
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -25,29 +24,34 @@ const PORT = Number(process.env.PORT || 10000);
 
 const USER_ID   = process.env.APP_USER_ID   || 'Pana123$';
 const USER_PASS = process.env.APP_USER_PASS || 'GoGoPana$';
-const SESSION_SECRET = process.env.SESSION_SECRET || 'caregiver-card-session';
 
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const PUBLIC_DIR  = path.join(__dirname, 'public');
+const UPLOAD_DIR  = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // -------------------------
-// SQLite3 (only) — permanent fix
+// SQLite3 (single driver)
 // -------------------------
 sqlite3.verbose();
 const dbPath = path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(dbPath);
 
 function dbRun(sql, params = []) {
-  return new Promise((resolve, reject) => db.run(sql, params, function (err) { err ? reject(err) : resolve(this); }));
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) { if (err) reject(err); else resolve(this); });
+  });
 }
 function dbGet(sql, params = []) {
-  return new Promise((resolve, reject) => db.get(sql, params, function (err, row) { err ? reject(err) : resolve(row); }));
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, function (err, row) { if (err) reject(err); else resolve(row); });
+  });
 }
 function dbAll(sql, params = []) {
-  return new Promise((resolve, reject) => db.all(sql, params, function (err, rows) { err ? reject(err) : resolve(rows); }));
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, function (err, rows) { if (err) reject(err); else resolve(rows); });
+  });
 }
 
 async function initDB() {
@@ -81,7 +85,6 @@ async function initDB() {
     )
   `);
 
-  // add-any-missing columns (safe no-op if exists)
   const addCols = [
     ['doctor_name','TEXT'],['doctor_address','TEXT'],['doctor_phone','TEXT'],['doctor_fax','TEXT'],['doctor_email','TEXT'],
     ['pharmacy_name','TEXT'],['pharmacy_address','TEXT'],['pharmacy_phone','TEXT'],['pharmacy_fax','TEXT'],
@@ -95,12 +98,12 @@ async function initDB() {
 // -------------------------
 // Auth (cookie)
 // -------------------------
-app.use(cookieParser(SESSION_SECRET));
-app.use(bodyParser.json({ limit: '6mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '6mb' }));
+app.use(cookieParser(process.env.SESSION_SECRET || 'caregiver-card-session'));
+app.use(bodyParser.json({ limit: '5mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '5mb' }));
 
 function setSession(res, user) {
-  res.cookie('hhsess', user, { httpOnly: true, sameSite: 'lax', signed: true /*, secure: true*/ });
+  res.cookie('hhsess', user, { httpOnly: true, sameSite: 'lax', signed: true });
 }
 function clearSession(res) { res.clearCookie('hhsess'); }
 function requireAuth(req, res, next) {
@@ -124,40 +127,17 @@ function getBaseUrl(req) {
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   return `${proto}://${host}`;
 }
-
 const LANG_NAMES = {
-  en: 'English', fr: 'Français', es: 'Español', pt: 'Português', de: 'Deutsch', it: 'Italiano',
-  ar: 'العربية', hi: 'हिन्दी', zh: '中文', ja: '日本語', ko: '한국어', he: 'עברית', sr: 'Srpski', pa: 'ਪੰਜਾਬੀ'
+  en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
+  ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ'
 };
-function langLabel(code='') { return LANG_NAMES[code] || code || '—'; }
-function uid(n=20) { return crypto.randomBytes(n).toString('base64url').slice(0,n); }
+function langLabel(code=''){ return LANG_NAMES[code] || code || '—'; }
+function uid(n=20){ return crypto.randomBytes(n).toString('base64url').slice(0,n); }
 
-function normalizeEmailSpoken(raw='') {
-  let s = ' ' + raw.toLowerCase().trim() + ' ';
-  s = s.replace(/\s+at\s+/g,'@')
-       .replace(/\s+dot\s+/g,'.')
-       .replace(/\s+period\s+/g,'.')
-       .replace(/\s+underscore\s+/g,'_')
-       .replace(/\s+(hyphen|dash)\s+/g,'-')
-       .replace(/\s+plus\s+/g,'+')
-       .replace(/\s+gmail\s*\.?\s*com\s*/g,'@gmail.com ')
-       .replace(/\s+outlook\s*\.?\s*com\s*/g,'@outlook.com ')
-       .replace(/\s+hotmail\s*\.?\s*com\s*/g,'@hotmail.com ')
-       .replace(/\s+yahoo\s*\.?\s*com\s*/g,'@yahoo.com ')
-       .replace(/\s*@\s*/g,'@')
-       .replace(/\s*\.\s*/g,'.')
-       .replace(/\s+/g,'').replace(/\.\.+/g,'.');
-  return s;
-}
-
-// ---- health facts from text (status) ----
-function parseStatusFacts(text='') {
+function parseFacts(text='') {
   const t = text.replace(/\s+/g,' ').trim();
-  const meds = [];
-  const allergies = [];
-  const conditions = [];
+  const meds = [], allergies = [], conditions = [];
 
-  // meds — "X 20 mg" or "X at 20 mg"
   const medRx = /([A-Za-z][A-Za-z0-9\-]+)\s*(?:at|:|—|-)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
   let m; const seen = new Set();
   while ((m = medRx.exec(t)) !== null) {
@@ -190,7 +170,6 @@ function parseStatusFacts(text='') {
 
   return { medications: meds, allergies, conditions, bp, weight };
 }
-
 function summarizeFacts(f) {
   const L = [];
   L.push(`Medications: ${f.medications?.length ? f.medications.join('; ') : 'None mentioned'}`);
@@ -201,74 +180,30 @@ function summarizeFacts(f) {
   return L.join('\n');
 }
 
-// ---- patient/contact parsing (very heuristic) ----
-function parsePatientFromText(text='') {
-  const out = {
-    name:'', email:'', blood_type:'',
-    emer_name:'', emer_phone:'', emer_email:'',
-    doctor_name:'', doctor_address:'', doctor_phone:'', doctor_fax:'', doctor_email:'',
-    pharmacy_name:'', pharmacy_address:'', pharmacy_phone:'', pharmacy_fax:''
-  };
-
-  const t = text.replace(/\s+/g,' ').trim();
-
-  // email(s)
-  const emails = Array.from(t.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig)).map(x=>x[0]);
-  if (emails[0]) out.email = emails[0];
-  if (emails[1]) out.emer_email = emails[1];
-
-  // phones (very loose)
-  const phones = Array.from(t.matchAll(/(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)?\d{3}[-.\s]?\d{3,4}/g)).map(x=>x[0]);
-  if (phones[0]) out.emer_phone = phones[0];
-  if (phones[1]) out.doctor_phone = phones[1];
-  if (phones[2]) out.pharmacy_phone = phones[2];
-
-  // fax (if spoken)
-  const fax = t.match(/\bfax\b[^0-9+]*((?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)?\d{3}[-.\s]?\d{3,4})/i);
-  if (fax) {
-    if (!out.doctor_fax) out.doctor_fax = fax[1];
-    else out.pharmacy_fax = fax[1];
-  }
-
-  // blood type
-  const bt = t.match(/\b(O|A|B|AB)[\s-]?([+-])\b/i);
-  if (bt) out.blood_type = `${bt[1].toUpperCase()}${bt[2]}`;
-
-  // names (extremely rough: look for “my name is …”, “emergency contact …”, “doctor …”, “pharmacy …”)
-  const nameMy = t.match(/\b(my name is|name:)\s+([A-Za-z][A-Za-z.'\- ]{1,60})/i);
-  if (nameMy) out.name = nameMy[2].trim();
-
-  const emer = t.match(/\b(emergency contact (?:name|is|:)?|contact:)\s+([A-Za-z][A-Za-z.'\- ]{1,60})/i);
-  if (emer) out.emer_name = emer[2].trim();
-
-  const doc = t.match(/\b(doctor|dr\.?)\s+([A-Za-z][A-Za-z.'\- ]{1,60})/i);
-  if (doc) out.doctor_name = doc[2].trim();
-
-  const ph = t.match(/\b(pharmacy)\s+([A-Za-z0-9&.,' \-]{2,80})/i);
-  if (ph) out.pharmacy_name = ph[2].trim();
-
-  // very rough address capture
-  const addrDoc = t.match(/\b(doctor (?:address|located at|office at)|address:)\s+([0-9A-Za-z#.,' \-]{6,120})/i);
-  if (addrDoc) out.doctor_address = addrDoc[2].trim();
-  const addrPh = t.match(/\b(pharmacy (?:address|located at)|address:)\s+([0-9A-Za-z#.,' \-]{6,120})/i);
-  if (addrPh) out.pharmacy_address = addrPh[2].trim();
-
-  return out;
-}
-
 // -------------------------
-// Multer storage
+// Multer (store webm)
 // -------------------------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-  filename: (_, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
+  filename: (_, __, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
 });
 const upload = multer({ storage });
 
 // -------------------------
 // Auth routes
 // -------------------------
-app.get('/login', (req,res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+app.get('/login', (req,res) => {
+  const p = path.join(PUBLIC_DIR, 'login.html');
+  if (fs.existsSync(p)) return res.sendFile(p);
+  res.send(`<!doctype html><html><body>
+    <h3>Sign in</h3>
+    <form method="POST" action="/login">
+      <input name="userId" placeholder="User ID"><br/>
+      <input name="password" type="password" placeholder="Password"><br/>
+      <button>Sign In</button>
+    </form>
+  </body></html>`);
+});
 app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
   const { userId, password } = req.body || {};
   if (userId === USER_ID && password === USER_PASS) { setSession(res, userId); return res.redirect('/'); }
@@ -277,94 +212,25 @@ app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
 app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
 
 // Gate the app & reports
-app.use(['/', '/upload', '/upload-multi', '/parse-patient', '/parse-status', '/detect-lang', '/reports', '/reports/*'], requireAuth);
+app.use(['/', '/upload', '/upload-multi', '/reports', '/reports/*'], requireAuth);
 
 // Home
 app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
 // -------------------------
-// Language detection (from text sample)
+// Upload — multi-part (six mini recorders + typed inputs)
 // -------------------------
-app.post('/detect-lang', async (req,res) => {
-  try {
-    const sample = (req.body?.sample || '').toString().slice(0, 500);
-    if (!sample) return res.json({ ok:true, code:'', name:'' });
+const multiFields = upload.fields([
+  { name:'audio_bp', maxCount:1 },
+  { name:'audio_meds', maxCount:1 },
+  { name:'audio_allergies', maxCount:1 },
+  { name:'audio_weight', maxCount:1 },
+  { name:'audio_conditions', maxCount:1 },
+  { name:'audio_general', maxCount:1 },
+  { name:'audio_classic', maxCount:1 }
+]);
 
-    const rsp = await openai.chat.completions.create({
-      model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-      temperature: 0,
-      messages: [{
-        role:'user',
-        content:
-`Detect the language code from this text. Reply ONLY with an ISO 639-1 code (like en, es, fr, pt, de, it, ar, hi, zh, ja, ko, he, sr, pa). If unsure, guess.
-
-Text: """${sample}"""`
-      }]
-    });
-    const code = rsp.choices?.[0]?.message?.content?.trim().slice(0,5).toLowerCase() || '';
-    return res.json({ ok:true, code, name: langLabel(code) });
-  } catch (e) {
-    console.error(e);
-    res.json({ ok:true, code:'', name:'' });
-  }
-});
-
-// -------------------------
-// Parse: Patient & Contact (free speech)
-// -------------------------
-app.post('/parse-patient', upload.single('audio'), async (req,res) => {
-  try {
-    if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
-    const s = fs.createReadStream(req.file.path);
-    let text = '';
-    try {
-      const tr = await openai.audio.transcriptions.create({ file: s, model: 'gpt-4o-mini-transcribe' });
-      text = tr.text?.trim() || '';
-    } catch {
-      const s2 = fs.createReadStream(req.file.path);
-      const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
-      text = tr2.text?.trim() || '';
-    }
-    // normalize emails inside
-    text = text.replace(/\b([A-Za-z0-9_.+-]+)\s+at\s+([A-Za-z0-9.-]+)\s+dot\s+([A-Za-z]{2,})\b/gi, (_,u,d,tld)=>`${u}@${d}.${tld}`);
-    const parsed = parsePatientFromText(text);
-    if (parsed.email) parsed.email = normalizeEmailSpoken(parsed.email);
-    if (parsed.emer_email) parsed.emer_email = normalizeEmailSpoken(parsed.emer_email);
-    res.json({ ok:true, text, fields: parsed });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok:false, error:'Parse failed' });
-  }
-});
-
-// -------------------------
-// Parse: Status (free speech)
-// -------------------------
-app.post('/parse-status', upload.single('audio'), async (req,res) => {
-  try {
-    if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
-    const s = fs.createReadStream(req.file.path);
-    let text = '';
-    try {
-      const tr = await openai.audio.transcriptions.create({ file: s, model: 'gpt-4o-mini-transcribe' });
-      text = tr.text?.trim() || '';
-    } catch {
-      const s2 = fs.createReadStream(req.file.path);
-      const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
-      text = tr2.text?.trim() || '';
-    }
-    const facts = parseStatusFacts(text);
-    res.json({ ok:true, text, facts });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok:false, error:'Parse failed' });
-  }
-});
-
-// -------------------------
-// Upload — multi (typed only from UI; we no longer rely on per-field audio upload here)
-// -------------------------
-app.post('/upload-multi', async (req,res) => {
+app.post('/upload-multi', multiFields, async (req,res) => {
   try {
     const B = req.body || {};
 
@@ -384,29 +250,82 @@ app.post('/upload-multi', async (req,res) => {
       pharmacy_address: (B.pharmacy_address||'').trim(),
       pharmacy_phone: (B.pharmacy_phone||'').trim(),
       pharmacy_fax: (B.pharmacy_fax||'').trim(),
-      target_lang: (B.lang||'').trim(),
-      detected_lang: (B.langDetected||'').trim()
+      target_lang: (B.lang||'').trim()
     };
 
-    // Build transcript from status parts
-    const parts = [
-      B.bp ? `Blood Pressure: ${B.bp}` : '',
-      B.meds ? `Medications & Dose: ${B.meds}` : '',
-      B.allergies ? `Allergies: ${B.allergies}` : '',
-      B.weight ? `Weight: ${B.weight}` : '',
-      B.conditions ? `Conditions: ${B.conditions}` : '',
-      B.general ? `General Health Note: ${B.general}` : ''
-    ].filter(Boolean);
-    if (!parts.length && !(B.classic_note||'').trim()) {
-      return res.status(400).json({ ok:false, error:'No content' });
-    }
-    if (B.classic_note) parts.push(`Classic Note: ${B.classic_note}`);
+    const PARTS = [
+      { key:'bp',         label:'Blood Pressure' },
+      { key:'meds',       label:'Medications & Dose' },
+      { key:'allergies',  label:'Allergies' },
+      { key:'weight',     label:'Weight' },
+      { key:'conditions', label:'Conditions' },
+      { key:'general',    label:'General Health Note' }
+    ];
 
-    const transcript = parts.join('\n');
-    const facts = parseStatusFacts(transcript);
+    async function transcribeIfPresent(field) {
+      const f = req.files?.[field]?.[0];
+      if (!f) return '';
+      const s = fs.createReadStream(f.path);
+      try {
+        const tr = await openai.audio.transcriptions.create({ file: s, model: 'gpt-4o-mini-transcribe' });
+        return tr.text?.trim() || '';
+      } catch {
+        const s2 = fs.createReadStream(f.path);
+        const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
+        return tr2.text?.trim() || '';
+      }
+    }
+
+    const lines = [];
+    for (const p of PARTS) {
+      const typed = (B[`typed_${p.key}`] || '').trim();
+      const heard = await transcribeIfPresent(`audio_${p.key}`);
+      const combined = [typed, heard].filter(Boolean).join(' ');
+      if (combined) lines.push(`${p.label}: ${combined}`);
+    }
+
+    // Classic recorder (optional)
+    const classic = await transcribeIfPresent('audio_classic');
+    if (classic) lines.push(`Classic Note: ${classic}`);
+
+    // ------ PERMANENT "NO CONTENT" FIX ------
+    if (!lines.length) {
+      // Build a fallback transcript from any patient/contact/doctor/pharmacy fields present
+      const fallbackPieces = [];
+      const add = (label, val) => { if (val) fallbackPieces.push(`${label}: ${val}`); };
+
+      add('Patient Name', patient.name);
+      add('Patient Email', patient.email);
+      add('Blood Type', patient.blood_type);
+
+      add('Emergency Name', patient.emer_name);
+      add('Emergency Phone', patient.emer_phone);
+      add('Emergency Email', patient.emer_email);
+
+      add('Doctor Name', patient.doctor_name);
+      add('Doctor Phone', patient.doctor_phone);
+      add('Doctor Fax', patient.doctor_fax);
+      add('Doctor Email', patient.doctor_email);
+      add('Doctor Address', patient.doctor_address);
+
+      add('Pharmacy Name', patient.pharmacy_name);
+      add('Pharmacy Phone', patient.pharmacy_phone);
+      add('Pharmacy Fax', patient.pharmacy_fax);
+      add('Pharmacy Address', patient.pharmacy_address);
+
+      if (fallbackPieces.length) {
+        lines.push(fallbackPieces.join(' • '));
+      } else {
+        return res.status(400).json({ ok:false, error:'No Content' });
+      }
+    }
+    // ----------------------------------------
+
+    const transcript = lines.join('\n');
+    const detected_lang = 'auto';
+    const facts = parseFacts(transcript);
     const summary_text = summarizeFacts(facts);
 
-    // Translate transcript AND summary if target selected
     let translated_transcript = '';
     let translated_summary = '';
     if (patient.target_lang) {
@@ -451,7 +370,7 @@ app.post('/upload-multi', async (req,res) => {
       patient.emer_name, patient.emer_phone, patient.emer_email,
       patient.doctor_name, patient.doctor_address, patient.doctor_phone, patient.doctor_fax, patient.doctor_email,
       patient.pharmacy_name, patient.pharmacy_address, patient.pharmacy_phone, patient.pharmacy_fax,
-      patient.detected_lang || 'en', patient.target_lang,
+      detected_lang, patient.target_lang,
       transcript, translated_transcript,
       (facts.medications||[]).join('; '),
       (facts.allergies||[]).join('; '),
@@ -489,7 +408,7 @@ app.get('/reports', async (req,res) => {
   <div class="container">
     <header class="head">
       <h1>Caregiver Card — Reports</h1>
-      <nav class="bar">
+      <nav>
         <a class="btn" href="/" rel="noopener">New Report</a>
         <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
       </nav>
@@ -500,13 +419,13 @@ app.get('/reports', async (req,res) => {
 });
 
 // -------------------------
-// Single report page
+// Single report
 // -------------------------
 app.get('/reports/:id', async (req,res) => {
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!row) return res.status(404).send('Not found');
 
-  const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
+  const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
   const created = new Date(row.created_at).toLocaleString();
   const detName = langLabel(row.detected_lang);
   const tgtName = langLabel(row.target_lang);
@@ -592,13 +511,13 @@ app.get('/reports/:id', async (req,res) => {
       <a class="btn" href="${outlook}" target="_blank" rel="noopener">📨 Outlook</a>
       <button class="btn" onclick="window.print()">🖨️ Print</button>
     </div>
-    <div class="qr">
-      <img src="${esc(row.qr_data_url)}" alt="QR Code" />
+    <div class="qr" style="margin-top:10px;text-align:center">
+      <img src="${esc(row.qr_data_url)}" alt="QR Code" style="max-width:180px"/>
       <div class="muted">Scan on a phone or use the link button.</div>
     </div>
   </section>
 
-  <div class="bar">
+  <div class="pillrow" style="margin-top:10px">
     <a class="btn" href="/" rel="noopener">+ New Report</a>
     <a class="btn" href="/reports" rel="noopener">Open Reports</a>
     <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
