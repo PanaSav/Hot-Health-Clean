@@ -1,162 +1,88 @@
-/* =============== Caregiver Card (Baseline 1+) =============== */
+/* backend/public/styles.css — clean, readable baseline */
 
 :root{
-  --ink:#1f2330;
-  --bg:#f7faff;
+  --bg:#f7f9fc;
   --card:#ffffff;
-  --brand:#4b0082;         /* deep purple */
-  --aqua:#6ff0d0;          /* aquamarine */
-  --blue:#0a84ff;          /* primary action */
-  --line:#dbe7ff;          /* soft border */
-  --muted:#5a6b85;
-  --ok:#19a974;            /* green */
-  --warn:#d97706;          /* amber */
-  --bad:#e11d48;           /* red */
+  --ink:#1f2937;
+  --muted:#56657a;
+  --line:#dbe7ff;
+  --brand:#0a84ff;
+  --accent:#20d1b7; /* aquamarine vibe */
+  --border:2px solid var(--accent);
 }
 
-*{ box-sizing:border-box }
-html,body{ height:100% }
-body{
-  margin:0;
-  background:linear-gradient(180deg,#f9fbff 0%, #f4faff 100%);
-  color:var(--ink);
-  font:16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif;
-}
-
-.container{
-  max-width:1080px;
-  margin:0 auto;
-  padding:24px 16px 64px;
-}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+a{color:#0a66c2;text-decoration:none}
+a:hover{text-decoration:underline}
 
 .head{
-  border-bottom:4px solid var(--aqua);
-  margin:0 0 16px;
-  padding:12px 0 16px;
+  max-width:1100px;margin:0 auto;padding:16px 16px 8px 16px;
+  border-bottom:3px solid var(--accent);
+  display:flex;justify-content:space-between;align-items:center;
 }
-.head h1{
-  margin:0 0 6px;
-  color:var(--brand);
-  font-weight:800;
-  letter-spacing:.2px;
-}
-.head .muted{ color:var(--muted) }
-.pillrow{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px }
-.pill{
-  display:inline-flex; align-items:center; gap:6px;
-  border:1px solid var(--line); background:#f1f7ff;
-  padding:4px 10px; border-radius:20px; color:#243; font-size:13px;
-}
+.head h1{margin:0;color:#4b0082}
 
-/* Cards */
+.container{max-width:1100px;margin:0 auto;padding:16px}
+
 .card{
-  background:var(--card);
-  border:2px solid var(--aqua);
-  border-radius:14px;
-  padding:16px;
-  margin:14px 0;
-  box-shadow: 0 8px 20px rgba(16,40,100,.06);
+  background:var(--card);border:var(--border);border-radius:12px;
+  padding:16px;margin:16px 0;
 }
-.card h2{
-  margin:0 0 10px;
-  font-size:18px;
-  color:#243;
-}
-.tip{ color:var(--muted); font-size:13px; margin:4px 0 10px }
+.subhead{margin:12px 0 6px 0}
 
-/* Form rows */
-.row{ display:flex; gap:10px; flex-wrap:wrap; margin:8px 0 }
-.row > *{ flex:1 1 240px }
-
-input, select, textarea{
-  width:100%;
-  border:1px solid var(--line);
-  background:#fff;
-  border-radius:10px;
-  padding:10px 12px;
-  font-size:15px;
-  outline:none;
+.grid2{
+  display:grid;gap:12px;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
 }
-textarea{ min-height:86px; resize:vertical }
-
-label{ font-size:13px; color:#334; display:block; margin:4px 0 6px }
-
-/* Mic buttons next to fields */
-.field{
-  display:flex; gap:8px; align-items:center;
+.field{display:flex;gap:8px;align-items:center}
+.input{
+  width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:15px;background:#fff
 }
-.mic-btn{
-  width:38px; height:38px;
-  border-radius:10px; border:1px solid var(--line);
-  background:#fff; cursor:pointer;
-  display:inline-flex; align-items:center; justify-content:center;
-  font-size:18px;
-  transition:transform .1s ease, background .15s ease, border-color .15s ease;
-}
-.mic-btn:hover{ transform:translateY(-1px) }
-.mic-btn.mic-active{ background:#fff1f1; border-color:#ffc7c7 }
+textarea.input{resize:vertical}
 
-/* Recorder buttons (mini + classic) */
-.rec-btn{
-  border:1px solid var(--line);
-  background:#fff;
-  color:#233;
-  border-radius:10px;
-  padding:10px 12px;
-  cursor:pointer;
-}
-.rec-btn.on{ background:#ffe8e8; border-color:#ffb3b3 }
-.rec-meta{ color:var(--muted); font-size:13px; margin-top:4px }
-
-/* Dual blocks */
-.dual{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:12px;
-}
-@media (max-width:900px){ .dual{ grid-template-columns:1fr } }
-
-.block{
-  background:#f8faff;
-  border:1px solid var(--line);
-  border-radius:10px;
-  padding:12px;
-}
-.block h3{ margin:0 0 6px; color:#223 }
-.pre{
-  margin:0; white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  background:#fff; border:1px dashed #e6efff; padding:10px; border-radius:8px;
-}
-
-/* Share bar & banner */
-.sharebar{ display:flex; gap:8px; flex-wrap:wrap }
 .btn{
-  display:inline-flex; align-items:center; gap:6px;
-  background:#f0f7ff; color:#113; text-decoration:none;
-  border:1px solid var(--line); border-radius:10px;
-  padding:9px 12px; cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;
+  padding:10px 14px;border-radius:8px;border:1px solid var(--line);background:#f0f5ff;color:#123;cursor:pointer;
 }
-.btn.primary{ background:var(--blue); color:#fff; border-color:transparent }
-.btn.good{ background:#e9fff5; border-color:#c8f5e2; color:#0b5132 }
-.btn.warn{ background:#fff7e6; border-color:#fde1b0; color:#7a4c00 }
+.btn:hover{filter:brightness(0.98)}
+
+.mic-btn{
+  width:42px;height:42px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer
+}
+.mic-btn.mic-active{background:#ffe2e2;border-color:#ffb3b3}
+
+.nav .btn{margin-left:8px}
+
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.muted{color:var(--muted);font-size:14px}
+.note{margin-top:8px;color:#355;padding:8px 10px;border:1px dashed var(--line);border-radius:8px;background:#f6fbff}
+
+.list{list-style:none;margin:0;padding:0}
+.report-item{border:1px solid var(--line);border-radius:10px;padding:12px;margin:8px 0;display:grid;gap:6px;background:#fff}
+.report-item .title{font-weight:600}
+.report-item .meta{color:#556}
+
+.pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.pill{display:inline-block;border:1px solid var(--line);background:#eef6ff;color:#223;padding:2px 8px;border-radius:999px;font-size:12px}
+
+.dual{display:flex;flex-wrap:wrap;gap:12px}
+.block{flex:1;min-width:260px;border:1px solid var(--line);border-radius:10px;background:#f8faff;padding:12px}
+.pre{white-space:pre-wrap;margin:0}
+
+.qr{text-align:center;margin-top:10px}
+.sharebar{display:flex;gap:8px;flex-wrap:wrap}
+
+.error{color:#a40000;margin-top:8px}
+.result{margin-top:8px}
 
 .report-banner{
-  display:flex; gap:14px; align-items:center;
-  background:#eafff6; border:1px solid #c9f5e8;
-  padding:12px; border-radius:12px; margin-top:8px;
+  display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  background:#ecfdf5;border:1px solid #c7f0e7;border-radius:12px;padding:10px 12px
 }
-.report-icon{ font-size:22px }
-.report-title{ font-weight:700; color:#0b5132 }
-.report-sub{ color:#245e4a; font-size:13px }
+.report-icon{font-size:26px}
+.report-title{font-weight:700}
+.report-sub{color:#2b4}
+.report-actions{display:flex;gap:8px;flex-wrap:wrap}
 
-/* Inline helpers */
-.muted{ color:var(--muted) }
-.error{ color:var(--bad); font-weight:600; margin-top:6px }
-.ok{ color:var(--ok); font-weight:600 }
-
-.grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
-@media (max-width:900px){ .grid2{ grid-template-columns:1fr } }
-
-/* Icon bullets */
-.icon-line{ display:flex; gap:8px; align-items:center; }
-.icon{ width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; background:#eef7ff; border:1px solid var(--line) }
+.mic-label{font-weight:600}

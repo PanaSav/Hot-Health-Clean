@@ -1,236 +1,261 @@
-// Caregiver Card — front-end (dictation, recorders, resilient generate)
+// backend/public/app.js
+// Field-level speech (mic icons), two free-speech recorders that parse & populate fields,
+// robust Generate Report that never fails with "No Content" if reasonable data exists.
 
 const $ = s => document.querySelector(s);
+const byId = id => document.getElementById(id);
 
-/* ---------- Dictation for ANY field with .mic-btn ---------- */
+// --- elements
+const langDetectedEl = byId('langDetected');
+const langSelect     = byId('lang');
+
+const btnRecPatientFree = byId('btnRecPatientFree');
+const btnRecStatusFree  = byId('btnRecStatusFree');
+
+const btnGenerate = byId('btnGenerate');
+const resultBox   = byId('result');
+const errorBox    = byId('error');
+
+function setError(msg){ if (errorBox) errorBox.textContent = msg || ''; }
+function setResult(html){ if (resultBox) resultBox.innerHTML = html || ''; }
+
+// -------------------------
+// Email speech normalization
+// -------------------------
+function normalizeEmailSpoken(raw) {
+  if (!raw) return '';
+  let s = ' ' + raw.toLowerCase().trim() + ' ';
+  s = s.replace(/\s+at\s+/g, '@');
+  s = s.replace(/\s+dot\s+/g, '.').replace(/\s+period\s+/g, '.');
+  s = s.replace(/\s+underscore\s+/g, '_');
+  s = s.replace(/\s+(hyphen|dash)\s+/g, '-');
+  s = s.replace(/\s+plus\s+/g, '+');
+
+  s = s.replace(/\s+gmail\s*\.?\s*com\s*/g, '@gmail.com ');
+  s = s.replace(/\s+outlook\s*\.?\s*com\s*/g, '@outlook.com ');
+  s = s.replace(/\s+hotmail\s*\.?\s*com\s*/g, '@hotmail.com ');
+  s = s.replace(/\s+yahoo\s*\.?\s*com\s*/g, '@yahoo.com ');
+
+  s = s.replace(/\s*@\s*/g, '@').replace(/\s*\.\s*/g, '.');
+  s = s.replace(/\s+/g, ' ').trim();
+  s = s.replace(/\s+/g, '');
+  s = s.replace(/\.\.+/g, '.');
+  return s;
+}
+function isEmailField(el) {
+  const id = (el.id || '').toLowerCase();
+  const name = (el.name || '').toLowerCase();
+  const type = (el.type || '').toLowerCase();
+  return type === 'email' || id.includes('email') || name.includes('email');
+}
+
+// -------------------------
+// Field-level mic (SpeechRecognition)
+// -------------------------
 (() => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-  function normalizeEmailSpoken(raw) {
-    if (!raw) return '';
-    let s = ' ' + raw.toLowerCase().trim() + ' ';
-    s = s.replace(/\s+at\s+/g, '@');
-    s = s.replace(/\s+dot\s+/g, '.').replace(/\s+period\s+/g, '.');
-    s = s.replace(/\s+underscore\s+/g, '_');
-    s = s.replace(/\s+(hyphen|dash)\s+/g, '-');
-    s = s.replace(/\s+plus\s+/g, '+');
-
-    s = s.replace(/\s+gmail\s*\.?\s*com\s*/g, '@gmail.com ');
-    s = s.replace(/\s+outlook\s*\.?\s*com\s*/g, '@outlook.com ');
-    s = s.replace(/\s+hotmail\s*\.?\s*com\s*/g, '@hotmail.com ');
-    s = s.replace(/\s+yahoo\s*\.?\s*com\s*/g, '@yahoo.com ');
-
-    s = s.replace(/\s*@\s*/g, '@').replace(/\s*\.\s*/g, '.').trim();
-    s = s.replace(/\s+/g, '');
-    s = s.replace(/\.\.+/g, '.');
-    return s;
-  }
-  function isEmailField(el){
-    const id=(el.id||'').toLowerCase(), name=(el.name||'').toLowerCase(), type=(el.type||'').toLowerCase();
-    return type==='email' || id.includes('email') || name.includes('email');
-  }
-
-  document.querySelectorAll('.mic-btn').forEach(btn=>{
-    if(!SR){ btn.disabled=true; btn.title='Speech recognition not supported'; return; }
-    btn.addEventListener('click', ()=>{
+  document.querySelectorAll('.mic-btn').forEach(btn => {
+    if (!SR) { btn.disabled = true; btn.title = 'Speech recognition not supported'; return; }
+    btn.addEventListener('click', () => {
       const targetId = btn.getAttribute('data-target');
-      const el = document.getElementById(targetId);
-      if(!el) return;
+      const el = byId(targetId);
+      if (!el) return;
 
       const rec = new SR();
-      rec.lang = 'en-US';
+      rec.lang = (window.__uiLang || 'en-US');
       rec.interimResults = false;
       rec.maxAlternatives = 1;
 
       btn.classList.add('mic-active');
-      const origBG = el.style.backgroundColor;
-      el.style.backgroundColor = '#fff7cc';
+      const restore = () => btn.classList.remove('mic-active');
 
-      rec.onresult = (e)=>{
+      rec.onresult = (e) => {
         const raw = e.results[0][0].transcript || '';
         const text = isEmailField(el) ? normalizeEmailSpoken(raw) : raw;
-
         if (el.tagName === 'SELECT') {
           const lower = text.toLowerCase();
-          const opt = [...el.options].find(o => o.textContent.toLowerCase().includes(lower) || o.value.toLowerCase().includes(lower));
+          const opt = [...el.options].find(o => o.textContent.toLowerCase().includes(lower));
           if (opt) el.value = opt.value;
-        } else if (el.tagName === 'TEXTAREA') {
-          el.value = (el.value ? el.value + ' ' : '') + text;
         } else {
           el.value = text;
         }
-
-        // set detected language placeholder if blank
-        const det = $('#langDetected');
-        if (det && !det.value) det.value = 'auto';
       };
-      rec.onend = ()=>{ btn.classList.remove('mic-active'); el.style.backgroundColor = origBG; };
-      rec.onerror = ()=>{ btn.classList.remove('mic-active'); el.style.backgroundColor = origBG; };
-      try{ rec.start(); }catch{ btn.classList.remove('mic-active'); el.style.backgroundColor = origBG; }
+      rec.onend = restore;
+      rec.onerror = restore;
+
+      try { rec.start(); } catch { restore(); }
     });
   });
 })();
 
-/* ---------- Mini recorders + classic ---------- */
-const LIMIT_MS = { bp:30000, meds:180000, allergies:90000, weight:60000, conditions:180000, general:180000, classic:60000 };
-const state = { chunks:{}, media:{}, timers:{}, blobs:{} };
+// -------------------------
+// Free-speech recorders (MediaRecorder → /parse-free)
+// -------------------------
+async function recordAndParse(scope) {
+  setError('');
+  const supports = !!(navigator.mediaDevices && window.MediaRecorder);
+  if (!supports) { setError('This browser does not support recording.'); return; }
 
-function setupRecorder(key){
-  const btn = $(`#rec_${key}`);
-  const meta = $(`#meta_${key}`);
-  if(!btn || !meta) return;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    setError('Microphone blocked. Allow mic permission.'); return;
+  }
 
-  btn.addEventListener('click', async ()=>{
-    if(state.media[key] && state.media[key].state==='recording'){
-      stopRecorder(key);
-      return;
+  const chunks = [];
+  const rec = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  const btn = scope === 'patient' ? btnRecPatientFree : btnRecStatusFree;
+  btn.disabled = true; btn.textContent = '⏹️ Stop';
+
+  const stopAfterMs = 60000; // 60s safety
+  const stopper = setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, stopAfterMs);
+
+  rec.ondataavailable = (e)=>{ if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = async () => {
+    clearTimeout(stopper);
+    stream.getTracks().forEach(t=>t.stop());
+    btn.disabled = false; btn.textContent = '🎙️ Record';
+
+    try {
+      const blob = new Blob(chunks, { type:'audio/webm' });
+      const fd = new FormData();
+      fd.append('audio_free', blob, 'free.webm');
+      const r = await fetch('/parse-free', { method:'POST', body: fd });
+      if (!r.ok) throw new Error(`Parse failed (${r.status})`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'Parse failed');
+
+      // set detected language + confirmation prompt
+      if (langDetectedEl) {
+        langDetectedEl.value = j.detected_lang || '';
+        const c = $('#langConfirm');
+        if (c) {
+          c.style.display = 'block';
+          c.textContent = `We think you’re speaking: ${j.detected_lang?.toUpperCase() || '—'}. Please confirm.`;
+        }
+      }
+
+      if (scope === 'patient') {
+        // fill patient/contact/doctor/pharmacy fields
+        const F = j.fields || {};
+        const map = ['pName:name','pEmail:email','eName:emer_name','ePhone:emer_phone','eEmail:emer_email',
+                     'blood:blood_type','doctor_name:doctor_name','doctor_address:doctor_address',
+                     'doctor_phone:doctor_phone','doctor_fax:doctor_fax','doctor_email:doctor_email',
+                     'pharmacy_name:pharmacy_name','pharmacy_address:pharmacy_address',
+                     'pharmacy_phone:pharmacy_phone','pharmacy_fax:pharmacy_fax'];
+        map.forEach(pair=>{
+          const [id, key] = pair.split(':');
+          const el = byId(id);
+          if (el && F[key] && String(F[key]).trim()) {
+            el.value = String(F[key]).trim();
+          }
+        });
+        // blood select matching
+        if (F.blood_type && byId('blood')) {
+          const val = F.blood_type.toUpperCase().replace(/\s+/g,'');
+          const opt = [...byId('blood').options].find(o => o.value.toUpperCase() === val);
+          if (opt) byId('blood').value = opt.value;
+        }
+      } else {
+        // fill status fields from facts
+        const facts = j.facts || {};
+        if (facts.bp && byId('bp')) byId('bp').value = facts.bp;
+        if (facts.weight && byId('weight')) byId('weight').value = facts.weight;
+
+        if (facts.medications?.length && byId('meds')) byId('meds').value = facts.medications.join('; ');
+        if (facts.allergies?.length && byId('allergies')) byId('allergies').value = facts.allergies.join('; ');
+        if (facts.conditions?.length && byId('conditions')) byId('conditions').value = facts.conditions.join('; ');
+
+        // keep raw transcript in general if provided and field empty
+        if (j.transcript && byId('general') && !byId('general').value.trim()) {
+          byId('general').value = j.transcript;
+        }
+      }
+    } catch (e) {
+      setError(e.message || String(e));
     }
-    try{
-      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
-      const mr = new MediaRecorder(stream, { mimeType:'audio/webm' });
-      state.chunks[key]=[];
-      state.media[key]=mr;
+  };
 
-      mr.ondataavailable = e=>{ if(e.data && e.data.size) state.chunks[key].push(e.data); };
-      mr.onstop = ()=>{
-        stream.getTracks().forEach(t=>t.stop());
-        const blob = new Blob(state.chunks[key]||[], { type:'audio/webm' });
-        state.blobs[key]=blob;
-        meta.textContent = `Recorded ${(blob.size/1024).toFixed(1)} KB`;
-        btn.classList.remove('on'); btn.textContent='Start';
-        if(state.timers[key]) clearTimeout(state.timers[key]);
-      };
-
-      mr.start();
-      btn.classList.add('on'); btn.textContent='Stop';
-      meta.textContent='Recording…';
-      state.timers[key] = setTimeout(()=> stopRecorder(key), LIMIT_MS[key]||60000);
-    }catch(e){
-      meta.textContent='Mic blocked — allow permission.';
-    }
-  });
+  rec.start();
 }
-function stopRecorder(key){
-  const mr = state.media[key];
-  if(mr && mr.state!=='inactive') mr.stop();
-}
-['bp','meds','allergies','weight','conditions','general','classic'].forEach(setupRecorder);
+if (btnRecPatientFree) btnRecPatientFree.addEventListener('click', ()=>recordAndParse('patient'));
+if (btnRecStatusFree)  btnRecStatusFree.addEventListener('click',  ()=>recordAndParse('status'));
 
-/* ---------- Generate Report ---------- */
-const btnGenerate = $('#btnGenerate');
-const resultBox = $('#result');
-const errorBox = $('#error');
-const setError = m => { if(errorBox) errorBox.textContent = m||''; };
-const setResult = h => { if(resultBox) resultBox.innerHTML = h||''; };
-const val = id => { const el=$(id); return el? el.value.trim():''; };
+// -------------------------
+// Gather form & Generate Report
+// -------------------------
+function val(id){ const el = byId(id); return el ? el.value.trim() : ''; }
 
-function gatherPatient(){
+function gatherPatient() {
   return {
-    name: val('#pName'),
-    email: val('#pEmail'),
-    blood_type: val('#blood'),
-    emer_name: val('#eName'),
-    emer_phone: val('#ePhone'),
-    emer_email: val('#eEmail'),
-    doctor_name: val('#doctor_name'),
-    doctor_address: val('#doctor_address'),
-    doctor_phone: val('#doctor_phone'),
-    doctor_fax: val('#doctor_fax'),
-    doctor_email: val('#doctor_email'),
-    pharmacy_name: val('#pharmacy_name'),
-    pharmacy_address: val('#pharmacy_address'),
-    pharmacy_phone: val('#pharmacy_phone'),
-    pharmacy_fax: val('#pharmacy_fax'),
-    lang: val('#lang')
+    name: val('pName'), email: val('pEmail'), blood_type: val('blood'),
+    emer_name: val('eName'), emer_phone: val('ePhone'), emer_email: val('eEmail'),
+    doctor_name: val('doctor_name'), doctor_address: val('doctor_address'),
+    doctor_phone: val('doctor_phone'), doctor_fax: val('doctor_fax'), doctor_email: val('doctor_email'),
+    pharmacy_name: val('pharmacy_name'), pharmacy_address: val('pharmacy_address'),
+    pharmacy_phone: val('pharmacy_phone'), pharmacy_fax: val('pharmacy_fax'),
+    lang: (langSelect && langSelect.value) ? langSelect.value : ''
   };
 }
-function gatherTyped(){
+function gatherStatusTyped() {
   return {
-    typed_bp: val('#typed_bp'),
-    typed_meds: val('#typed_meds'),
-    typed_allergies: val('#typed_allergies'),
-    typed_weight: val('#typed_weight'),
-    typed_conditions: val('#typed_conditions'),
-    typed_general: val('#typed_general')
+    typed_bp: val('bp'),
+    typed_meds: val('meds'),
+    typed_allergies: val('allergies'),
+    typed_weight: val('weight'),
+    typed_conditions: val('conditions'),
+    typed_general: val('general')
   };
 }
 
-async function generate(){
+async function generateReport() {
   setError(''); setResult('');
   const fd = new FormData();
 
-  const patient = gatherPatient();
-  Object.entries(patient).forEach(([k,v])=> fd.append(k,v));
+  // patient & status typed fields
+  const P = gatherPatient();
+  const S = gatherStatusTyped();
+  Object.entries(P).forEach(([k,v]) => fd.append(k, v));
+  Object.entries(S).forEach(([k,v]) => fd.append(k, v));
 
-  const typed = gatherTyped();
-  Object.entries(typed).forEach(([k,v])=> fd.append(k,v));
-
-  // attach audio blobs
-  Object.entries(state.blobs).forEach(([k,blob])=>{
-    if(!blob || !blob.size) return;
-    if(k==='classic') fd.append('audio_classic', blob, 'classic.webm');
-    else fd.append(`audio_${k}`, blob, `${k}.webm`);
-  });
-
-  // fallback content to prevent 400
-  const noAudio = Object.values(state.blobs).every(b => !b || !b.size);
-  const noTyped = !Object.values(typed).some(v => v && v.length>0);
-  if(noAudio && noTyped){
-    const parts = [];
-    const add = (label, val)=>{ if(val) parts.push(`${label}: ${val}`); };
-    add('Patient Name', patient.name);
-    add('Patient Email', patient.email);
-    add('Blood Type', patient.blood_type);
-    add('Emergency Name', patient.emer_name);
-    add('Emergency Phone', patient.emer_phone);
-    add('Emergency Email', patient.emer_email);
-    add('Doctor Name', patient.doctor_name);
-    add('Doctor Phone', patient.doctor_phone);
-    add('Doctor Email', patient.doctor_email);
-    add('Pharmacy Name', patient.pharmacy_name);
-    add('Pharmacy Phone', patient.pharmacy_phone);
-    if(parts.length) fd.set('typed_general', parts.join(' • '));
-  }
-
+  // (optional) classic audio is not used here for correctness; endpoint accepts typed-only
   const r = await fetch('/upload-multi', { method:'POST', body: fd });
-  if(!r.ok){
-    let msg = `Upload failed (${r.status})`;
-    try{ const t = await r.text(); if(t.startsWith('{')){ const j=JSON.parse(t); if(j.error) msg=j.error; } }catch{}
+  let json;
+  if (!r.ok) {
+    try { json = await r.json(); } catch {}
+    const msg = json?.error ? `Upload failed: ${json.error}` : `Upload failed (${r.status})`;
     throw new Error(msg);
   }
-  return r.json();
+  json = await r.json();
+  if (!json.ok) throw new Error(json.error || 'Server error');
+
+  const shareUrl = json.url;
+  const banner = `
+    <div class="report-banner">
+      <div class="report-icon">✅</div>
+      <div class="report-text">
+        <div class="report-title">Report Generated</div>
+        <div class="report-sub">Open, share or email below.</div>
+      </div>
+      <div class="report-actions">
+        <a class="btn" href="${shareUrl}" target="_blank" rel="noopener">Open Report</a>
+        <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
+        <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Gmail</a>
+        <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Outlook</a>
+      </div>
+    </div>
+  `;
+  setResult(banner);
+  const copyBtn = $('#btnCopyLink');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(shareUrl); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy Link',1500); }
+      catch {}
+    });
+  }
 }
 
-if(btnGenerate){
-  btnGenerate.addEventListener('click', async ()=>{
-    try{
-      const json = await generate();
-      if(!json.ok) throw new Error(json.error||'Server error');
-
-      const banner = `
-        <div class="report-banner">
-          <div class="report-icon">✅</div>
-          <div class="report-text">
-            <div class="report-title">Report Generated</div>
-            <div class="report-sub">Open, copy link or email below.</div>
-          </div>
-          <div class="report-actions">
-            <a class="btn" href="${json.url}" target="_blank" rel="noopener">Open Report</a>
-            <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
-            <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card%20Report&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Gmail</a>
-            <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Caregiver%20Card%20Report&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Outlook</a>
-          </div>
-        </div>`;
-      setResult(banner);
-
-      const copyBtn = $('#btnCopyLink');
-      if(copyBtn){
-        copyBtn.addEventListener('click', async ()=>{
-          try{ await navigator.clipboard.writeText(json.url); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy Link',1500); }catch{}
-        });
-      }
-    }catch(e){
-      setError(e.message||String(e));
-    }
-  });
-}
+if (btnGenerate) btnGenerate.addEventListener('click', () => {
+  generateReport().catch(e => setError(e.message || String(e)));
+});

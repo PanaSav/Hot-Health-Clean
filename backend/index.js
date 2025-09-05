@@ -1,4 +1,6 @@
-// Caregiver Card — backend (auth, uploads, multi-part, parsing, translation, QR, reports)
+// backend/index.js
+// Caregiver Card — consolidated backend (auth, uploads, free-speech parsing, translation, QR, reports)
+// IMPORTANT: uses ONLY `sqlite3` (no `sqlite`) to avoid Render loops.
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -25,14 +27,14 @@ const PORT = Number(process.env.PORT || 10000);
 const USER_ID   = process.env.APP_USER_ID   || 'Pana123$';
 const USER_PASS = process.env.APP_USER_PASS || 'GoGoPana$';
 
-const PUBLIC_DIR  = path.join(__dirname, 'public');
-const UPLOAD_DIR  = path.join(__dirname, 'uploads');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // -------------------------
-// SQLite3 (single driver)
+// SQLite3 (ONLY)
 // -------------------------
 sqlite3.verbose();
 const dbPath = path.join(__dirname, 'data.sqlite');
@@ -76,7 +78,7 @@ async function initDB() {
       -- Text
       transcript TEXT, translated_transcript TEXT,
 
-      -- Summary pieces
+      -- Summary
       medications TEXT, allergies TEXT, conditions TEXT, bp TEXT, weight TEXT,
       summary_text TEXT, translated_summary TEXT,
 
@@ -96,14 +98,14 @@ async function initDB() {
 }
 
 // -------------------------
-// Auth (cookie)
+// Auth (cookie) + parsers
 // -------------------------
 app.use(cookieParser(process.env.SESSION_SECRET || 'caregiver-card-session'));
 app.use(bodyParser.json({ limit: '5mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '5mb' }));
 
 function setSession(res, user) {
-  res.cookie('hhsess', user, { httpOnly: true, sameSite: 'lax', signed: true });
+  res.cookie('hhsess', user, { httpOnly: true, sameSite: 'lax', signed: true /* , secure: true */ });
 }
 function clearSession(res) { res.clearCookie('hhsess'); }
 function requireAuth(req, res, next) {
@@ -128,16 +130,19 @@ function getBaseUrl(req) {
   return `${proto}://${host}`;
 }
 const LANG_NAMES = {
-  en:'English', fr:'Français', es:'Español', pt:'Português', de:'Deutsch', it:'Italiano',
-  ar:'العربية', hi:'हिन्दी', zh:'中文', ja:'日本語', ko:'한국어', he:'עברית', sr:'Srpski', pa:'ਪੰਜਾਬੀ'
+  en: 'English', fr: 'Français', es: 'Español', pt: 'Português', de: 'Deutsch', it: 'Italiano',
+  ar: 'العربية', hi: 'हिन्दी', zh: '中文', ja: '日本語', ko: '한국어', he: 'עברית', sr: 'Srpski', pa: 'ਪੰਜਾਬੀ'
 };
-function langLabel(code=''){ return LANG_NAMES[code] || code || '—'; }
-function uid(n=20){ return crypto.randomBytes(n).toString('base64url').slice(0,n); }
+function langLabel(code='') { return LANG_NAMES[code] || code || '—'; }
+function uid(n=20) { return crypto.randomBytes(n).toString('base64url').slice(0,n); }
 
 function parseFacts(text='') {
-  const t = text.replace(/\s+/g,' ').trim();
-  const meds = [], allergies = [], conditions = [];
+  const t = (' ' + text + ' ').replace(/\s+/g,' ').trim();
+  const meds = [];
+  const allergies = [];
+  const conditions = [];
 
+  // Medications: "Name 20 mg" / "Name at 20 mg"
   const medRx = /([A-Za-z][A-Za-z0-9\-]+)\s*(?:at|:|—|-)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
   let m; const seen = new Set();
   while ((m = medRx.exec(t)) !== null) {
@@ -146,12 +151,14 @@ function parseFacts(text='') {
     if (!seen.has(key)) { meds.push(`${name} — ${dose}`); seen.add(key); }
   }
 
+  // Allergies
   const aHit = t.match(/\ballerg(?:y|ies)\b[^.?!]+/i);
   if (aHit) {
     const list = aHit[0].split(/[,;]| and /i).map(s=>s.replace(/\ballerg(?:y|ies)\b/i,'').replace(/\bto\b/ig,'').trim()).filter(Boolean);
     for (const x of list) if (!allergies.includes(x)) allergies.push(x);
   }
 
+  // Conditions
   const cRx = /\b(I have|I've|I’ve|diagnosed with|history of)\b([^.!?]+)/ig;
   let c;
   while ((c = cRx.exec(t)) !== null) {
@@ -160,16 +167,19 @@ function parseFacts(text='') {
     if (phrase) conditions.push(phrase);
   }
 
+  // BP
   let bp = null;
   const bpM = t.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/);
   if (bpM) bp = `${bpM[1]}/${bpM[2]}`;
 
+  // Weight
   let weight = null;
   const wM = t.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i);
   if (wM) weight = wM[1] + (wM[2].toLowerCase().includes('kg') ? ' kg' : ' lbs');
 
   return { medications: meds, allergies, conditions, bp, weight };
 }
+
 function summarizeFacts(f) {
   const L = [];
   L.push(`Medications: ${f.medications?.length ? f.medications.join('; ') : 'None mentioned'}`);
@@ -181,11 +191,11 @@ function summarizeFacts(f) {
 }
 
 // -------------------------
-// Multer (store webm)
+// Multer
 // -------------------------
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
-  filename: (_, __, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
+  filename: (_, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.webm`)
 });
 const upload = multer({ storage });
 
@@ -211,22 +221,85 @@ app.post('/login', bodyParser.urlencoded({extended:true}), (req,res) => {
 });
 app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
 
-// Gate the app & reports
-app.use(['/', '/upload', '/upload-multi', '/reports', '/reports/*'], requireAuth);
+// Gate app & reports
+app.use(['/', '/parse-free', '/upload-multi', '/reports', '/reports/*'], requireAuth);
 
 // Home
 app.get('/', (req,res)=> res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
 // -------------------------
-// Upload — multi-part (six mini recorders + typed inputs)
+// Parse free-speech audio → structured fields + facts
+// -------------------------
+app.post('/parse-free', upload.single('audio_free'), async (req,res) => {
+  try {
+    if (!req.file) return res.status(400).json({ ok:false, error:'No file' });
+
+    // 1) transcribe
+    const stream = fs.createReadStream(req.file.path);
+    let transcript = '';
+    try {
+      const tr = await openai.audio.transcriptions.create({ file: stream, model: 'gpt-4o-mini-transcribe' });
+      transcript = tr.text?.trim() || '';
+    } catch {
+      const s2 = fs.createReadStream(req.file.path);
+      const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
+      transcript = tr2.text?.trim() || '';
+    }
+
+    // 2) detect language (lightweight)
+    let detected_lang = 'en';
+    try {
+      const det = await openai.chat.completions.create({
+        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+        temperature: 0,
+        messages: [{
+          role: 'user',
+          content: `Identify ISO 639-1 language code for this text. Reply with the 2-letter code only.\n\n${transcript}`
+        }]
+      });
+      const code = det.choices?.[0]?.message?.content?.trim()?.toLowerCase();
+      if (code && /^[a-z]{2}$/.test(code)) detected_lang = code;
+    } catch {}
+
+    // 3) extract personal fields via JSON
+    let fields = {
+      name:'', email:'', blood_type:'',
+      emer_name:'', emer_phone:'', emer_email:'',
+      doctor_name:'', doctor_address:'', doctor_phone:'', doctor_fax:'', doctor_email:'',
+      pharmacy_name:'', pharmacy_address:'', pharmacy_phone:'', pharmacy_fax:''
+    };
+    try {
+      const prompt = `Extract patient metadata from the note. Return STRICT JSON with keys:
+{
+  "name": "", "email": "", "blood_type": "",
+  "emer_name": "", "emer_phone": "", "emer_email": "",
+  "doctor_name": "", "doctor_address": "", "doctor_phone": "", "doctor_fax": "", "doctor_email": "",
+  "pharmacy_name": "", "pharmacy_address": "", "pharmacy_phone": "", "pharmacy_fax": ""
+}
+If unknown, keep as empty string. Note:\n${transcript}`;
+      const ex = await openai.chat.completions.create({
+        model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+        temperature: 0,
+        messages: [{ role:'user', content: prompt }]
+      });
+      const raw = ex.choices?.[0]?.message?.content || '{}';
+      try { fields = { ...fields, ...(JSON.parse(raw)) }; } catch {}
+    } catch {}
+
+    // 4) parse status facts
+    const facts = parseFacts(transcript);
+
+    res.json({ ok:true, transcript, detected_lang, fields, facts });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+// -------------------------
+// Upload — multi (typed only; audio optional — not required for correctness)
 // -------------------------
 const multiFields = upload.fields([
-  { name:'audio_bp', maxCount:1 },
-  { name:'audio_meds', maxCount:1 },
-  { name:'audio_allergies', maxCount:1 },
-  { name:'audio_weight', maxCount:1 },
-  { name:'audio_conditions', maxCount:1 },
-  { name:'audio_general', maxCount:1 },
   { name:'audio_classic', maxCount:1 }
 ]);
 
@@ -235,114 +308,80 @@ app.post('/upload-multi', multiFields, async (req,res) => {
     const B = req.body || {};
 
     const patient = {
-      name: (B.name||'').trim(),
-      email: (B.email||'').trim(),
-      blood_type: (B.blood_type||'').trim(),
-      emer_name: (B.emer_name||'').trim(),
-      emer_phone: (B.emer_phone||'').trim(),
-      emer_email: (B.emer_email||'').trim(),
-      doctor_name: (B.doctor_name||'').trim(),
-      doctor_address: (B.doctor_address||'').trim(),
-      doctor_phone: (B.doctor_phone||'').trim(),
-      doctor_fax: (B.doctor_fax||'').trim(),
-      doctor_email: (B.doctor_email||'').trim(),
-      pharmacy_name: (B.pharmacy_name||'').trim(),
-      pharmacy_address: (B.pharmacy_address||'').trim(),
-      pharmacy_phone: (B.pharmacy_phone||'').trim(),
-      pharmacy_fax: (B.pharmacy_fax||'').trim(),
-      target_lang: (B.lang||'').trim()
+      name:(B.name||'').trim(), email:(B.email||'').trim(), blood_type:(B.blood_type||'').trim(),
+      emer_name:(B.emer_name||'').trim(), emer_phone:(B.emer_phone||'').trim(), emer_email:(B.emer_email||'').trim(),
+      doctor_name:(B.doctor_name||'').trim(), doctor_address:(B.doctor_address||'').trim(),
+      doctor_phone:(B.doctor_phone||'').trim(), doctor_fax:(B.doctor_fax||'').trim(), doctor_email:(B.doctor_email||'').trim(),
+      pharmacy_name:(B.pharmacy_name||'').trim(), pharmacy_address:(B.pharmacy_address||'').trim(),
+      pharmacy_phone:(B.pharmacy_phone||'').trim(), pharmacy_fax:(B.pharmacy_fax||'').trim(),
+      target_lang:(B.lang||'').trim()
     };
 
-    const PARTS = [
-      { key:'bp',         label:'Blood Pressure' },
-      { key:'meds',       label:'Medications & Dose' },
-      { key:'allergies',  label:'Allergies' },
-      { key:'weight',     label:'Weight' },
-      { key:'conditions', label:'Conditions' },
-      { key:'general',    label:'General Health Note' }
-    ];
-
-    async function transcribeIfPresent(field) {
-      const f = req.files?.[field]?.[0];
-      if (!f) return '';
-      const s = fs.createReadStream(f.path);
+    // Optional classic audio
+    let classicTranscript = '';
+    const f = req.files?.['audio_classic']?.[0];
+    if (f) {
       try {
+        const s = fs.createReadStream(f.path);
         const tr = await openai.audio.transcriptions.create({ file: s, model: 'gpt-4o-mini-transcribe' });
-        return tr.text?.trim() || '';
+        classicTranscript = tr.text?.trim() || '';
       } catch {
         const s2 = fs.createReadStream(f.path);
         const tr2 = await openai.audio.transcriptions.create({ file: s2, model: 'whisper-1' });
-        return tr2.text?.trim() || '';
+        classicTranscript = tr2.text?.trim() || '';
       }
     }
 
-    const lines = [];
-    for (const p of PARTS) {
-      const typed = (B[`typed_${p.key}`] || '').trim();
-      const heard = await transcribeIfPresent(`audio_${p.key}`);
-      const combined = [typed, heard].filter(Boolean).join(' ');
-      if (combined) lines.push(`${p.label}: ${combined}`);
-    }
+    // Build transcript from typed fields (and classic transcript if present)
+    const parts = [];
+    const add = (label, val) => { if (val && String(val).trim()) parts.push(`${label}: ${String(val).trim()}`); };
 
-    // Classic recorder (optional)
-    const classic = await transcribeIfPresent('audio_classic');
-    if (classic) lines.push(`Classic Note: ${classic}`);
+    add('Blood Pressure', B.typed_bp);
+    add('Medications',   B.typed_meds);
+    add('Allergies',     B.typed_allergies);
+    add('Weight',        B.typed_weight);
+    add('Conditions',    B.typed_conditions);
+    add('General Health Note', B.typed_general);
 
-    // ------ PERMANENT "NO CONTENT" FIX ------
-    if (!lines.length) {
-      // Build a fallback transcript from any patient/contact/doctor/pharmacy fields present
-      const fallbackPieces = [];
-      const add = (label, val) => { if (val) fallbackPieces.push(`${label}: ${val}`); };
+    if (classicTranscript) parts.push(`Classic Note: ${classicTranscript}`);
 
-      add('Patient Name', patient.name);
-      add('Patient Email', patient.email);
-      add('Blood Type', patient.blood_type);
-
-      add('Emergency Name', patient.emer_name);
-      add('Emergency Phone', patient.emer_phone);
-      add('Emergency Email', patient.emer_email);
-
-      add('Doctor Name', patient.doctor_name);
-      add('Doctor Phone', patient.doctor_phone);
-      add('Doctor Fax', patient.doctor_fax);
-      add('Doctor Email', patient.doctor_email);
-      add('Doctor Address', patient.doctor_address);
-
-      add('Pharmacy Name', patient.pharmacy_name);
-      add('Pharmacy Phone', patient.pharmacy_phone);
-      add('Pharmacy Fax', patient.pharmacy_fax);
-      add('Pharmacy Address', patient.pharmacy_address);
-
-      if (fallbackPieces.length) {
-        lines.push(fallbackPieces.join(' • '));
-      } else {
-        return res.status(400).json({ ok:false, error:'No Content' });
+    const transcript = parts.join('\n');
+    if (!transcript && !classicTranscript) {
+      // Still allow report — but very empty transcript — correctness > strictness
+      // If absolutely nothing present, we fail.
+      if (
+        !patient.name && !patient.email && !patient.emer_name &&
+        !patient.doctor_name && !patient.pharmacy_name
+      ) {
+        return res.status(400).json({ ok:false, error:'No content' });
       }
     }
-    // ----------------------------------------
 
-    const transcript = lines.join('\n');
-    const detected_lang = 'auto';
-    const facts = parseFacts(transcript);
+    // Parse facts from everything we have
+    const facts = parseFacts([transcript, classicTranscript].filter(Boolean).join('\n'));
     const summary_text = summarizeFacts(facts);
 
+    // Translate transcript AND summary if target selected
     let translated_transcript = '';
     let translated_summary = '';
     if (patient.target_lang) {
-      const [t1, t2] = await Promise.all([
-        openai.chat.completions.create({
-          model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-          temperature: 0.2,
-          messages: [{ role:'user', content: `Translate this to ${patient.target_lang}:\n\n${transcript}` }]
-        }),
-        openai.chat.completions.create({
-          model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
-          temperature: 0.2,
-          messages: [{ role:'user', content: `Translate this to ${patient.target_lang}:\n\n${summary_text}` }]
-        })
-      ]);
-      translated_transcript = t1.choices?.[0]?.message?.content?.trim() || '';
-      translated_summary    = t2.choices?.[0]?.message?.content?.trim() || '';
+      const src = transcript || classicTranscript || '';
+      if (src) {
+        const [t1, t2] = await Promise.all([
+          openai.chat.completions.create({
+            model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+            temperature: 0.2,
+            messages: [{ role:'user', content: `Translate this to ${patient.target_lang}:\n\n${src}` }]
+          }),
+          openai.chat.completions.create({
+            model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
+            temperature: 0.2,
+            messages: [{ role:'user', content: `Translate this to ${patient.target_lang}:\n\n${summary_text}` }]
+          })
+        ]);
+        translated_transcript = t1.choices?.[0]?.message?.content?.trim() || '';
+        translated_summary    = t2.choices?.[0]?.message?.content?.trim() || '';
+      }
     }
 
     const id = uid();
@@ -370,7 +409,7 @@ app.post('/upload-multi', multiFields, async (req,res) => {
       patient.emer_name, patient.emer_phone, patient.emer_email,
       patient.doctor_name, patient.doctor_address, patient.doctor_phone, patient.doctor_fax, patient.doctor_email,
       patient.pharmacy_name, patient.pharmacy_address, patient.pharmacy_phone, patient.pharmacy_fax,
-      detected_lang, patient.target_lang,
+      'auto', patient.target_lang,
       transcript, translated_transcript,
       (facts.medications||[]).join('; '),
       (facts.allergies||[]).join('; '),
@@ -395,7 +434,7 @@ app.get('/reports', async (req,res) => {
   const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
   const items = rows.map(r=>`
     <li class="report-item">
-      <div class="title">Report for ${esc(r.name)||'Unknown'}</div>
+      <div class="title">Report for ${esc(r.name) || 'Unknown'}</div>
       <div class="meta">${new Date(r.created_at).toLocaleString()} • ${esc(r.email)}</div>
       <div class="actions">
         <a class="btn" href="/reports/${esc(r.id)}" target="_blank" rel="noopener">Open</a>
@@ -419,20 +458,20 @@ app.get('/reports', async (req,res) => {
 });
 
 // -------------------------
-// Single report
+// Single report page (dual summaries + dual transcripts + actions)
 // -------------------------
 app.get('/reports/:id', async (req,res) => {
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if (!row) return res.status(404).send('Not found');
 
-  const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&gt;' }[c]));
+  const esc = s => String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
   const created = new Date(row.created_at).toLocaleString();
   const detName = langLabel(row.detected_lang);
   const tgtName = langLabel(row.target_lang);
 
   const mailSubject = encodeURIComponent(`Caregiver Card — ${row.name || ''}`);
   const bodyLines = [
-    `Shareable link: ${row.share_url}`,
+    `Link: ${row.share_url}`,
     ``,
     `Patient: ${row.name || ''} • ${row.email || ''} • Blood: ${row.blood_type || ''}`,
     `Emergency: ${row.emer_name || ''} (${row.emer_phone || ''}) ${row.emer_email || ''}`,
@@ -506,18 +545,18 @@ app.get('/reports/:id', async (req,res) => {
   <section class="card">
     <h2>Share / Print</h2>
     <div class="sharebar">
-      <a class="btn" href="${esc(row.share_url)}" target="_blank" rel="noopener" title="Open share link">🔗 Link</a>
+      <a class="btn" href="${esc(row.share_url)}" target="_blank" rel="noopener" title="Open link">🔗 Link</a>
       <a class="btn" href="${gmail}" target="_blank" rel="noopener">📧 Gmail</a>
       <a class="btn" href="${outlook}" target="_blank" rel="noopener">📨 Outlook</a>
       <button class="btn" onclick="window.print()">🖨️ Print</button>
     </div>
-    <div class="qr" style="margin-top:10px;text-align:center">
-      <img src="${esc(row.qr_data_url)}" alt="QR Code" style="max-width:180px"/>
+    <div class="qr">
+      <img src="${esc(row.qr_data_url)}" alt="QR Code" />
       <div class="muted">Scan on a phone or use the link button.</div>
     </div>
   </section>
 
-  <div class="pillrow" style="margin-top:10px">
+  <div class="bar">
     <a class="btn" href="/" rel="noopener">+ New Report</a>
     <a class="btn" href="/reports" rel="noopener">Open Reports</a>
     <form method="POST" action="/logout" style="display:inline"><button class="btn" type="submit">Log out</button></form>
