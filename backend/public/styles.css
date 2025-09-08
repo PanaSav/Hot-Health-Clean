@@ -1,18 +1,15 @@
-/* Caregiver Card — clean, readable UI */
-
 :root{
   --ink:#1d2330;
   --muted:#5a6475;
   --bg:#f7fbff;
   --card:#ffffff;
   --aqua:#61e6cf;
-  --aqua-2:#a6f2e6;
   --line:#dbe7ff;
   --btn:#0a84ff;
 }
 
 *{ box-sizing:border-box; }
-html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
 
 .container{ max-width:1060px; margin:0 auto; padding:20px 16px 60px; }
 
@@ -34,7 +31,7 @@ html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink); font:16p
 .with-mic{ display:flex; gap:8px; align-items:center; }
 .mic-btn{
   width:36px; height:36px; border-radius:50%; border:1px solid var(--line); cursor:pointer; background:#fff;
-  background-image: radial-gradient(circle at 50% 50%, #f24, #d13); color:#fff;
+  background-image: radial-gradient(circle at 50% 50%, #f24, #c13);
 }
 .mic-btn.mic-active{ outline:3px solid #ffd166; }
 
@@ -67,8 +64,6 @@ html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink); font:16p
 .report-item .title{ font-weight:700; }
 .report-item .meta{ color:var(--muted); font-size:13px; }
 .report-item .actions{ display:flex; gap:8px; }
-
-.alt{ margin-top:10px; padding-top:10px; border-top:1px dashed var(--line); }
 
 .result{ margin-top:12px; }
 .report-banner{
