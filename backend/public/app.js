@@ -1,20 +1,17 @@
 // backend/public/app.js
-// Frontend logic: per-field mics, two free-speech recorders, language detect, generate report
+// Mic buttons now use MediaRecorder -> /transcribe (reliable). Free-speech recorders also use MediaRecorder.
+// After transcription we populate fields OR typed_* areas, then /upload-multi creates the report.
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
 const resBox = $('#result');
 const errBox = $('#error');
-
 function setResult(html){ if(resBox) resBox.innerHTML = html||''; }
 function setError(msg){ if(errBox) errBox.textContent = msg||''; }
 
-function sanitizePhone(s){
-  return (s||'').replace(/[^\d+]/g,'');
-}
+function sanitizePhone(s){ return (s||'').replace(/[^\d+]/g,''); }
 function isLikelyPhone(s){ return /^\+?\d{7,}$/.test(sanitizePhone(s)); }
-
 function normalizeEmailSpoken(raw){
   if (!raw) return '';
   let s = ' '+raw.toLowerCase().trim()+' ';
@@ -25,113 +22,134 @@ function normalizeEmailSpoken(raw){
        .replace(/\s+(hyphen|dash)\s+/g,'-')
        .replace(/\s+plus\s+/g,'+');
   s = s.replace(/\s*@\s*/g,'@').replace(/\s*\.\s*/g,'.');
-  s = s.replace(/\s+/g,' ').trim();
-  s = s.replace(/\s+/g,'');
+  s = s.replace(/\s+/g,' ').trim().replace(/\s+/g,'');
   s = s.replace(/\.\.+/g,'.');
   return s;
 }
 
-// ---------- Per-field microphones ----------
-(function wireFieldMics(){
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  $$('.mic-btn').forEach(btn=>{
-    if (!SR){ btn.disabled=true; btn.title='Speech recognition not supported'; return; }
-    btn.addEventListener('click', ()=>{
-      const targetId = btn.getAttribute('data-target');
-      const el = document.getElementById(targetId);
-      if (!el) return;
-
-      const rec = new SR();
-      rec.lang = (window.__uiLang || 'en-US');
-      rec.interimResults = false;
-      rec.maxAlternatives = 1;
-
-      const original = el.style.backgroundColor;
-      btn.classList.add('mic-active'); el.style.backgroundColor = '#fff7cc';
-
-      rec.onresult = (e)=>{
-        let text = e.results[0][0].transcript || '';
-        if (el.type==='email' || (el.id||'').toLowerCase().includes('email')) text = normalizeEmailSpoken(text);
-        if ((el.id||'').toLowerCase().includes('phone')) text = sanitizePhone(text);
-        if (el.tagName==='SELECT'){
-          const lower = text.toLowerCase();
-          const opt = [...el.options].find(o=>o.textContent.toLowerCase().includes(lower) || o.value.toLowerCase()===lower);
-          if (opt) el.value = opt.value;
-        } else {
-          el.value = text;
-        }
-      };
-      rec.onend = ()=>{ btn.classList.remove('mic-active'); el.style.backgroundColor = original; };
-      rec.onerror = ()=>{ btn.classList.remove('mic-active'); el.style.backgroundColor = original; };
-
-      try{ rec.start(); } catch { btn.classList.remove('mic-active'); el.style.backgroundColor = original; }
-    });
-  });
-})();
-
-// ---------- Free-speech recorders (patient/status) ----------
-function makeRecorder(startBtn, stopBtn, outId, scope){
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR){ if(startBtn) startBtn.disabled = true; if(stopBtn) stopBtn.disabled=true; return; }
-
-  let rec=null, timer=null, chunksText=[];
-  startBtn?.addEventListener('click', ()=>{
-    setError('');
-    chunksText = [];
-    rec = new SR();
-    rec.lang = (window.__uiLang || 'en-US');
-    rec.interimResults=false; rec.maxAlternatives=1;
-
-    rec.onresult = (e)=>{ const t=e.results[0][0].transcript||''; chunksText.push(t); };
-    rec.onend = async ()=>{
-      stopBtn?.classList.remove('mic-active');
-      const text = (chunksText.join(' ').trim());
-      if (text){
-        // send to server to parse into fields
-        try{
-          const r = await fetch('/parse-free', {
-            method:'POST',
-            headers:{ 'Content-Type':'application/json' },
-            body: JSON.stringify({ text, scope })
-          });
-          const j = await r.json();
-          if (j.ok && j.fields){
-            if (scope==='patient'){
-              if (j.fields.name)       $('#pName').value = j.fields.name;
-              if (j.fields.email)      $('#pEmail').value = j.fields.email;
-              if (j.fields.emer_name)  $('#eName').value = j.fields.emer_name;
-              if (j.fields.emer_phone) $('#ePhone').value = sanitizePhone(j.fields.emer_phone);
-              if (j.fields.emer_email) $('#eEmail').value = j.fields.emer_email;
-            } else {
-              // status block: we fill typed_* helpers
-              if (j.fields.bp)         $('#typed_bp')?.value = j.fields.bp;
-              if (j.fields.weight)     $('#typed_weight')?.value = j.fields.weight;
-              if (j.fields.medications?.length) $('#typed_meds')?.value = j.fields.medications.join('; ');
-              if (j.fields.allergies?.length)   $('#typed_allergies')?.value = j.fields.allergies.join('; ');
-              if (j.fields.conditions?.length)  $('#typed_conditions')?.value = j.fields.conditions.join('; ');
-            }
-          }
-          const target = $('#'+outId); if (target) target.value = text;
-        }catch(e){ setError('Parse failed'); }
-      }
-    };
-    stopBtn?.classList.add('mic-active');
-    try{ rec.start(); }catch {}
-    // auto-stop timers
-    const ms = scope==='patient' ? 60000 : 180000; // 1 min patient, 3 min status journal
-    timer = setTimeout(()=>{ try{ rec.stop(); }catch{} }, ms);
-  });
-
-  stopBtn?.addEventListener('click', ()=>{
-    try{ rec?.stop(); }catch{}
-    clearTimeout(timer); stopBtn?.classList.remove('mic-active');
-  });
+// ---- Record helpers (MediaRecorder -> /transcribe)
+async function transcribeBlob(blob){
+  const fd = new FormData();
+  fd.append('audio', blob, 'mic.webm');
+  const r = await fetch('/transcribe', { method:'POST', body: fd });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error||'Transcription failed');
+  return j.text || '';
 }
 
-makeRecorder($('#patStart'), $('#patStop'), 'patient_free_text', 'patient');
-makeRecorder($('#statStart'), $('#statStop'), 'status_free_text',  'status');
+function makeClickHoldRecorder(btn, { maxMs=15000, onText }){
+  if (!btn) return;
+  let mediaRecorder=null, chunks=[], timer=null, stream=null;
 
-// ---------- Language detect helper (optional prompt) ----------
+  async function start(){
+    setError('');
+    chunks=[];
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    }catch{ setError('Microphone blocked. Allow mic permission.'); return; }
+    mediaRecorder = new MediaRecorder(stream, { mimeType:'audio/webm' });
+    mediaRecorder.ondataavailable = (e)=>{ if(e.data && e.data.size) chunks.push(e.data); };
+    mediaRecorder.onstop = async ()=>{
+      try{
+        const blob = new Blob(chunks, { type:'audio/webm' });
+        const text = await transcribeBlob(blob);
+        onText?.(text);
+      }catch(e){ setError(e.message||'Transcription error'); }
+      stream.getTracks().forEach(t=>t.stop());
+      btn.classList.remove('mic-active');
+    };
+    mediaRecorder.start();
+    btn.classList.add('mic-active');
+    timer = setTimeout(()=>stop(), maxMs);
+  }
+  function stop(){
+    try{ mediaRecorder?.stop(); }catch{}
+    clearTimeout(timer);
+  }
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('touchstart', (e)=>{ e.preventDefault(); start(); }, { passive:false });
+  btn.addEventListener('mouseup', stop);
+  btn.addEventListener('mouseleave', ()=>{ if(btn.classList.contains('mic-active')) stop(); });
+  btn.addEventListener('touchend', ()=>stop());
+}
+
+// ---- Per-field mic buttons (data-target points to input/select)
+$$('.mic-btn').forEach(btn=>{
+  const targetId = btn.getAttribute('data-target');
+  const el = document.getElementById(targetId);
+  if (!el) return;
+
+  makeClickHoldRecorder(btn, {
+    maxMs: 15000,
+    onText: (raw)=>{
+      let text = raw;
+      if (el.type==='email' || (el.id||'').toLowerCase().includes('email')) text = normalizeEmailSpoken(raw);
+      if ((el.id||'').toLowerCase().includes('phone')) text = sanitizePhone(raw);
+      if (el.tagName==='SELECT'){
+        const lower = text.toLowerCase();
+        const opt = [...el.options].find(o=>o.textContent.toLowerCase().includes(lower) || o.value.toLowerCase()===lower);
+        if (opt) el.value = opt.value;
+      } else {
+        el.value = text;
+      }
+    }
+  });
+});
+
+// ---- Free-speech recorders (patient/status) that parse and fill fields
+function wireFreeSpeechRecorders(){
+  const patBtn = $('#patHold');
+  const statBtn = $('#statHold');
+  const patientOut = $('#patient_free_text');
+  const statusOut  = $('#status_free_text');
+
+  makeClickHoldRecorder(patBtn, {
+    maxMs: 60000,
+    onText: async (text)=>{
+      if (patientOut) patientOut.value = text;
+      try{
+        const r = await fetch('/parse-free', {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ text, scope:'patient' })
+        });
+        const j = await r.json();
+        if (j.ok && j.fields){
+          if (j.fields.name)       $('#pName').value = j.fields.name;
+          if (j.fields.email)      $('#pEmail').value = j.fields.email;
+          if (j.fields.emer_name)  $('#eName').value = j.fields.emer_name;
+          if (j.fields.emer_phone) $('#ePhone').value = sanitizePhone(j.fields.emer_phone);
+          if (j.fields.emer_email) $('#eEmail').value = j.fields.emer_email;
+        }
+      }catch{ setError('Parse failed'); }
+    }
+  });
+
+  makeClickHoldRecorder(statBtn, {
+    maxMs: 180000,
+    onText: async (text)=>{
+      if (statusOut) statusOut.value = text;
+      try{
+        const r = await fetch('/parse-free', {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ text, scope:'status' })
+        });
+        const j = await r.json();
+        if (j.ok && j.fields){
+          if (j.fields.bp)             $('#typed_bp')?.value = j.fields.bp;
+          if (j.fields.weight)         $('#typed_weight')?.value = j.fields.weight;
+          if (j.fields.medications?.length) $('#typed_meds')?.value = j.fields.medications.join('; ');
+          if (j.fields.allergies?.length)   $('#typed_allergies')?.value = j.fields.allergies.join('; ');
+          if (j.fields.conditions?.length)  $('#typed_conditions')?.value = j.fields.conditions.join('; ');
+        }
+      }catch{ setError('Parse failed'); }
+    }
+  });
+}
+wireFreeSpeechRecorders();
+
+// ---- Language detect hint (optional)
 async function detectLangFromSnippet(){
   try{
     const sample = ($('#patient_free_text')?.value || $('#status_free_text')?.value || '').trim().slice(0,300);
@@ -146,12 +164,12 @@ async function detectLangFromSnippet(){
 }
 setTimeout(detectLangFromSnippet, 1500);
 
-// ---------- Generate Report ----------
+// ---- Generate Report (typed content only; audio is already transcribed client-side)
 $('#btnGenerate')?.addEventListener('click', async ()=>{
   try{
     setError(''); setResult('');
 
-    // quick phone validation
+    // phone quick check
     for (const id of ['ePhone','doctor_phone','pharmacy_phone']){
       const el = $('#'+id);
       if (el && el.value && !isLikelyPhone(el.value)) return setError('Phone looks invalid (numbers only).');
@@ -159,7 +177,7 @@ $('#btnGenerate')?.addEventListener('click', async ()=>{
 
     const fd = new FormData();
 
-    // patient typed fields
+    // Patient & contacts fields
     const ids = [
       'pName','pEmail','blood','eName','ePhone','eEmail',
       'doctor_name','doctor_address','doctor_phone','doctor_fax','doctor_email',
@@ -171,30 +189,18 @@ $('#btnGenerate')?.addEventListener('click', async ()=>{
       doctor_name:'doctor_name', doctor_address:'doctor_address', doctor_phone:'doctor_phone', doctor_fax:'doctor_fax', doctor_email:'doctor_email',
       pharmacy_name:'pharmacy_name', pharmacy_address:'pharmacy_address', pharmacy_phone:'pharmacy_phone', pharmacy_fax:'pharmacy_fax'
     };
-    ids.forEach(id=>{
-      const el = $('#'+id);
-      if (el) fd.append(map[id], el.value.trim());
-    });
+    ids.forEach(id=>{ const el=$('#'+id); if(el) fd.append(map[id], el.value.trim()); });
 
     // language
-    const langSel = $('#lang'); fd.append('lang', (langSel?.value||'').trim());
+    fd.append('lang', ($('#lang')?.value||'').trim());
 
-    // patient free text → for server audit and for detect UX
-    const pft = $('#patient_free_text')?.value||''; if (pft) fd.append('typed_patient_free', pft);
-    // status typed fields
+    // typed status (including parsed results from free-speech)
     const sid = ['typed_bp','typed_meds','typed_allergies','typed_weight','typed_conditions','typed_general'];
-    sid.forEach(id=>{ const el=$('#'+id); if (el) fd.append(id, el.value.trim()); });
+    sid.forEach(id=>{ const el=$('#'+id); if(el) fd.append(id, el.value.trim()); });
 
-    // hidden “auto-parsed” fields (set by free-speech parser)
-    const autoMap = ['name_auto','email_auto','emer_name_auto','emer_phone_auto','emer_email_auto'];
-    autoMap.forEach(id=>{ const el=$('#'+id); if (el && el.value) fd.append(id, el.value.trim()); });
-
-    // call multi endpoint (no audio is fine)
     const r = await fetch('/upload-multi', { method:'POST', body: fd });
     const text = await r.text();
-    let json;
-    try{ json = JSON.parse(text); }
-    catch{ throw new Error(`Server error`); }
+    let json; try{ json = JSON.parse(text); }catch{ throw new Error('Server error'); }
     if (!json.ok) throw new Error(json.error||'Server error');
 
     setResult(`
