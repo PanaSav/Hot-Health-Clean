@@ -1,76 +1,70 @@
+/* backend/public/styles.css */
+/* Clean, readable, small mic buttons (no giant red dot), subtle recording glow */
+
 :root{
-  --ink:#1d2330;
-  --muted:#5a6475;
-  --bg:#f7fbff;
-  --card:#ffffff;
-  --aqua:#61e6cf;
-  --line:#dbe7ff;
-  --btn:#0a84ff;
+  --ink:#222; --muted:#556; --brand:#0a84ff; --accent:#35e5c3; --bg:#f6f8ff; --card:#fff; --line:#dbe7ff;
 }
 
-*{ box-sizing:border-box; }
-html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+*{ box-sizing: border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif; }
+.container{ max-width: 960px; margin: 0 auto; padding: 16px; }
 
-.container{ max-width:1060px; margin:0 auto; padding:20px 16px 60px; }
+.head{ display:flex; gap:12px; align-items:center; justify-content:space-between; border-bottom:3px solid var(--accent); padding:12px 0; }
+h1{ margin:0; color:#4b0082; }
+h2{ margin:0 0 8px; }
+.muted{ color:var(--muted); font-size:13px; }
 
-.head{ border-bottom:3px solid var(--aqua); padding:14px 0; margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
-.head h1{ margin:0; color:#4b0082; font-weight:800; }
-
-.card{ background:var(--card); border:2px solid var(--aqua); border-radius:12px; padding:16px; margin:16px 0; }
-.subhead{ font-weight:700; margin:10px 0 6px; color:#2a2f3a; }
-.bullets{ margin:8px 0 0 18px; }
-.bullets li{ margin:6px 0; }
-
-.grid2{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-.grid3{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-@media (max-width:900px){ .grid3{ grid-template-columns:1fr; } }
-@media (max-width:720px){ .grid2{ grid-template-columns:1fr; } }
-
-.field .lbl{ display:block; font-size:13px; color:var(--muted); margin:0 0 4px; }
-.txt{ width:100%; padding:10px 12px; border:1px solid #cfd8ea; border-radius:8px; font:inherit; background:#fff; }
-.with-mic{ display:flex; gap:8px; align-items:center; }
-.mic-btn{
-  width:36px; height:36px; border-radius:50%; border:1px solid var(--line); cursor:pointer; background:#fff;
-  background-image: radial-gradient(circle at 50% 50%, #f24, #c13);
-}
-.mic-btn.mic-active{ outline:3px solid #ffd166; }
-
-.btn{
-  appearance:none; border:1px solid var(--line); background:#f0f5ff; color:#203050; padding:9px 12px; border-radius:8px;
-  text-decoration:none; cursor:pointer; font-weight:600;
-}
-.btn:hover{ filter:brightness(0.97); }
-.bar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-
-.row-inline{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-
-.tip{ font-size:13px; color:var(--muted); margin-top:6px; }
-
-.pillrow{ display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
-.pill{ display:inline-block; padding:4px 8px; border-radius:999px; background:#eef6ff; border:1px solid var(--line); color:#2a3d5f; font-size:12px; }
-
+.card{ background:var(--card); border:2px solid var(--accent); border-radius:12px; padding:16px; margin:16px 0; }
+.grid2{ display:grid; gap:10px; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); }
 .dual{ display:flex; gap:12px; flex-wrap:wrap; }
-.block{ flex:1; min-width:260px; background:#f8faff; border:1px solid var(--line); border-radius:10px; padding:12px; }
-.pre{ white-space:pre-wrap; margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size:14px; }
+.block{ flex:1; min-width:260px; background:#f8faff; border:1px solid var(--line); border-radius:8px; padding:12px; }
+.pre{ white-space:pre-wrap; margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-.sharebar{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
-.qr{ text-align:center; }
-.qr img{ max-width:180px; }
-.muted{ color:var(--muted); }
-.error{ color:#c62828; margin-top:8px; }
+.btn{ display:inline-flex; align-items:center; gap:6px; padding:8px 12px; font-size:14px; border-radius:8px; border:1px solid var(--line); background:#f0f5ff; color:#234; text-decoration:none; cursor:pointer; }
+.btn:hover{ filter:brightness(.97); }
 
-.list{ list-style:none; padding:0; margin:0; }
+.pillrow{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+.pill{ display:inline-block; padding:3px 8px; border-radius:999px; background:#eef4ff; border:1px solid var(--line); color:#334; font-size:12px; }
+
+.list{ list-style:none; margin:0; padding:0; }
 .report-item{ background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px; margin:10px 0; display:grid; gap:6px; }
-.report-item .title{ font-weight:700; }
-.report-item .meta{ color:var(--muted); font-size:13px; }
-.report-item .actions{ display:flex; gap:8px; }
+.title{ font-weight:600; }
+.meta{ color:#555; font-size:13px; }
+.actions{ display:flex; gap:8px; }
 
-.result{ margin-top:12px; }
-.report-banner{
-  display:flex; gap:12px; align-items:center; background:#eafff8; border:1px solid var(--aqua); border-radius:10px; padding:12px;
+.sharebar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.qr{ text-align:center; margin-top:10px; }
+.bar{ display:flex; gap:8px; flex-wrap:wrap; margin:16px 0; }
+
+/* Banner */
+.report-banner{ display:flex; align-items:center; gap:12px; border:1px solid #b7ebc6; background:#eafff1; border-radius:10px; padding:12px; }
+.report-icon{ font-size:20px; }
+.report-title{ font-weight:700; }
+.report-sub{ color:#2d623b; }
+
+/* Inputs */
+input, select, textarea{ width:100%; padding:10px 12px; border:1px solid #cfd8ea; border-radius:8px; font-size:15px; }
+label{ font-size:14px; color:#333; }
+
+/* Mic buttons */
+.mic-btn{
+  width:34px; height:34px; min-width:34px; min-height:34px;
+  border-radius:50%;
+  border:1px solid var(--line);
+  background:#ffffff;
+  display:inline-flex; align-items:center; justify-content:center;
+  cursor:pointer;
+  position:relative;
 }
-.report-icon{ font-size:24px; }
-.report-title{ font-weight:800; margin-bottom:2px; }
-.report-sub{ color:#2e3b44; }
+.mic-btn::before{
+  content:"🎙️"; font-size:16px; line-height:1;
+}
+.mic-btn.mic-active{
+  outline: 2px solid rgba(10,132,255,.25);
+  box-shadow: 0 0 0 6px rgba(10,132,255,.15);
+}
 
-.foot{ text-align:center; color:var(--muted); margin-top:26px; }
+/* Tiny helper rows */
+.row{ display:flex; gap:8px; align-items:center; }
+.row > * { flex: 1 1 auto; }
+.row .mic-btn{ flex: 0 0 auto; }
