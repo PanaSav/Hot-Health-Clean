@@ -68,12 +68,12 @@ document.addEventListener('DOMContentLoaded', () => {
           const blob = new Blob(chunks, { type: 'audio/webm' });
           const text = await transcribeBlob(blob);
           log('transcribed:', text);
-          onText?.(text);
+          if (typeof onText === 'function') onText(text);
         } catch (e) {
           setError(e.message || 'Transcription error');
           log('transcribe error:', e);
         } finally {
-          stream.getTracks().forEach(t => t.stop());
+          try { stream.getTracks().forEach(t => t.stop()); } catch {}
           btn.classList.remove('mic-active');
           btn.setAttribute('aria-pressed', 'false');
           active = false;
@@ -83,7 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try { recorder.start(); } catch (e) {
         setError('Unable to start recording.');
         log('recorder.start failed:', e);
-        stream.getTracks().forEach(t => t.stop());
+        try { stream.getTracks().forEach(t => t.stop()); } catch {}
         return;
       }
       active = true;
@@ -93,7 +93,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function stop(){
-      try { recorder && recorder.state !== 'inactive' && recorder.stop(); } catch {}
+      try { if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch {}
       if (timer) clearTimeout(timer);
     }
 
@@ -158,12 +158,14 @@ document.addEventListener('DOMContentLoaded', () => {
       const out = $('#patient_free_text'); if (out) out.value = text;
       try {
         const j = await parsePatient(text);
-        if (j.ok && j.fields) {
-          if (j.fields.name)       $('#pName')?.value = j.fields.name;
-          if (j.fields.email)      $('#pEmail')?.value = j.fields.email;
-          if (j.fields.emer_name)  $('#eName')?.value = j.fields.emer_name;
-          if (j.fields.emer_phone) $('#ePhone')?.value = sanitizePhone(j.fields.emer_phone);
-          if (j.fields.emer_email) $('#eEmail')?.value = j.fields.emer_email;
+        if (j && j.ok && j.fields) {
+          let el;
+          if (j.fields.name)       { el = $('#pName');  if (el) el.value = j.fields.name; }
+          if (j.fields.email)      { el = $('#pEmail'); if (el) el.value = j.fields.email; }
+          if (j.fields.emer_name)  { el = $('#eName');  if (el) el.value = j.fields.emer_name; }
+          if (j.fields.emer_phone) { el = $('#ePhone'); if (el) el.value = sanitizePhone(j.fields.emer_phone); }
+          if (j.fields.emer_email) { el = $('#eEmail'); if (el) el.value = j.fields.emer_email; }
+          if (j.fields.blood_type) { el = $('#blood');  if (el) el.value = j.fields.blood_type; }
         } else {
           log('parse-patient not ok:', j);
         }
@@ -180,12 +182,20 @@ document.addEventListener('DOMContentLoaded', () => {
       const out = $('#status_free_text'); if (out) out.value = text;
       try {
         const j = await parseStatus(text);
-        if (j.ok && j.fields) {
-          if (j.fields.bp)                   $('#typed_bp')?.value = j.fields.bp;
-          if (j.fields.weight)               $('#typed_weight')?.value = j.fields.weight;
-          if (j.fields.medications?.length)  $('#typed_meds')?.value = j.fields.medications.join('; ');
-          if (j.fields.allergies?.length)    $('#typed_allergies')?.value = j.fields.allergies.join('; ');
-          if (j.fields.conditions?.length)   $('#typed_conditions')?.value = j.fields.conditions.join('; ');
+        if (j && j.ok && j.fields) {
+          let el;
+          if (j.fields.bp)                   { el = $('#typed_bp');         if (el) el.value = j.fields.bp; }
+          if (j.fields.weight)               { el = $('#typed_weight');     if (el) el.value = j.fields.weight; }
+          if (Array.isArray(j.fields.medications) && j.fields.medications.length) {
+            el = $('#typed_meds'); if (el) el.value = j.fields.medications.join('; ');
+          }
+          if (Array.isArray(j.fields.allergies) && j.fields.allergies.length) {
+            el = $('#typed_allergies'); if (el) el.value = j.fields.allergies.join('; ');
+          }
+          if (Array.isArray(j.fields.conditions) && j.fields.conditions.length) {
+            el = $('#typed_conditions'); if (el) el.value = j.fields.conditions.join('; ');
+          }
+          if (j.fields.general)              { el = $('#typed_general');    if (el) el.value = j.fields.general; }
         } else {
           log('parse-status not ok:', j);
         }
@@ -198,7 +208,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ---------- Language detect from a snippet (optional hint)
   async function detectLangFromSnippet(){
-    const sample = ($('#patient_free_text')?.value || $('#status_free_text')?.value || '').trim().slice(0,300);
+    const pf = $('#patient_free_text');
+    const sf = $('#status_free_text');
+    const sample = (pf && pf.value || sf && sf.value || '').trim().slice(0,300);
     if (!sample) return;
     try{
       const r = await fetch('/detect-lang', {
@@ -206,7 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({ text: sample })
       });
       const j = await r.json();
-      if (j.ok){
+      if (j && j.ok){
         const det = $('#langDetected'); if (det) det.value = `${j.name} (${j.code})`;
         const confirm = $('#langConfirm'); if (confirm){ confirm.checked = true; confirm.dataset.code = j.code; }
         log('detected lang:', j);
@@ -216,69 +228,83 @@ document.addEventListener('DOMContentLoaded', () => {
   setTimeout(detectLangFromSnippet, 1200);
 
   // ---------- Generate Report (typed & parsed content only)
-  $('#btnGenerate')?.addEventListener('click', async ()=>{
-    try{
-      setError(''); setResult('');
+  const genBtn = $('#btnGenerate');
+  if (genBtn) {
+    genBtn.addEventListener('click', async ()=>{
+      try{
+        setError(''); setResult('');
 
-      // phone checks
-      for (const id of ['ePhone','doctor_phone','pharmacy_phone']) {
-        const el = $('#'+id);
-        if (el && el.value && !isLikelyPhone(el.value)) {
-          setError('Phone looks invalid (use digits only, allow +country).');
-          return;
+        // phone checks
+        const phoneIds = ['ePhone','doctor_phone','pharmacy_phone'];
+        for (const id of phoneIds) {
+          const el = $('#'+id);
+          if (el && el.value && !isLikelyPhone(el.value)) {
+            setError('Phone looks invalid (use digits only, allow +country).');
+            return;
+          }
         }
+
+        const fd = new FormData();
+        // patient/contacts
+        const ids = [
+          'pName','pEmail','blood','eName','ePhone','eEmail',
+          'doctor_name','doctor_address','doctor_phone','doctor_fax','doctor_email',
+          'pharmacy_name','pharmacy_address','pharmacy_phone','pharmacy_fax'
+        ];
+        const map = {
+          pName:'name', pEmail:'email', blood:'blood_type',
+          eName:'emer_name', ePhone:'emer_phone', eEmail:'emer_email',
+          doctor_name:'doctor_name', doctor_address:'doctor_address', doctor_phone:'doctor_phone', doctor_fax:'doctor_fax', doctor_email:'doctor_email',
+          pharmacy_name:'pharmacy_name', pharmacy_address:'pharmacy_address', pharmacy_phone:'pharmacy_phone', pharmacy_fax:'pharmacy_fax'
+        };
+        ids.forEach(id => {
+          const el = $('#'+id);
+          if (el) fd.append(map[id], (el.value || '').trim());
+        });
+
+        // language target
+        const langEl = $('#lang');
+        fd.append('lang', (langEl && langEl.value ? langEl.value.trim() : ''));
+
+        // status typed/parsed fields
+        const statusIds = ['typed_bp','typed_meds','typed_allergies','typed_weight','typed_conditions','typed_general'];
+        statusIds.forEach(id => {
+          const el = $('#'+id);
+          if (el) fd.append(id, (el.value || '').trim());
+        });
+
+        const r = await fetch('/upload-multi', { method:'POST', body: fd });
+        const text = await r.text();
+        let json; try { json = JSON.parse(text); } catch { throw new Error('Server error'); }
+        if (!json.ok) throw new Error(json.error || 'Server error');
+
+        setResult(`
+          <div class="report-banner">
+            <div class="report-icon">✅</div>
+            <div class="report-text">
+              <div class="report-title">Report Generated</div>
+              <div class="report-sub">Open, share, or email below.</div>
+            </div>
+            <div class="report-actions">
+              <a class="btn" href="${json.url}" target="_blank" rel="noopener">Open Report</a>
+              <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
+              <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Gmail</a>
+              <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Caregiver%20Card&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Outlook</a>
+            </div>
+          </div>
+        `);
+        const copyBtn = $('#btnCopyLink');
+        if (copyBtn) {
+          copyBtn.addEventListener('click', async ()=>{
+            try { await navigator.clipboard.writeText(json.url); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy Link',1200); } catch {}
+          });
+        }
+      } catch (e) {
+        setError(e.message || 'Server error');
+        console.error('Generate error:', e);
       }
-
-      const fd = new FormData();
-      // patient/contacts
-      const ids = [
-        'pName','pEmail','blood','eName','ePhone','eEmail',
-        'doctor_name','doctor_address','doctor_phone','doctor_fax','doctor_email',
-        'pharmacy_name','pharmacy_address','pharmacy_phone','pharmacy_fax'
-      ];
-      const map = {
-        pName:'name', pEmail:'email', blood:'blood_type',
-        eName:'emer_name', ePhone:'emer_phone', eEmail:'emer_email',
-        doctor_name:'doctor_name', doctor_address:'doctor_address', doctor_phone:'doctor_phone', doctor_fax:'doctor_fax', doctor_email:'doctor_email',
-        pharmacy_name:'pharmacy_name', pharmacy_address:'pharmacy_address', pharmacy_phone:'pharmacy_phone', pharmacy_fax:'pharmacy_fax'
-      };
-      ids.forEach(id => { const el = $('#'+id); if (el) fd.append(map[id], el.value.trim()); });
-
-      // language target
-      fd.append('lang', ($('#lang')?.value || '').trim());
-
-      // status typed/parsed fields
-      ['typed_bp','typed_meds','typed_allergies','typed_weight','typed_conditions','typed_general']
-        .forEach(id => { const el = $('#'+id); if (el) fd.append(id, el.value.trim()); });
-
-      const r = await fetch('/upload-multi', { method:'POST', body: fd });
-      const text = await r.text();
-      let json; try { json = JSON.parse(text); } catch { throw new Error('Server error'); }
-      if (!json.ok) throw new Error(json.error || 'Server error');
-
-      setResult(`
-        <div class="report-banner">
-          <div class="report-icon">✅</div>
-          <div class="report-text">
-            <div class="report-title">Report Generated</div>
-            <div class="report-sub">Open, share, or email below.</div>
-          </div>
-          <div class="report-actions">
-            <a class="btn" href="${json.url}" target="_blank" rel="noopener">Open Report</a>
-            <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
-            <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Gmail</a>
-            <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Caregiver%20Card&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Outlook</a>
-          </div>
-        </div>
-      `);
-      $('#btnCopyLink')?.addEventListener('click', async ()=>{
-        try { await navigator.clipboard.writeText(json.url); const b=$('#btnCopyLink'); if(b){ b.textContent='Copied!'; setTimeout(()=>b.textContent='Copy Link',1200);} } catch {}
-      });
-    } catch (e) {
-      setError(e.message || 'Server error');
-      console.error('Generate error:', e);
-    }
-  });
+    });
+  }
 
   // Final capability check
   if (!navigator.mediaDevices || !window.MediaRecorder) {
