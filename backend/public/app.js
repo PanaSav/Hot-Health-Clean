@@ -1,223 +1,254 @@
-// backend/public/app.js
-document.addEventListener('DOMContentLoaded', () => {
-  const $  = (s) => document.querySelector(s);
-  const $$ = (s) => Array.from(document.querySelectorAll(s));
+/* app.js — single field mics + journal recorder + detect + parse + generate */
 
-  const resBox = $('#result');
-  const errBox = $('#error');
-  const setResult = (h)=>{ if(resBox) resBox.innerHTML = h || ''; };
-  const setError  = (m)=>{ if(errBox) errBox.textContent = m || ''; };
-  const log = (...a)=>console.log('[mic]', ...a);
+const $ = s => document.querySelector(s);
+const resultBox = $('#result');
+const errorBox  = $('#error');
 
-  // ---------- Normalizers
-  function sanitizePhone(s){ return (s||'').replace(/[^\d+]/g,''); }
-  function normalizeEmailSpoken(raw){
-    if (!raw) return '';
-    let s = ' ' + raw.toLowerCase().trim() + ' ';
-    s = s.replace(/\s+at\s+/g,'@').replace(/\s+dot\s+/g,'.')
-         .replace(/\s+period\s+/g,'.').replace(/\s+underscore\s+/g,'_')
-         .replace(/\s+(hyphen|dash)\s+/g,'-').replace(/\s+plus\s+/g,'+')
-         .replace(/\s*@\s*/g,'@').replace(/\s*\.\s*/g,'.')
-         .replace(/\s+/g,' ').trim().replace(/\s+/g,'').replace(/\.\.+/g,'.');
-    return s;
+function setError(m){ if(errorBox) errorBox.textContent = m||''; }
+function setResult(html){ if(resultBox) resultBox.innerHTML = html||''; }
+
+// -------- email normalization (spoken) ----------
+function normalizeEmailSpoken(raw=''){
+  let s = ' ' + raw.toLowerCase().trim() + ' ';
+  s = s.replace(/\s+at\s+/g,'@')
+       .replace(/\s+dot\s+/g,'.')
+       .replace(/\s+period\s+/g,'.')
+       .replace(/\s+underscore\s+/g,'_')
+       .replace(/\s+(hyphen|dash)\s+/g,'-')
+       .replace(/\s+plus\s+/g,'+');
+
+  s = s.replace(/\s+gmail\s*\.?\s*com\s*/g,'@gmail.com ')
+       .replace(/\s+outlook\s*\.?\s*com\s*/g,'@outlook.com ')
+       .replace(/\s+hotmail\s*\.?\s*com\s*/g,'@hotmail.com ')
+       .replace(/\s+yahoo\s*\.?\s*com\s*/g,'@yahoo.com ');
+
+  s = s.replace(/\s*@\s*/g,'@').replace(/\s*\.\s*/g,'.');
+  s = s.replace(/\s+/g,'').replace(/\.\.+/g,'.');
+  return s;
+}
+function isEmailField(el){
+  const id=(el.id||'').toLowerCase(), name=(el.name||'').toLowerCase(), type=(el.type||'').toLowerCase();
+  return type==='email' || id.includes('email') || name.includes('email');
+}
+function normalizePhoneDigits(text=''){
+  return text.replace(/[^\d+]/g,'').slice(0,20);
+}
+
+// -------- MediaRecorder helper ----------
+async function recordOnce(ms=10000){
+  const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  const rec = new MediaRecorder(stream, { mimeType:'audio/webm' });
+  const chunks = [];
+  return await new Promise((resolve,reject)=>{
+    const t = setTimeout(()=>{ if(rec.state!=='inactive') rec.stop(); }, ms);
+    rec.ondataavailable = e=>{ if(e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = ()=>{ clearTimeout(t); stream.getTracks().forEach(t=>t.stop()); resolve(new Blob(chunks,{type:'audio/webm'})); };
+    rec.onerror = e=>{ clearTimeout(t); stream.getTracks().forEach(t=>t.stop()); reject(e.error||e); };
+    rec.start();
+  });
+}
+
+// -------- Robust JSON guard ----------
+async function readJSONorAuthMessage(resp){
+  const ct = resp.headers.get('content-type') || '';
+  if (!ct.includes('application/json')){
+    const txt = await resp.text();
+    // Login page or HTML? Treat as auth problem
+    throw new Error('Not signed in (session expired). Please reload and sign in.');
   }
+  return resp.json();
+}
 
-  // ---------- Server calls
-  async function transcribeBlob(blob){
-    const fd = new FormData();
-    fd.append('audio', blob, 'mic.webm');
-    const r = await fetch('/transcribe', { method:'POST', body: fd });
-    const j = await r.json().catch(()=>null);
-    if (!j || !j.ok) throw new Error((j && j.error) || `Transcription failed (${r.status})`);
-    return j.text || '';
+// -------- POST helpers ----------
+async function transcribeBlob(blob){
+  const fd = new FormData(); fd.append('audio', blob, 'rec.webm');
+  const r = await fetch('/transcribe', { method:'POST', body:fd, credentials:'same-origin' });
+  if (r.status === 401) throw new Error('Not signed in (401). Please reload and sign in.');
+  if(!r.ok) throw new Error('Transcription failed ('+r.status+')');
+  return readJSONorAuthMessage(r);
+}
+async function detectLanguageFromText(text){
+  const r = await fetch('/detect-language-text', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ text }), credentials:'same-origin'
+  });
+  if (r.status === 401) return { ok:false, lang:'', name:'' };
+  if(!r.ok) return { ok:false, lang:'', name:'' };
+  try { return await readJSONorAuthMessage(r); } catch { return { ok:false, lang:'', name:'' }; }
+}
+async function parseFreeSpeech(text){
+  const r = await fetch('/parse-free-speech', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ text }), credentials:'same-origin'
+  });
+  if (r.status === 401) throw new Error('Not signed in (401). Please reload and sign in.');
+  if(!r.ok) throw new Error('Parse failed');
+  return readJSONorAuthMessage(r);
+}
+async function generateReport(payload){
+  const r = await fetch('/upload-multi', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload), credentials:'same-origin'
+  });
+  if (r.status === 401) throw new Error('Not signed in (401). Please reload and sign in.');
+  if(!r.ok){
+    let msg='Server error';
+    try{ const j = await readJSONorAuthMessage(r); if(j?.error) msg=j.error; }catch{}
+    throw new Error(msg);
   }
-  const parseFree = (text, scope) =>
-    fetch('/parse-free', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text, scope })})
-      .then(r=>r.json());
+  return readJSONorAuthMessage(r);
+}
 
-  // ---------- Recorder wiring
-  function attachRecorderToggle(btn, { maxMs = 15000, onText }){
-    if (!btn) return;
-    let recorder=null, stream=null, chunks=[], timer=null, active=false;
-
-    async function start(){
+// -------- field mic buttons ----------
+document.querySelectorAll('.mic-btn').forEach(btn=>{
+  btn.addEventListener('click', async ()=>{
+    try{
+      const id = btn.getAttribute('data-target');
+      const el = document.getElementById(id);
+      if(!el) return;
       setError('');
-      chunks=[];
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio:true });
-      } catch {
-        setError('Microphone blocked. Allow it in the browser bar, then reload.');
-        return;
-      }
-      try {
-        recorder = new MediaRecorder(stream, { mimeType:'audio/webm' });
-      } catch {
-        setError('Recording not supported in this browser.');
-        return;
-      }
-      recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-      recorder.onstop = async ()=>{
-        try{
-          const blob = new Blob(chunks, { type:'audio/webm' });
-          const text = await transcribeBlob(blob);
-          if (typeof onText === 'function') onText(text);
-        } catch(e) {
-          setError(e.message || 'Transcription error');
-          log('transcribe error:', e);
-        } finally {
-          try { stream.getTracks().forEach(t => t.stop()); } catch {}
-          btn.classList.remove('mic-active');
-          btn.setAttribute('aria-pressed','false');
-          active=false;
-        }
-      };
-      try { recorder.start(); } catch { setError('Could not start recording.'); return; }
-      active=true;
-      btn.classList.add('mic-active'); btn.setAttribute('aria-pressed','true');
-      if (maxMs) timer = setTimeout(()=>{ try{ recorder.stop(); }catch{} }, maxMs);
-    }
-    function stop(){
-      try { if (recorder && recorder.state!=='inactive') recorder.stop(); } catch {}
-      if (timer) clearTimeout(timer);
-    }
-    btn.addEventListener('click', (e)=>{
-      e.preventDefault();
-      if (!navigator.mediaDevices || !window.MediaRecorder) { setError('Recording not supported.'); return; }
-      if (active) stop(); else start();
-    });
-  }
+      btn.classList.add('mic-active');
 
-  // ---------- Per-field mic buttons
-  $$('.mic-btn[data-target]').forEach(btn => {
-    const targetId = btn.getAttribute('data-target');
-    const el = document.getElementById(targetId);
-    if (!el) return;
+      const blob = await recordOnce(12000);
+      const { ok, text } = await transcribeBlob(blob);
+      if(!ok) throw new Error('Transcription failed');
 
-    attachRecorderToggle(btn, {
-      maxMs: 15000,
-      onText: (raw) => {
-        let text = raw;
-        const id = (el.id || '').toLowerCase();
-        const type = (el.type || '').toLowerCase();
-        if (type==='email' || id.includes('email')) text = normalizeEmailSpoken(raw);
-        if (id.includes('phone')) text = sanitizePhone(raw);
+      let val = text || '';
+      if (isEmailField(el)) val = normalizeEmailSpoken(val);
+      if (/phone|fax/i.test(id)) val = normalizePhoneDigits(val);
 
-        if (el.tagName === 'SELECT') {
-          const lower = text.toLowerCase();
-          const match = Array.from(el.options).find(o =>
-            o.textContent.toLowerCase().includes(lower) || o.value.toLowerCase() === lower
-          );
-          if (match) el.value = match.value;
-        } else {
-          el.value = text;
-        }
-      }
-    });
-  });
-
-  // ---------- Free-speech “Patient” recorder -> fill fields
-  attachRecorderToggle(document.getElementById('patHold'), {
-    maxMs: 60000,
-    onText: async (text) => {
-      const out = document.getElementById('patient_free_text'); if (out) out.value = text;
-      try{
-        const j = await parseFree(text, 'patient');
-        if (j && j.ok && j.fields) {
-          const F = j.fields;
-          const set = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
-          set('pName', F.name);
-          set('pEmail', F.email);
-          set('eName', F.emer_name);
-          set('ePhone', F.emer_phone);
-          set('eEmail', F.emer_email);
-          set('blood', F.blood_type);
-        }
-      } catch(e){ setError('Could not parse patient info.'); }
+      el.value = val;
+    }catch(e){
+      console.log('[mic] transcribe error:', e);
+      setError(e.message||String(e));
+    }finally{
+      btn.classList.remove('mic-active');
     }
   });
+});
 
-  // ---------- Free-speech “Status” recorder -> fill status fields
-  attachRecorderToggle(document.getElementById('statHold'), {
-    maxMs: 180000,
-    onText: async (text) => {
-      const out = document.getElementById('status_free_text'); if (out) out.value = text;
-      try{
-        const j = await parseFree(text, 'status');
-        if (j && j.ok && j.fields) {
-          const F = j.fields;
-          const set = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
-          set('typed_bp', F.bp);
-          set('typed_weight', F.weight);
-          if (Array.isArray(F.medications)) set('typed_meds', F.medications.join('; '));
-          if (Array.isArray(F.allergies))   set('typed_allergies', F.allergies.join('; '));
-          if (Array.isArray(F.conditions))  set('typed_conditions', F.conditions.join('; '));
-          set('typed_general', F.general);
-        }
-      } catch(e){ setError('Could not parse health status.'); }
+// -------- journal recorder ----------
+const jBtn = $('#journalRec');
+const jMeta= $('#jMeta');
+const jBox = $('#journal');
+const langDetected = $('#langDetected');
+const langConfirm = $('#langConfirm');
+const langConfirm2= $('#langConfirm2');
+const langTarget  = $('#lang');
+
+if (jBtn){
+  jBtn.addEventListener('click', async ()=>{
+    try{
+      setError(''); jMeta.textContent='Recording… (up to ~60s)';
+      jBtn.disabled = true; jBtn.classList.add('mic-active');
+
+      const blob = await recordOnce(60000);
+      jMeta.textContent = 'Transcribing…';
+      const { ok, text } = await transcribeBlob(blob);
+      if(!ok) throw new Error('Transcription failed');
+      jBox.value = text;
+
+      // detect language
+      const det = await detectLanguageFromText(text);
+      if(det.ok && det.lang){
+        langDetected.value = det.name || det.lang.toUpperCase();
+        const msg = `We think you’re speaking <b>${det.name||det.lang}</b> — tap Translate To if you want a translated report.`;
+        langConfirm.innerHTML = msg;
+        langConfirm2.innerHTML= msg;
+      }
+
+      // parse into fields
+      jMeta.textContent = 'Parsing free speech…';
+      const parsed = await parseFreeSpeech(text);
+      if(parsed.ok){
+        const F = parsed.fields||{};
+        const S = parsed.status||{};
+        // Patient/contact
+        if ($('#pName'))  $('#pName').value  = F.name||$('#pName').value;
+        if ($('#pEmail')) $('#pEmail').value = F.email||$('#pEmail').value;
+        if ($('#blood'))  $('#blood').value  = F.blood_type||$('#blood').value;
+
+        if ($('#eName'))  $('#eName').value  = F.emer_name||$('#eName').value;
+        if ($('#ePhone')) $('#ePhone').value = F.emer_phone||$('#ePhone').value;
+        if ($('#eEmail')) $('#eEmail').value = F.emer_email||$('#eEmail').value;
+
+        if ($('#dName'))    $('#dName').value    = F.doctor_name||$('#dName').value;
+        if ($('#dAddress')) $('#dAddress').value = F.doctor_address||$('#dAddress').value;
+        if ($('#dPhone'))   $('#dPhone').value   = F.doctor_phone||$('#dPhone').value;
+        if ($('#dFax'))     $('#dFax').value     = F.doctor_fax||$('#dFax').value;
+        if ($('#dEmail'))   $('#dEmail').value   = F.doctor_email||$('#dEmail').value;
+
+        if ($('#phName'))    $('#phName').value    = F.pharmacy_name||$('#phName').value;
+        if ($('#phAddress')) $('#phAddress').value = F.pharmacy_address||$('#phAddress').value;
+        if ($('#phPhone'))   $('#phPhone').value   = F.pharmacy_phone||$('#phPhone').value;
+        if ($('#phFax'))     $('#phFax').value     = F.pharmacy_fax||$('#phFax').value;
+
+        // Status
+        if ($('#bp'))        $('#bp').value        = S.bp||$('#bp').value;
+        if ($('#weight'))    $('#weight').value    = S.weight||$('#weight').value;
+        if ($('#meds'))      $('#meds').value      = (S.medications||[]).join('; ') || $('#meds').value;
+        if ($('#allergies')) $('#allergies').value = (S.allergies||[]).join('; ')   || $('#allergies').value;
+        if ($('#conditions'))$('#conditions').value= (S.conditions||[]).join('; ')  || $('#conditions').value;
+      }
+      jMeta.textContent = 'Journal parsed and applied.';
+    }catch(e){
+      console.log('[journal] error:', e);
+      setError(e.message||String(e));
+      jMeta.textContent='';
+    }finally{
+      jBtn.disabled=false; jBtn.classList.remove('mic-active');
     }
   });
+}
 
-  // ---------- Generate Report (typed content only)
-  const genBtn = document.getElementById('btnGenerate');
-  if (genBtn) {
-    genBtn.addEventListener('click', async ()=>{
-      try{
-        setError(''); setResult('');
+// -------- gather + generate --------
+function val(id){ const el=$(id); return el ? el.value.trim() : ''; }
 
-        const fd = new FormData();
-        // Patient & contacts
-        const map = {
-          pName:'name', pEmail:'email', blood:'blood_type',
-          eName:'emer_name', ePhone:'emer_phone', eEmail:'emer_email',
-          doctor_name:'doctor_name', doctor_address:'doctor_address', doctor_phone:'doctor_phone', doctor_fax:'doctor_fax', doctor_email:'doctor_email',
-          pharmacy_name:'pharmacy_name', pharmacy_address:'pharmacy_address', pharmacy_phone:'pharmacy_phone', pharmacy_fax:'pharmacy_fax'
-        };
-        Object.keys(map).forEach(id => {
-          const el = document.getElementById(id);
-          if (el) fd.append(map[id], (el.value || '').trim());
-        });
-        const langEl = document.getElementById('lang');
-        fd.append('lang', (langEl && langEl.value ? langEl.value.trim() : ''));
+$('#btnGenerate')?.addEventListener('click', async ()=>{
+  try{
+    setError(''); setResult('');
+    const payload = {
+      detected_lang: (langDetected?.value||'').trim(),
+      target_lang:   (langTarget?.value||'').trim(),
 
-        // Status typed fields
-        ['typed_bp','typed_meds','typed_allergies','typed_weight','typed_conditions','typed_general']
-          .forEach(id => { const el = document.getElementById(id); if (el) fd.append(id, (el.value || '').trim()); });
+      name: val('#pName'), email: val('#pEmail'), blood_type: val('#blood'),
+      emer_name: val('#eName'), emer_phone: val('#ePhone'), emer_email: val('#eEmail'),
+      doctor_name: val('#dName'), doctor_address: val('#dAddress'), doctor_phone: val('#dPhone'), doctor_fax: val('#dFax'), doctor_email: val('#dEmail'),
+      pharmacy_name: val('#phName'), pharmacy_address: val('#phAddress'), pharmacy_phone: val('#phPhone'), pharmacy_fax: val('#phFax'),
 
-        const r = await fetch('/upload-multi', { method:'POST', body: fd });
-        const text = await r.text();
-        let json; try { json = JSON.parse(text); } catch { throw new Error('Server error'); }
-        if (!json.ok) throw new Error(json.error || 'Server error');
+      bp: val('#bp'), weight: val('#weight'),
+      medications: val('#meds'), allergies: val('#allergies'), conditions: val('#conditions'),
 
-        setResult(`
-          <div class="report-banner">
-            <div class="report-icon">✅</div>
-            <div class="report-text">
-              <div class="report-title">Report Generated</div>
-              <div class="report-sub">Open, share, or email below.</div>
-            </div>
-            <div class="report-actions">
-              <a class="btn" href="${json.url}" target="_blank" rel="noopener">Open Report</a>
-              <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
-              <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Gmail</a>
-              <a class="btn" href="https://outlook.live.com/owa/?path=/mail/action/compose&subject=Caregiver%20Card&body=${encodeURIComponent(json.url)}" target="_blank" rel="noopener">Outlook</a>
-            </div>
-          </div>
-        `);
-        const copyBtn = document.getElementById('btnCopyLink');
-        if (copyBtn) copyBtn.addEventListener('click', async ()=>{
-          try { await navigator.clipboard.writeText(json.url); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy Link',1200); } catch {}
-        });
+      transcript: '',
+      journal_text: val('#journal')
+    };
 
-      } catch(e){
-        setError(e.message || 'Server error');
-        console.error('Generate error:', e);
-      }
+    const any = Object.values(payload).some(v => (v||'').length);
+    if(!any) throw new Error('Please enter or record at least some information.');
+
+    const j = await generateReport(payload);
+    if(!j.ok) throw new Error(j.error||'Server error');
+
+    const shareUrl = j.url;
+    const banner = `
+      <div class="report-banner">
+        <div class="report-icon">✅</div>
+        <div class="report-text">
+          <div class="report-title">Report Generated</div>
+          <div class="report-sub">Open, copy link, or email below.</div>
+        </div>
+        <div class="report-actions">
+          <a class="btn" href="${shareUrl}" target="_blank" rel="noopener">Open Report</a>
+          <button class="btn" id="btnCopyLink" type="button">Copy Link</button>
+          <a class="btn" href="https://mail.google.com/mail/?view=cm&fs=1&tf=1&su=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Gmail</a>
+          <a class="btn" href="https://outlook.office.com/mail/deeplink/compose?subject=Caregiver%20Card%20Report&body=${encodeURIComponent(shareUrl)}" target="_blank" rel="noopener">Outlook</a>
+        </div>
+      </div>`;
+    setResult(banner);
+    $('#btnCopyLink')?.addEventListener('click', async ()=>{
+      try{ await navigator.clipboard.writeText(shareUrl); const b=$('#btnCopyLink'); if(b){ b.textContent='Copied!'; setTimeout(()=>b.textContent='Copy Link',1500);} }catch{}
     });
-  }
-
-  if (!navigator.mediaDevices || !window.MediaRecorder) {
-    setError('Recording not supported in this browser. Try latest Chrome or Edge.');
-  } else {
-    console.log('[mic] MediaRecorder ready');
+  }catch(e){
+    setError(e.message||String(e));
   }
 });

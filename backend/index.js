@@ -70,7 +70,6 @@ async function initDB(){
     )
   `);
 
-  // Make sure “later” columns exist (safe ALTERs)
   const addCols = [
     ['journal_text','TEXT'], ['summary_text','TEXT'], ['translated_summary','TEXT']
   ];
@@ -88,9 +87,16 @@ function setSession(res, user){
   res.cookie('ccsess', user, { httpOnly:true, sameSite:'lax', signed:true /*, secure:true*/ });
 }
 function clearSession(res){ res.clearCookie('ccsess'); }
-function requireAuth(req, res, next){
-  const u = req.signedCookies?.ccsess;
-  if (!u) return res.redirect('/login');
+
+function isAuthed(req){
+  return !!req.signedCookies?.ccsess;
+}
+function requireAuthPage(req, res, next){
+  if (!isAuthed(req)) return res.redirect('/login');
+  next();
+}
+function requireAuthAPI(req, res, next){
+  if (!isAuthed(req)) return res.status(401).json({ ok:false, error:'not-authenticated' });
   next();
 }
 
@@ -111,9 +117,11 @@ app.post('/login', (req,res)=>{
 });
 app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
 
-// Static + gate app & reports
+// Static
 app.use(express.static(PUBLIC_DIR));
-app.use(['/', '/transcribe', '/detect-language-text', '/parse-free-speech', '/upload-multi', '/reports', '/reports/*'], requireAuth);
+
+// Gate pages with page-auth; gate API with api-auth
+app.use(['/', '/reports', '/reports/*'], requireAuthPage);
 
 // ---------- Helpers ----------
 function getBaseUrl(req){
@@ -165,7 +173,7 @@ const upload = multer({ storage });
 app.get('/', (req,res)=>res.sendFile(path.join(PUBLIC_DIR,'index.html')));
 
 // ---------- API: field/journal transcription ----------
-app.post('/transcribe', upload.single('audio'), async (req,res)=>{
+app.post('/transcribe', requireAuthAPI, upload.single('audio'), async (req,res)=>{
   try{
     if(!req.file) return res.status(400).json({ok:false, error:'No file'});
     const stream = fs.createReadStream(req.file.path);
@@ -185,8 +193,7 @@ app.post('/transcribe', upload.single('audio'), async (req,res)=>{
   }
 });
 
-// detect language from text (journal result)
-app.post('/detect-language-text', async (req,res)=>{
+app.post('/detect-language-text', requireAuthAPI, async (req,res)=>{
   try{
     const { text='' } = req.body||{};
     if(!text.trim()) return res.json({ok:true, lang:'', name:''});
@@ -201,12 +208,10 @@ app.post('/detect-language-text', async (req,res)=>{
   }catch(e){ console.error(e); res.status(500).json({ok:false, error:'detect-failed'}); }
 });
 
-// parse free speech into fields and status
-app.post('/parse-free-speech', async (req,res)=>{
+app.post('/parse-free-speech', requireAuthAPI, async (req,res)=>{
   try{
     const { text='' } = req.body||{};
     if(!text.trim()) return res.json({ok:true, fields:{}, status:{}, journal:text});
-
     const sys = `You extract structured medical intake from free speech. Output strict JSON with:
 {
  "fields": {
@@ -216,17 +221,14 @@ app.post('/parse-free-speech', async (req,res)=>{
    "pharmacy_name":"", "pharmacy_address":"", "pharmacy_phone":"", "pharmacy_fax":""
  },
  "status": { "bp":"", "weight":"", "medications": [], "allergies": [], "conditions": [] },
- "notes": ""  // anything extra
+ "notes": ""
 }
 Prefer exact emails (use '@' and '.'), numeric phones, and common blood type formats.`;
 
     const r = await openai.chat.completions.create({
       model: process.env.OPENAI_TEXT_MODEL || 'gpt-4o-mini',
       temperature: 0.2,
-      messages:[
-        { role:'system', content: sys },
-        { role:'user', content: text }
-      ]
+      messages:[{ role:'system', content: sys }, { role:'user', content: req.body.text||'' }]
     });
 
     let data = {};
@@ -235,24 +237,20 @@ Prefer exact emails (use '@' and '.'), numeric phones, and common blood type for
     const status = data.status||{};
     const notes  = data.notes||'';
 
-    // backstop with regex summary
-    const facts = parseFacts(text);
-    // merge status smartly
+    const facts = parseFacts(req.body.text||'');
     status.medications = status.medications?.length ? status.medications : facts.medications;
     status.allergies   = status.allergies?.length   ? status.allergies   : facts.allergies;
     status.conditions  = status.conditions?.length  ? status.conditions  : facts.conditions;
     status.bp          = status.bp || facts.bp || '';
     status.weight      = status.weight || facts.weight || '';
 
-    res.json({ok:true, fields, status, journal:text, notes});
+    res.json({ok:true, fields, status, journal:req.body.text||'', notes});
   }catch(e){ console.error(e); res.status(500).json({ok:false, error:'parse-failed'}); }
 });
 
-// ---------- Upload multi (generate report) ----------
-app.post('/upload-multi', async (req,res)=>{
+app.post('/upload-multi', requireAuthAPI, async (req,res)=>{
   try{
     const B = req.body||{};
-    // required enough content?
     const anyContent = [
       B.name, B.email, B.emer_name, B.doctor_name, B.pharmacy_name,
       B.bp, B.weight, B.medications, B.allergies, B.conditions, B.journal_text
@@ -271,12 +269,11 @@ app.post('/upload-multi', async (req,res)=>{
       bp:(B.bp||'').trim(), weight:(B.weight||'').trim(),
       medications:(B.medications||'').trim(), allergies:(B.allergies||'').trim(), conditions:(B.conditions||'').trim()
     };
-    const transcript = (B.transcript||'').trim(); // optional consolidated text, not required
+    const transcript = (B.transcript||'').trim();
     const journal_text = (B.journal_text||'').trim();
     const detected_lang = (B.detected_lang||'').trim();
     const target_lang   = (B.target_lang||'').trim();
 
-    // summary
     const facts = {
       medications: status.medications ? status.medications.split(/\s*;\s*/).filter(Boolean) : [],
       allergies:   status.allergies   ? status.allergies.split(/\s*;\s*/).filter(Boolean)   : [],
@@ -284,9 +281,14 @@ app.post('/upload-multi', async (req,res)=>{
       bp:          status.bp||'',
       weight:      status.weight||'',
     };
-    const summary_text = summarizeFacts(facts);
+    const summary_text = [
+      `Medications: ${facts.medications.length?facts.medications.join('; '):'None mentioned'}`,
+      `Allergies: ${facts.allergies.length?facts.allergies.join('; '):'None mentioned'}`,
+      `Conditions: ${facts.conditions.length?facts.conditions.join('; '):'None mentioned'}`,
+      `Blood Pressure: ${facts.bp||'—'}`,
+      `Weight: ${facts.weight||'—'}`
+    ].join('\n');
 
-    // translate transcript+summary if target selected
     let translated_transcript = '';
     let translated_summary = '';
     if (target_lang){
@@ -306,8 +308,7 @@ app.post('/upload-multi', async (req,res)=>{
       translated_summary    = t2.choices?.[0]?.message?.content?.trim() || '';
     }
 
-    // share link + qr
-    const id = uid();
+    const id = crypto.randomBytes(20).toString('base64url').slice(0,20);
     const created_at = new Date().toISOString();
     const base = getBaseUrl(req);
     const share_url  = `${base}/reports/${id}`;
@@ -350,7 +351,7 @@ app.post('/upload-multi', async (req,res)=>{
 });
 
 // ---------- Reports ----------
-app.get('/reports', async (req,res)=>{
+app.get('/reports', requireAuthPage, async (req,res)=>{
   const rows = await dbAll(`SELECT id, created_at, name, email FROM reports ORDER BY created_at DESC`);
   const esc = s=>String(s||'').replace(/[&<>"]/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
   const items = rows.map(r=>`
@@ -374,7 +375,7 @@ app.get('/reports', async (req,res)=>{
 </div></body></html>`);
 });
 
-app.get('/reports/:id', async (req,res)=>{
+app.get('/reports/:id', requireAuthPage, async (req,res)=>{
   const row = await dbGet(`SELECT * FROM reports WHERE id=?`, [req.params.id]);
   if(!row) return res.status(404).send('Not found');
 
