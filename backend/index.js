@@ -1,5 +1,7 @@
 // backend/index.js
-// Caregiver Card — Baseline 1 + single field mics + Journal (parsed) + auth + lang-detect
+// Caregiver Card — Baseline 1 + single field mics (toggle start/stop)
+// + Journal (free speech) persisted + auth split + parsing + dual summaries
+
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
@@ -70,6 +72,16 @@ async function initDB(){
     )
   `);
 
+  // Journal entries over time (for longitudinal summaries)
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS journal_entries (
+      id TEXT PRIMARY KEY,
+      created_at TEXT,
+      report_id TEXT,         -- optional link to a created report
+      text TEXT
+    )
+  `);
+
   const addCols = [
     ['journal_text','TEXT'], ['summary_text','TEXT'], ['translated_summary','TEXT']
   ];
@@ -87,10 +99,8 @@ function setSession(res, user){
   res.cookie('ccsess', user, { httpOnly:true, sameSite:'lax', signed:true /*, secure:true*/ });
 }
 function clearSession(res){ res.clearCookie('ccsess'); }
+function isAuthed(req){ return !!req.signedCookies?.ccsess; }
 
-function isAuthed(req){
-  return !!req.signedCookies?.ccsess;
-}
 function requireAuthPage(req, res, next){
   if (!isAuthed(req)) return res.redirect('/login');
   next();
@@ -110,11 +120,13 @@ app.get('/login', (req,res)=>{
       <button>Sign In</button>
     </form></body></html>`);
 });
+
 app.post('/login', (req,res)=>{
   const { userId, password } = req.body || {};
   if (userId === USER_ID && password === USER_PASS){ setSession(res, userId); return res.redirect('/'); }
   res.status(401).send('<p>Invalid credentials. <a href="/login">Try again</a></p>');
 });
+
 app.post('/logout', (req,res)=>{ clearSession(res); res.redirect('/login'); });
 
 // Static
@@ -143,11 +155,25 @@ function parseFacts(text=''){
   const meds=[], allergies=[], conditions=[];
   const medRx=/([A-Za-z][A-Za-z0-9\-]+)\s*(?:at|:|—|-)?\s*(\d{1,4})\s*(mg|mcg|g|ml)\b/gi;
   let m, seen=new Set();
-  while((m=medRx.exec(t))){ const key=(m[1]+'|'+m[2]+m[3]).toLowerCase(); if(!seen.has(key)){ meds.push(`${m[1]} — ${m[2]} ${m[3]}`); seen.add(key);} }
+  while((m=medRx.exec(t))){
+    const key=(m[1]+'|'+m[2]+m[3]).toLowerCase();
+    if(!seen.has(key)){ meds.push(`${m[1]} — ${m[2]} ${m[3]}`); seen.add(key); }
+  }
   const aHit=t.match(/\ballerg(?:y|ies)\b[^.?!]+/i);
-  if (aHit){ aHit[0].split(/[,;]| and /i).map(s=>s.replace(/\ballerg(?:y|ies)\b/i,'').replace(/\bto\b/ig,'').trim()).filter(Boolean).forEach(x=>{if(!allergies.includes(x)) allergies.push(x);});}
+  if (aHit){
+    aHit[0]
+      .split(/[,;]| and /i)
+      .map(s=>s.replace(/\ballerg(?:y|ies)\b/i,'').replace(/\bto\b/ig,'').trim())
+      .filter(Boolean)
+      .forEach(x=>{ if(!allergies.includes(x)) allergies.push(x); });
+  }
   const cRx=/\b(I have|I've|I’ve|diagnosed with|history of)\b([^.!?]+)/ig;
-  let c; while((c=cRx.exec(t))){ let phrase=c[2].replace(/\b(allerg(?:y|ies)|medications?|pills?)\b/ig,'').trim(); phrase=phrase.replace(/^[,:;.\s-]+/,''); if(phrase) conditions.push(phrase); }
+  let c;
+  while((c=cRx.exec(t))){
+    let phrase=c[2].replace(/\b(allerg(?:y|ies)|medications?|pills?)\b/ig,'').trim();
+    phrase=phrase.replace(/^[,:;.\s-]+/,'');
+    if(phrase) conditions.push(phrase);
+  }
   let bp=null; const bpM=t.match(/\b(\d{2,3})\s*(?:\/|over|-)\s*(\d{2,3})\b/); if(bpM) bp=`${bpM[1]}/${bpM[2]}`;
   let weight=null; const wM=t.match(/\b(\d{2,3})\s*(lbs?|pounds?|kg)\b/i); if(wM) weight=wM[1]+(wM[2].toLowerCase().includes('kg')?' kg':' lbs');
   return { medications:meds, allergies, conditions, bp, weight };
@@ -248,12 +274,13 @@ Prefer exact emails (use '@' and '.'), numeric phones, and common blood type for
   }catch(e){ console.error(e); res.status(500).json({ok:false, error:'parse-failed'}); }
 });
 
+// Create report & store a journal row
 app.post('/upload-multi', requireAuthAPI, async (req,res)=>{
   try{
     const B = req.body||{};
     const anyContent = [
       B.name, B.email, B.emer_name, B.doctor_name, B.pharmacy_name,
-      B.bp, B.weight, B.medications, B.allergies, B.conditions, B.journal_text
+      B.bp, B.weight, B.medications, B.allergies, B.conditions, B.journal_text, B.transcript
     ].some(v => (v||'').trim().length);
     if(!anyContent) return res.status(400).json({ok:false, error:'No content'});
 
@@ -308,7 +335,7 @@ app.post('/upload-multi', requireAuthAPI, async (req,res)=>{
       translated_summary    = t2.choices?.[0]?.message?.content?.trim() || '';
     }
 
-    const id = crypto.randomBytes(20).toString('base64url').slice(0,20);
+    const id = uid();
     const created_at = new Date().toISOString();
     const base = getBaseUrl(req);
     const share_url  = `${base}/reports/${id}`;
@@ -342,6 +369,14 @@ app.post('/upload-multi', requireAuthAPI, async (req,res)=>{
       journal_text,
       share_url, qr_data_url
     ]);
+
+    // persist a journal entry row too (for longitudinal analysis later)
+    if (journal_text){
+      await dbRun(
+        `INSERT INTO journal_entries (id, created_at, report_id, text) VALUES (?,?,?,?)`,
+        [uid(), new Date().toISOString(), id, journal_text]
+      );
+    }
 
     res.json({ok:true, id, url:share_url});
   }catch(e){

@@ -1,4 +1,7 @@
-/* app.js — single field mics + journal recorder + detect + parse + generate */
+/* app.js — toggle mics (click to start, click again to stop)
+   field mics + Alternative free-speech recorder inside Health Status
+   persists journal and generates report
+*/
 
 const $ = s => document.querySelector(s);
 const resultBox = $('#result');
@@ -16,12 +19,10 @@ function normalizeEmailSpoken(raw=''){
        .replace(/\s+underscore\s+/g,'_')
        .replace(/\s+(hyphen|dash)\s+/g,'-')
        .replace(/\s+plus\s+/g,'+');
-
   s = s.replace(/\s+gmail\s*\.?\s*com\s*/g,'@gmail.com ')
        .replace(/\s+outlook\s*\.?\s*com\s*/g,'@outlook.com ')
        .replace(/\s+hotmail\s*\.?\s*com\s*/g,'@hotmail.com ')
        .replace(/\s+yahoo\s*\.?\s*com\s*/g,'@yahoo.com ');
-
   s = s.replace(/\s*@\s*/g,'@').replace(/\s*\.\s*/g,'.');
   s = s.replace(/\s+/g,'').replace(/\.\.+/g,'.');
   return s;
@@ -34,27 +35,42 @@ function normalizePhoneDigits(text=''){
   return text.replace(/[^\d+]/g,'').slice(0,20);
 }
 
-// -------- MediaRecorder helper ----------
-async function recordOnce(ms=10000){
-  const stream = await navigator.mediaDevices.getUserMedia({audio:true});
-  const rec = new MediaRecorder(stream, { mimeType:'audio/webm' });
-  const chunks = [];
-  return await new Promise((resolve,reject)=>{
-    const t = setTimeout(()=>{ if(rec.state!=='inactive') rec.stop(); }, ms);
-    rec.ondataavailable = e=>{ if(e.data && e.data.size) chunks.push(e.data); };
-    rec.onstop = ()=>{ clearTimeout(t); stream.getTracks().forEach(t=>t.stop()); resolve(new Blob(chunks,{type:'audio/webm'})); };
-    rec.onerror = e=>{ clearTimeout(t); stream.getTracks().forEach(t=>t.stop()); reject(e.error||e); };
-    rec.start();
-  });
+// -------- MediaRecorder toggler ----------
+class RecorderToggle {
+  constructor(){ this.recorder=null; this.stream=null; this.onStop=null; }
+  async start(){
+    this.stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    this.recorder = new MediaRecorder(this.stream, { mimeType:'audio/webm' });
+    const chunks=[];
+    return await new Promise((resolve, reject)=>{
+      this.recorder.ondataavailable = e=>{ if(e.data && e.data.size) chunks.push(e.data); };
+      this.recorder.onstop = async ()=>{
+        try{
+          this.stream.getTracks().forEach(t=>t.stop());
+          const blob = new Blob(chunks,{type:'audio/webm'});
+          resolve(blob);
+        }catch(err){ reject(err); }
+      };
+      this.recorder.onerror = err=>{
+        try{ this.stream.getTracks().forEach(t=>t.stop()); }catch{}
+        reject(err.error||err);
+      };
+      this.recorder.start();
+    });
+  }
+  stop(){
+    if(this.recorder && this.recorder.state!=='inactive') this.recorder.stop();
+  }
 }
+
+const activeRecorders = new Map(); // btn->RecorderToggle
 
 // -------- Robust JSON guard ----------
 async function readJSONorAuthMessage(resp){
   const ct = resp.headers.get('content-type') || '';
   if (!ct.includes('application/json')){
     const txt = await resp.text();
-    // Login page or HTML? Treat as auth problem
-    throw new Error('Not signed in (session expired). Please reload and sign in.');
+    throw new Error('Not signed in. Please reload and sign in.');
   }
   return resp.json();
 }
@@ -99,51 +115,83 @@ async function generateReport(payload){
   return readJSONorAuthMessage(r);
 }
 
-// -------- field mic buttons ----------
+// -------- field mic buttons (toggle) ----------
 document.querySelectorAll('.mic-btn').forEach(btn=>{
   btn.addEventListener('click', async ()=>{
     try{
+      setError('');
       const id = btn.getAttribute('data-target');
       const el = document.getElementById(id);
       if(!el) return;
-      setError('');
-      btn.classList.add('mic-active');
 
-      const blob = await recordOnce(12000);
+      // toggle
+      if (activeRecorders.has(btn)){
+        // stop
+        btn.classList.remove('mic-active');
+        const rec = activeRecorders.get(btn);
+        activeRecorders.delete(btn);
+        rec.stop();
+        return; // the onstop promise will resolve in start() flow
+      }
+
+      // start
+      btn.classList.add('mic-active');
+      const rec = new RecorderToggle();
+      activeRecorders.set(btn, rec);
+      const blob = await rec.start(); // resolves when stopped
+      // after stop:
+      btn.classList.remove('mic-active');
+      activeRecorders.delete(btn);
+
       const { ok, text } = await transcribeBlob(blob);
       if(!ok) throw new Error('Transcription failed');
 
       let val = text || '';
       if (isEmailField(el)) val = normalizeEmailSpoken(val);
       if (/phone|fax/i.test(id)) val = normalizePhoneDigits(val);
-
       el.value = val;
     }catch(e){
-      console.log('[mic] transcribe error:', e);
+      // If user pressed twice very quickly, start() may reject on immediate stop; ignore
       setError(e.message||String(e));
-    }finally{
       btn.classList.remove('mic-active');
+      activeRecorders.delete(btn);
     }
   });
 });
 
-// -------- journal recorder ----------
-const jBtn = $('#journalRec');
-const jMeta= $('#jMeta');
-const jBox = $('#journal');
+// -------- Alternative — Free Speech Recorder for Health Status (toggle) ----------
+const jBtn  = $('#journalRec');   // this button inside Health Status block
+const jMeta = $('#jMeta');
+const jBox  = $('#journal');
 const langDetected = $('#langDetected');
-const langConfirm = $('#langConfirm');
-const langConfirm2= $('#langConfirm2');
-const langTarget  = $('#lang');
+const langConfirm  = $('#langConfirm');
+const langConfirm2 = $('#langConfirm2');
 
 if (jBtn){
   jBtn.addEventListener('click', async ()=>{
     try{
-      setError(''); jMeta.textContent='Recording… (up to ~60s)';
-      jBtn.disabled = true; jBtn.classList.add('mic-active');
+      setError('');
+      // toggle
+      if (activeRecorders.has(jBtn)){
+        jBtn.classList.remove('mic-active');
+        const rec = activeRecorders.get(jBtn);
+        activeRecorders.delete(jBtn);
+        rec.stop();
+        return;
+      }
 
-      const blob = await recordOnce(60000);
+      // start
+      jMeta.textContent='Recording… tap again to stop';
+      jBtn.classList.add('mic-active');
+      const rec = new RecorderToggle();
+      activeRecorders.set(jBtn, rec);
+      const blob = await rec.start(); // resolves when stopped
+
+      // after stop:
+      jBtn.classList.remove('mic-active');
+      activeRecorders.delete(jBtn);
       jMeta.textContent = 'Transcribing…';
+
       const { ok, text } = await transcribeBlob(blob);
       if(!ok) throw new Error('Transcription failed');
       jBox.value = text;
@@ -153,8 +201,8 @@ if (jBtn){
       if(det.ok && det.lang){
         langDetected.value = det.name || det.lang.toUpperCase();
         const msg = `We think you’re speaking <b>${det.name||det.lang}</b> — tap Translate To if you want a translated report.`;
-        langConfirm.innerHTML = msg;
-        langConfirm2.innerHTML= msg;
+        if (langConfirm)  langConfirm.innerHTML = msg;
+        if (langConfirm2) langConfirm2.innerHTML = msg;
       }
 
       // parse into fields
@@ -190,13 +238,12 @@ if (jBtn){
         if ($('#allergies')) $('#allergies').value = (S.allergies||[]).join('; ')   || $('#allergies').value;
         if ($('#conditions'))$('#conditions').value= (S.conditions||[]).join('; ')  || $('#conditions').value;
       }
-      jMeta.textContent = 'Journal parsed and applied.';
+      jMeta.textContent = 'Applied to fields.';
     }catch(e){
-      console.log('[journal] error:', e);
       setError(e.message||String(e));
+      jBtn.classList.remove('mic-active');
+      activeRecorders.delete(jBtn);
       jMeta.textContent='';
-    }finally{
-      jBtn.disabled=false; jBtn.classList.remove('mic-active');
     }
   });
 }
@@ -209,7 +256,7 @@ $('#btnGenerate')?.addEventListener('click', async ()=>{
     setError(''); setResult('');
     const payload = {
       detected_lang: (langDetected?.value||'').trim(),
-      target_lang:   (langTarget?.value||'').trim(),
+      target_lang:   ($('#lang')?.value||'').trim(),
 
       name: val('#pName'), email: val('#pEmail'), blood_type: val('#blood'),
       emer_name: val('#eName'), emer_phone: val('#ePhone'), emer_email: val('#eEmail'),
